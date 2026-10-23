@@ -2595,4 +2595,25 @@ w759_end="$(WAKE_REASON='two words; and $punct' run_session build fixture/why3 "
 t why-is-one-sanitised-token 1 "$(grep -c ' why=two_words__and__punct ' <<<"$w759_end")"
 unset -f bot_session_acted
 
+# ── #759 — tier aliases: `cheap` is what the profile says it is ────────────
+w759_tier() {  # w759_tier <MODEL_BUILD value> [BOT_CLI_TIER_CHEAP value]
+  ( MODEL_BUILD="$1"; BOT_CLI_TIER_CHEAP="${2-}"; [ -n "${2-}" ] || unset BOT_CLI_TIER_CHEAP
+    BOT_CLI_CMD=(vendor -p)
+    # shellcheck disable=SC2317  # the profile hook, reached through _session_cli_cmd
+    bot_cli_model_cmd() { BOT_CLI_MODEL_CMD=(vendor --model "$1" -p); }
+    _session_cli_cmd build 2>/dev/null; printf '%s|%s' "$_SESSION_TIER" "${_SESSION_CLI_CMD[*]}" )
+}
+t tier-cheap-resolves-through-the-profile "haiku|vendor --model haiku -p" "$(w759_tier cheap haiku)"
+t tier-an-undefined-alias-stays-on-the-default "default|vendor -p" "$(w759_tier cheap)"
+t tier-a-vendor-name-passes-through "sonnet|vendor --model sonnet -p" "$(w759_tier sonnet)"
+t tier-unset-is-the-default "default|vendor -p" "$(w759_tier "")"
+unset -f w759_tier
+# The shipped levers are ON: every budget ceiling is a positive number and the
+# repair and sweep lanes name the cheap tier.
+w759_zero="$(grep -hE '^BUDGET_(SESSIONS|MINUTES)_[A-Z_]+=0$' "$SHARED/conf/fleet.defaults.conf" "$SHARED"/conf/roles/*.conf | tr '\n' ' ')"
+t budgets-ship-on "" "$w759_zero"
+t repair-lanes-ship-on-the-cheap-tier "MODEL_CI_RED=cheap MODEL_HYGIENE=cheap MODEL_REBASE=cheap" \
+  "$(grep -hE '^MODEL_(REBASE|CI_RED|HYGIENE)=' "$SHARED"/conf/roles/*.conf | sort | tr '\n' ' ' | sed 's/ $//')"
+t hygiene-sweeps-daily 1 "$(grep -c '^HYGIENE_INTERVAL=86400$' "$SHARED/conf/roles/triage.conf")"
+
 suite_finish

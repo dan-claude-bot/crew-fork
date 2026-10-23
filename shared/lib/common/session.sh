@@ -60,6 +60,21 @@ _session_cli_cmd() {
   _SESSION_CLI_CMD=("${BOT_CLI_CMD[@]}")
   _SESSION_TIER=default
   [ -n "$tier" ] || return 0
+  # A tier may be named by ROLE — `cheap` or `expensive` — and translated by
+  # the agent profile's BOT_CLI_TIER_CHEAP / BOT_CLI_TIER_EXPENSIVE (#759): a
+  # role conf cannot know what a vendor calls its small model, and the profile
+  # already owns that vocabulary. An alias the profile does not define leaves
+  # the duty on the default, loudly, exactly as an untranslatable tier does.
+  case "$tier" in
+    cheap|expensive)
+      local alias_var="BOT_CLI_TIER_${tier^^}" alias_value
+      alias_value="${!alias_var:-}"
+      if [ -z "$alias_value" ]; then
+        warn "session model: kind=$kind asked for the $tier tier but agent profile ${BOT_AGENT:-unknown} names no $alias_var — staying on the default"
+        return 0
+      fi
+      tier="$alias_value" ;;
+  esac
   # D3, and the failure mode it exists to stop: silently ignoring a configured
   # override is what makes an operator think they saved something. Both ways a
   # profile can fail to honour a tier — no translation at all, and a
