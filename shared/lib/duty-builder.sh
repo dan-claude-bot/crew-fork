@@ -818,8 +818,10 @@ _panel_effective() {
     _PANEL_RISK_TIER="$tier"; _PANEL_RISK_WHY="$why"
   else
     _panel_risk "$repo" "$num"
-    [ -z "$head" ] || { printf '%s %s %s\n' "$head" "$_PANEL_RISK_TIER" "$_PANEL_RISK_WHY" >"$cache.tmp" \
-      && mv -f "$cache.tmp" "$cache"; }
+    # PANEL_SIZED_CACHE=off is for a harness that runs the engine out of its
+    # own tree: it reads the same way and leaves no file behind.
+    [ -z "$head" ] || [ "${PANEL_SIZED_CACHE:-on}" = off ] \
+      || { printf '%s %s %s\n' "$head" "$_PANEL_RISK_TIER" "$_PANEL_RISK_WHY" >"$cache.tmp" && mv -f "$cache.tmp" "$cache"; }
   fi
   sized="$(_panel_sized "$_PANEL_RISK_TIER" "$num" "$(printf '%s' "$panel_json" | jq -r '.[]' 2>/dev/null)")"
   _PANEL_EFFECTIVE_JSON="$(printf '%s\n' "$sized" | awk 'NF' | jq -R . | jq -cs .)"

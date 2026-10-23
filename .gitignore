@@ -17,3 +17,5 @@ node_modules/
 # scope-coverage.yml on the scope-map guard, and a builder running either by
 # hand. Build artifacts of a check, never committed.
 __pycache__/
+# A harness running the engine out of its own tree must leave no panel cache behind.
+.panel-sized-*

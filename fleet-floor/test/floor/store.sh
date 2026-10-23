@@ -567,7 +567,7 @@ from floor import store
 store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
 store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
 ' >/dev/null
-t "rotated: the rotated log'"'"'s session lands once" 1 \
+t "rotated: the rotated log session lands once" 1 \
   "$(st_py "$ST_M" '
 from floor import store
 c = store.connect(readonly=True)

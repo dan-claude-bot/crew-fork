@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=shared/test/lib.sh
 source "$HERE/lib.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP"; rm -f "$SHARED"/.panel-sized-*' EXIT
 unset CREW_CONFIG_DIR CREW_EXPECT_OPERATOR_CONFIG
 export XDG_CONFIG_HOME="$TMP/xdg-empty"
 mkdir -p "$XDG_CONFIG_HOME"
@@ -4229,7 +4229,7 @@ review_addressing_actions() (  # payload [label-rc]
 author_redraft_actions() (  # payload [draft-rc]
   AR_PAYLOAD="$1"; AR_DRAFT_RC="${2:-0}"
   LABEL_ADDRESSING=state:addressing
-  DUTY_DIR="$SHARED" ME=builder MARK_ANSWERED="$RP_MARK"
+  DUTY_DIR="$SHARED" ME=builder MARK_ANSWERED="$RP_MARK" PANEL_SIZED_CACHE=off
   AR_LOG="$TMP/redraft-actions"; : >"$AR_LOG"
   log() { :; }
   warn() { :; }
@@ -4325,7 +4325,7 @@ t redraft-resume-names-completed-round woken "$r1"
 redraft_round_trip() (
   AR_IS_DRAFT=false AR_LABELS='[]' AR_COMMENTS='[]' AR_ACTIONS=""
   LABEL_ADDRESSING=state:addressing LABEL_BOTS_REVIEWING=state:bots-reviewing
-  DUTY_DIR="$SHARED" ME=builder MARK_ANSWERED="$RP_MARK"
+  DUTY_DIR="$SHARED" ME=builder MARK_ANSWERED="$RP_MARK" PANEL_SIZED_CACHE=off
   panel_for_repo() { printf '%s\n' '["rev-a","rev-b"]'; }
   log() { :; }
   warn() { :; }
@@ -5867,7 +5867,7 @@ t roundcap-census-failed-listing-warns 1 \
 # --- D2a: the predecessor is never requested, and everything else is today's -
 # shellcheck disable=SC2034,SC2317  # vars/mocks consumed by the engine helper
 rc_request() (  # payload [at_cap]
-  DUTY_DIR="$SHARED" ME=builder MARK_ANSWERED="$RP_MARK"
+  DUTY_DIR="$SHARED" ME=builder MARK_ANSWERED="$RP_MARK" PANEL_SIZED_CACHE=off
   LABEL_BOTS_REVIEWING=state:bots-reviewing
   RC_LOG="$TMP/round-cap-request"; : >"$RC_LOG"
   log() { :; }
