@@ -2797,6 +2797,10 @@ brk_drive() {
   (
     export REHEARSAL_BREAKER_TICK_TRIES="$BRK_TRIES"
     export REHEARSAL_BREAKER_TICK_WAIT=0
+    # The breaker's label predicate is the shared one in rehearsal-fixtures.sh
+    # since #749, so the leg is sourced with it, as rehearsal.sh sources both.
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
     # shellcheck source=drill/rehearsal-breaker.sh
     . "$ROOT/drill/rehearsal-breaker.sh"
     AGENT=kimi
@@ -2828,6 +2832,7 @@ brk_drive() {
     skip() { echo "skip $1"; }
     check()    { local n="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$n"; else fail "$n"; fi; }
     wait_for() { local n="$2"; shift 2; if "$@" >/dev/null 2>&1; then ok "$n"; else fail "$n"; fi; }
+    wait_for_lane() { shift; wait_for 0 "$@"; }
     rc=0
     rehearsal_breaker_drill owner/repo 1 reviewer || rc=$?
     printf 'RC=%s\nTICKS=%s\nREOPENS=%s\n' "$rc" "$BRK_TICK_N" "$BRK_REOPENS"
@@ -3453,6 +3458,11 @@ t w750-builder-row-grades-on-the-lane 1 \
   "$(grep -c 'wait_for_lane BUILD "builder: issue moved off ready (claimed)"' "$ROOT/drill/rehearsal.sh")"
 t w750-neither-row-carries-a-literal 0 \
   "$(grep -cE 'wait_for [0-9]+ "(attention: label removed|builder: issue moved off ready)' "$ROOT/drill/rehearsal.sh")"
+# shellcheck disable=SC2016  # the row's own text, $ included
+t w750-breaker-row-grades-on-the-lane 1 \
+  "$(grep -c 'wait_for_lane ATTENTION "breaker: \$REHEARSAL_BREAKER_LABEL label removed' "$ROOT/drill/rehearsal-breaker.sh")"
+t w750-breaker-row-carries-no-literal 0 \
+  "$(grep -cE 'wait_for [0-9]+ "breaker: .*label removed' "$ROOT/drill/rehearsal-breaker.sh")"
 unset -f w749_run w749_say w749_counted w749_grade w750_budget w750_lane
 
 suite_finish
