@@ -13,6 +13,495 @@ ledger at 0.1.0**, do not backfill.
 <!-- Release sections land below this line, newest first, each stamped by the
 release PR from the fragments in changelog.d/. -->
 
+## 0.1.3 — 2026-10-23
+
+### Added
+
+- The rehearsal now asserts the registry bound on the phase-2 attention tick,
+  per demand that census recorded: the engine's suppressed report names it, no
+  attention session is launched outside the sandbox, and no demand draws a new
+  pickup comment. A miss `FAIL`s and stops the round (#714).
+- `crew up` and the installer report a below-floor box or rig, in the same
+  words, naming crew's version and both platform versions found and wanted.
+  It reports and never refuses: each call site keeps its own consequence,
+  decided by the capability rather than the version (#679).
+- The rig half reads only the boxes in the roster. A box on this host that
+  crew was never asked about is left alone — as `crew up` and
+  `crew upgrade --all` already leave it — so it is neither opened nor named
+  in a finding (#679).
+- The host schedule carries no weekly `crew reset --all` line, deliberately
+  rather than by omission: the restore it performs takes `duty.log` with it and
+  clears the resume breaker with no push, so it is deferred to `0.1.4` behind
+  #328 (#678).
+- `crew reset` itself is unchanged and available on demand — the verb, its
+  version interlock, its refusals, the host lock and the job log all ship as
+  they were, and only the schedule is affected (#678).
+- `shared/host-crontab.example` argues the deferral where a reader who came to
+  add a second line will look, and does not leave the line commented out: a
+  commented job line is reinstatable by uncommenting, in the one file nobody
+  diffs (#678).
+- `shared/docs/host-maintenance.md` keeps the price and period reasoning the
+  deferral is reversed from, and names what the deferral costs on disk until
+  `0.1.4` with the reading an operator should take (#678, #606).
+- Kimi sessions resume once after eligible timeouts and report only resumed-turn usage (#674).
+- Box vitals flag low disk or memory headroom from operator-overridable limits. (#613).
+- The fleet floor shows each box's current/max memory and disk headroom. (#613).
+- Session history rows open their available transcript tails in the floor overlay. (#612).
+- `duty.log` now records that the box restarted, on the first tick after a
+  reboot, so a session that vanished with the box has a stated cause on the
+  line above it instead of an unbroken run of ticks. A box that has never
+  ticked says so rather than claiming a restart it did not take (#609).
+- `shared/host-crontab.example` schedules the fleet host's maintenance: `crew restart --all` daily, one line per job, with no `flock` and no redirect in the line (#590).
+- `crew restart` and `crew reset` take one non-blocking host maintenance lock between them, so the two verbs can never overlap; the later run names the holder, touches no box, and exits 4 (#590).
+- `crew restart` and `crew reset` write every run to a host job log, boundary lines and per-box outcomes alike, so a run that did nothing still says so and silence at a boundary means cron is dead (#590).
+- `CREW_HOST_STATE_DIR` moves the host maintenance lock and job log together (#590).
+- `shared/docs/host-maintenance.md` is the runbook for the host jobs: what a skipped box means, what a refused reset means, and the rule that after any `crew upgrade` you re-cut before the next reset (#590).
+- `crew reset --cut` snapshots each box as `armed` after proving it is logged in — GitHub and the agent profile's vendor CLI — and hired, reclaiming with an on-demand reaper run before it measures the disk and refusing a box still over the ceiling by naming what is large (#589).
+- `crew reset` restores each box to its `armed` checkpoint and starts it, refusing a box with no such label rather than falling back to another one (#589).
+- `crew reset` refuses a checkpoint whose recorded engine version is missing, unreadable or not a version, and `--cut` refuses a box whose engine stamp it cannot parse (#589).
+- `--force-after` forces the restore path only; a `--cut` is skipped on a held duty lock however old (#589).
+- `crew restart` drains and cycles selected boxes, skips live sessions, and reclaims stale duty snapshots (#588).
+- Operators can price captured token records from an editable per-model rate card without stamping mutable costs into session history. (#572).
+- `kimi` sessions record their token usage and credential pool on `SESSION END` (#571).
+- A multi-step kimi session's totals cover every step rather than a single one (#571).
+- A kimi session records uncached input, output, cache reads and cache creation, and no cost (#571).
+- A kimi session's usage names its model `unknown` (#571).
+- A kimi session whose usage is unavailable or unreadable records none, and its result is unchanged (#571).
+- Codex sessions now record uncached input, cache, output, session identity and honest unknown-model usage while preserving final prose and omitting unavailable cost. (#570).
+- Codex session logs preserve intermediate messages, command output and completion status when structured usage capture is active. (#570).
+- `SESSION START` and `SESSION END` carry `sid=`, the session id the engine mints and pins on the CLI, so a session's transcript is addressable from `duty.log` (#538).
+- A session killed at its wall is continued once rather than restarted, where its head has not moved, its log is non-empty and nothing of it survived (#538).
+- Review sessions can park on bounded detached checks and resume once with recorded results instead of restarting long verification on every tick. (#533).
+- `SESSION END` records log bytes and surviving session processes (#529).
+- A release candidate carries its own drill record, `drills/X.Y.Z-rcN.md`, and
+  `drills/README.md` states the ladder the release doors already implement
+  (#506).
+- A release guard refuses a final tree whose diff over its last candidate's tag
+  touches anything but `VERSION`, `CHANGELOG.md`, `changelog.d/` and `drills/`
+  (#506).
+- Deleting a candidate's drill record cannot lower the anchor a final is
+  measured against: the rc-ladder guard reads the published candidate tags as
+  well as the shipped tree's records (#506).
+- The rc-ladder guard requires every reachable published candidate's own record,
+  spelled exactly as its tag, so renaming a record under another spelling of its
+  number is refused as the deletion it is (#506).
+- A zero-padded candidate `X.Y.Z-rc0N` is measured as rung N rather than
+  reported as a tag that cannot be resolved: the ladder is ordered by the number
+  and named by the spelling (#506).
+- Only the release doors' own spelling is a candidate — `X.Y.Z-rcN` in ASCII
+  digits — so a version or tag the doors would never classify never anchors, and
+  never gates, a release (#506).
+- A stray space inside `VERSION` cannot hide a release window from the rc-ladder
+  guard: the version is consumed the way the release doors consume it, with all
+  whitespace deleted rather than only the ends trimmed (#506).
+- The rc-ladder guard reports a shallow clone as a could-not-look, including
+  when ancestry is what it cannot decide, and names the `fetch-depth: 0` fix
+  (#506).
+- Fork PR authors can flag an evidenced red check for privileged rerun servicing. (#505).
+- Triage sessions carry the board's round count for every issue, with the
+  distribution those counts form and the round cap they are read against, as
+  sizing evidence at the mint (#503).
+- The builder engine records every open authored pull request's round count
+  against the issue its body names, not only the ones that have reached the cap
+  (#503).
+- The builder engine counts a PR's review rounds and names the round cap to the
+  session when the fifth round closes without a full approval standing at the
+  current head (#502).
+- CI refuses a tracked path that no `scope:*` row in `.github/labeler.yml` matches, naming each one; a path deliberately left unmapped is declared with its reason in `.github/scope-coverage.allow` (#500).
+- Writing a `scope:*` label twice in `.github/labeler.yml` is refused, naming both lines: the scope job keeps only the last block, so the earlier one's globs derive nothing (#500).
+- The release records the installer's size and payload file count, on the build's output and in the workflow run summary (#499).
+- The rehearsal runbook documents every leg of the drill round — what each one
+  needs, what it produces, and what its failure means — and names the blockers
+  that stop a leg running on a bare host (#497).
+- CI diffs the runbook's documented leg set against the harness's own
+  declaration in both directions, so a leg added to the round cannot go
+  undocumented (#497).
+- The teardown fixtures drive the notifier union leg's second sandbox per role
+  through the delete set, the ownership refusal and prefix-is-not-membership
+  (#496).
+- The fleet floor edits both watch registries — the fleet-wide `repos.txt` and
+  `notify-repos.txt`, and a per-box selection reached from that box's own
+  console (#488).
+- A box's registry selection is `repos.d/<box>.txt` beside the fleet-wide list,
+  and `crew hire` and `crew upgrade` transport it in place of the fleet-wide
+  one (#488).
+- A box selects from the fleet-wide registry and can never reach outside it: an
+  entry the fleet does not watch is refused at the edit, and one retired
+  fleet-wide leaves every box that had selected it (#488).
+- A registry edit naming a malformed entry, or a repository the fleet cannot
+  reach, is refused at the edit with the reason (#488).
+- Every registry write is appended to `.registry-journal.log` in the fleet
+  definition, naming the operator, the file, the state that write applied and
+  the entries that moved, so one line describes the registry it produced
+  without reference to any other (#488).
+- Registry writes are serialised per registry and written through a temporary
+  file of their own, so two edits in flight leave the file at one of the
+  submitted states and one accurate record each (#488).
+- A registry write that cannot be recorded is refused before anything moves,
+  one the filesystem will not accept is refused with the reason, and one whose
+  record fails after the file changed says the edit landed unrecorded rather
+  than reporting a refusal (#488).
+- `crew` reads every registry file through one reader, so a hand-indented entry
+  is the entry it names and the console and the transport resolve one file
+  alike (#488).
+- A fleet-wide registry the definition does not have is shown as served from
+  the shipped `examples/` file the transport stages, and saving it writes the
+  definition's own copy (#488).
+- Force stop as its own floor action, killing a guest that cannot schedule
+  its own shutdown (#486).
+- `crew status` and the fleet floor show bounded per-box tick health from existing duty records (#484).
+- Every tick emits a box vitals record — cores and load, memory total/available/shared, swap configured and active, disk total/used/percent, platform and OS release (#483).
+- A vitals reading that disagrees with the role profile's `BOX_CPU`, `BOX_MEMORY` or `BOX_DISK` is marked on the record as a finding, naming both the declared and the measured figure — over the declared figure as well as under it (#483).
+- Swap configured and swap active are recorded as separate fields, so a swapfile present while `swapon --show` is empty reads as a finding rather than as free disk (#483).
+- `crew status <box>` and the fleet floor both render the box vitals record, from the same logged line and in the same words, so the two consoles cannot describe one box differently (#483).
+- The record's disk history is backfilled from `boot-check.log`, so the series starts where the box did rather than at the first tick after the probe shipped (#483).
+- The duty engine declares its operating limits and reports near-limit and crossed-limit measurements with their affected repository and pull request (#482).
+- The floor relays operating-limit events from boxes through its configured operator alert channel (#482).
+- The fleet floor can send one configured alert when a roster box becomes unreachable and another when it recovers (#481).
+- Builder resume suppression now appears with its age and reason in `crew status` and on the fleet floor (#480).
+- Session-end records can include Claude token usage, actual-model attribution, conditional cost, session ID, and an operator-declared credential pool without changing prose logs. (#475).
+- A session now runs under a memory ceiling: `SESSION_MEM_MAX_PCT` in
+  `fleet.defaults.conf`, a percentage of the box's `MemTotal`, with a per-role
+  override beside it. A session whose measured peak crosses it is terminated
+  and its `SESSION END` carries `outcome=MEMORY` (#474).
+- The termination covers the session's own process group as well as its pid
+  tree, so a descendant that handles `TERM` by forking a replacement and
+  exiting cannot outlive the session that was ended (#474).
+- The ceiling ships at 0 on every row, which is off: with nothing configured
+  the engine starts no watchdog and a session behaves exactly as it did (#474).
+- `SESSION END` now carries `peak_rss=`, the largest `VmHWM` in the session's
+  process tree in KiB, so a session that grew until the kernel killed something
+  is visible in the engine's own record of it rather than only in the silence
+  that followed (#473).
+- The fleet floor renders that figure for the newest session per box, and shows
+  a dash for a session it has no figure for — including every line written
+  before this (#473).
+- The field is omitted entirely where the engine got no reading: a platform
+  that reports no `VmHWM`, or a session shorter than one measurement interval.
+  An absent field is not a zero, and nothing an aggregate reads can confuse the
+  two (#473).
+- A session that died with its box gets `peak_rss=-` on the terminal the orphan
+  reconciler writes for it, beside the `rc=-` and `dur=-` it already carried: a
+  measurement owed and lost, not one never taken (#473).
+- Fast triage ticks now wake when a declared predecessor changes state and name the dependency edge that needs a prose re-read. (#471).
+- A duty may now name its own model tier: `MODEL_<KIND>` beside that kind's
+  timeout in `conf/roles/*.conf`, and `run_session` invokes it instead of the
+  agent profile's default, so a mention and an issue mint need no longer be
+  bought at the same price (#469).
+- The agent profile owns the translation into its own flag, and a profile that
+  cannot express a tier leaves the duty on the default and warns, naming the
+  profile and the kind, rather than ignoring the setting silently (#469).
+- `SESSION END` now carries `tier=`, naming the resolved tier or `default`, so
+  an aggregate can tell a duty that got cheaper from one that got rarer. The
+  field is appended to every line, unconfigured sessions included (#469).
+- Per-duty tiers ship unset everywhere: an engine that is upgraded and not
+  configured invokes exactly what it invoked before, and every session behaves
+  as it did. The `tier=default` field above is the one deliberate change to
+  what a `SESSION END` line looks like (#469).
+- The duty engine now enforces a session budget: a per-kind ceiling on both
+  sessions and session-minutes over a rolling window, checked in `run_session`
+  before any vendor call (#464).
+- A lane at its ceiling logs `SESSION SKIP … reason=budget` and stops
+  dispatching until the window rolls, leaving every other kind untouched
+  (#464).
+- The operator is told at 80% of a ceiling as well as at it, once per crossing
+  per kind, on the channel the session breaker already uses (#464).
+- Session budgets are configured per role and per kind in `conf/roles/*.conf`
+  and ship OFF, so an engine that is upgraded and not configured behaves
+  exactly as before (#464).
+- `crew status <box>` reports each configured lane's balance — spent, ceiling
+  and when the window next frees capacity — from the moment a ceiling is set
+  rather than from that lane's first dispatch, and omits the section when no
+  lane is configured (#464).
+- An unreadable or unwritable budget counter refuses to dispatch and alerts,
+  rather than dispatching on a balance the engine cannot read (#464).
+- Triage prompts can route vendored-doctrine gaps to a configured, fleet-listed upstream repository (#463).
+- A builder that judges a `ready` issue unbuildable now declines it on the
+  board: a comment on that issue naming one of four reasons and @-mentioning
+  triage, instead of a decision that died with the box (#462).
+- `post-once.sh` takes an optional marker line and dedups on it, so a comment
+  whose identity is narrower than its text posts once (#462).
+- A daily reaper on every role reclaims what this engine's own sessions
+  leave on a box: CLI transcripts older than the retention age, and cache
+  entries nothing has read inside it. Each class logs its byte figure, and
+  logs one when it reclaims nothing (#457).
+- The reaper holds rather than deletes whenever it cannot establish a fact:
+  while any session is live, on a filesystem whose access times do not
+  advance, and over anything it could not finish reading (#457).
+
+### Changed
+
+- A builder box reads its identity's authored pull requests only in `repos.txt`
+  repositories, never across the whole account (#728).
+- The mint sequence has one writer that `crew new` and the drill both call,
+  instead of two copies a human kept agreeing (#679).
+- crew declares the platform it is built and tested against — box 0.10.0 and
+  rig 0.4.0 — in one place, and the two call sites that hardcoded a version
+  read it from there (#679).
+- Codex duties resume one eligible timed-out thread instead of restarting from zero (#673).
+- The `crew status` STUCK note names the ceiling that was exceeded, or says
+  no session was in flight, matching the floor's wording (#624).
+- Root can install one system crew tree that each host operator runs with their own identity and fleet configuration (#615).
+- The STUCK note and panel name the ceiling that was exceeded, not only how
+  long the lock has been held (#610).
+- A freshly minted `reviewer` box is 4 CPU, 8GiB, 60GiB — the builder's size
+  (#607).
+- `reviewer.conf`'s comment above the figures names what a review run does, and
+  no longer calls the role lean or its worktrees throwaway (#607).
+- A box cloned from a gold snapshot — `crew new --from`, or a roster line with a
+  fourth column — is sized at the role's cpu and memory where the host's box
+  supports it, instead of inheriting the snapshot's (#607).
+- `--disk` is never passed on a clone, so a cloned box keeps the snapshot's disk
+  (#607, box#171).
+- Every clone ends in one line giving cpu, memory and disk each `applied`, `NOT
+  applied` or `unverified`, beside the size the box carries, the size the role
+  profile asks for, and the commands to resize all three (#607).
+- `drill/rehearsal.sh` mints each drill box at its role's size (#607).
+- The ceremony pin moves from `0.7.6` to `0.7.7` across all ten anchored
+  `uses:` references — the six release guards, both label callers, the release
+  door and the privileged rerun service — so a fresh taxonomy bootstrap no
+  longer stops at the `operator` label's over-long description (#603).
+- Reviewer duty coverage now runs in its own entrypoint-driven test suite. (#601).
+- `crew restart` and `crew reset` exit 4 when nothing was attempted, distinguishing it from a run in which everything attempted worked (#590).
+- `crew hire`, `crew up` and `crew upgrade` mark the box's `armed` checkpoint stale before installing an engine, and refuse to install when that mark cannot be written (#589).
+- `crew reset` refuses a box whose `armed` checkpoint is marked stale, naming both versions and the re-cut (#589).
+- `crew hire` and `crew upgrade` both name the stale mark they left when the install that followed it failed (#589).
+- `crew new --from` refuses an `armed` checkpoint as a clone source (#589).
+- `crew down` waits for duty locks, reports partial failures, and requires an explicit supported `--force` to stop wedged boxes (#588).
+- Reviewer prompts now show same-head CI conclusions and qualify how that evidence should be used (#532).
+- `fleet-floor/server/floor.py` is split into a `floor` package on the banners it already drew — `ping`, `roster`, `units`, `fleet`, `actions`, `alerts`, `server`. Both doors are unchanged: `floor.py` still starts it, `import floor` still answers with the whole collector (#508).
+- `fleet-floor/test/` mirrors the collector's modules: `cases.sh` becomes one suite per module under `test/floor/` (#508).
+- `shared/lib/common.sh` is now an entry point over seven subject modules under `shared/lib/common/`; callers source the same path and get the same functions (#507).
+- Fixtures for those modules run as seven suites under `shared/test/common/`, one per module at the mirrored path (#507).
+- Agent doctrine and release machinery now use ceremony 0.7.6. (#505).
+- PR Round logs now keep bounded review facts and reply links instead of copying whole-round replies into the body (#504).
+- The engine holds its panel request on a PR at the round cap, so the successor
+  is the only PR the panel is asked for (#502).
+- A fifth round that closes with the panel's unanimous approval, where those
+  approvals still stand at the current head, converges and hands off as usual
+  and is never named for the cut. Where the head has since moved the approvals
+  are spent and the PR is at the cap again (#502).
+- The published installer carries only what an install needs, instead of the whole tracked tree: `crew-<version>.sh` is 531 KB where it was 51 MB (#499).
+- Restart force-stops an unreachable box before starting it; a box that still
+  answers restarts gracefully (#486).
+- Lifecycle action replies name which step each per-box row came from, and the
+  status line says when an action force-stopped a box (#486).
+- The fleet payload serves the collector's reachability verdict as
+  `ping.wedged`, so the console reads one rule rather than re-deriving it from
+  the miss count against a threshold of its own (#486).
+- A restart carries the mode its confirmation named, and the floor refuses it —
+  changing nothing — if the box crossed the reachability boundary in between,
+  so a graceful confirmation can never authorise a force stop (#486).
+- `SESSION START` carries `holder=<pid>.<boot>`, the duty process that
+  dispatched the session, so a session still running is told from one that
+  died by asking its holder rather than its age (#478).
+- Shared duty-engine fixtures run as five standalone subject suites behind the aggregate entrypoint (#470).
+- Fast-tick triage sessions now receive only the named issues and discussions that woke them; hourly hygiene retains the whole-board sweep (#468).
+- The hourly hygiene sweep now launches a session only for repositories whose board changed since the last one, and sweeps a never-changing board anyway once every `HYGIENE_FLOOR` (#465).
+- A hygiene gate that cannot read the board or its ledger sweeps anyway and warns by repository, a `HYGIENE_FLOOR` that is not a whole number of seconds falls back to the shipped default with a warning rather than disarming the floor, and every withheld repository is logged each interval (#465).
+- The hygiene prompt no longer asks for the blocked-to-ready flip or the stale-claim reclaim, which the issueflow reconciler already owns (#465).
+- `no build duty` names why the ready work is held —
+  `2 ready declined: unbuildable (1), needs-ruling (1)` — where it named only
+  the ledger holding it (#462).
+- Builder-specific panel rows now enroll both live builder identities without changing required reviewers (#458, heavy-duty/ceremony#424).
+
+### Fixed
+
+- Kimi timeout resumes now use durable tool calls from `wire.jsonl` instead of kill-truncated stdout (#746).
+- GitHub authentication failures now record a matched API reason without also appending the exit-code fallback. (#736).
+- The drill now mints its board fixtures and matches its label assertions under the box's own effective `LABEL_*` names, so a fleet whose `fleet.conf` renames one still drills (#735).
+- The drill's installed queue-label set now reads `fleet.conf` over the defaults, so the stray-ruling assertion grades against the names the engine uses (#735).
+- The drill compares an effective label name as data, never as a regular expression or a jq filter, so a name carrying `.`, `|` or `"` is matched exactly rather than accepting a near-match or failing to compile (#735).
+- The drill terminates `grep`'s option list before the effective queue-label set, so a name beginning with `-` is compared as data rather than parsed as options (#735).
+- The drill's box reads now strip only the line-ending carriage return the transport adds, so a name carrying one anywhere else is refused rather than silently repaired (#735).
+- Phase 2 now refuses builder and reviewer drills when the box and host use the same GitHub identity. (#729).
+- Builder drill rounds now create, resolve, and tear down the box identity's sandbox fork. (#727).
+- A tick refused by the lock names its holder: a previous run still going, with
+  its duration, or a lock left standing on a descriptor that run's children
+  inherited (#726).
+- A tick whose `.duty.lock.since` is corrupt now writes its evidence line
+  (#726).
+- The `resume` drill leg grades the pull request it drives: a resume session
+  bought by another claim in the same sandbox no longer reads as a pending head
+  resumed, or as a lane that failed to stop (#725).
+- A failing `resume` row prints the tick's resume roll-call, so the round's
+  record names the lane that dispatched (#725).
+- The terminal-breaker drill leg grades the lane fixture's state instead of the
+  label request's exit status: a fixture an earlier leg closed is reopened
+  before any tick fires, and the arming row reds — naming the state and labels
+  it read — when the re-read does not hold (#724).
+- The leg grades a tick only once it has confirmed the tick ran, against
+  `tick.sh`'s own evidence contract. A lock-skipped tick is re-fired within a
+  bound; one that wrote nothing, logged FAILED or left the log unreadable is
+  INCOMPLETE with the reason, never a FAIL (#724).
+- The lane is armed, cleared and disarmed with the box's own effective
+  `LABEL_ATTENTION`, resolved through `load_fleet_conf`, so a box whose
+  operator moved that name is drilled against the label its engine fetches
+  (#724).
+- Timed-out Claude sessions with transcript tool use now retain their one resume even when the final reply is absent. (#723).
+- The rehearsal's phase 2 no longer refuses an identity that carries an
+  `attention` demand in another repository: it records those demands as a
+  census row and runs, so the operator's own account is a supported drill
+  identity and a round needs no throwaway one (#714).
+- The census's window is the wake's own — the single unpaginated
+  `per_page=100` page of the assigned-issues endpoint `duty_attention` reads —
+  and it is taken after the sandbox demand is minted, since minting changes
+  which demands that page carries (#714).
+- The census asks for the box's own effective `attention` label rather than the
+  literal name, so an operator rename no longer leaves it reading an empty set
+  off a board that is full (#714).
+- The phase-2 evidence is read across a `duty.log` rotation: the census records
+  which generation it counted, so a round whose log moved reads the rotated
+  tail and the new file instead of nothing, and one whose generation is gone
+  stops rather than grading an absence (#714).
+- A `duty.log` the box cannot read now stops the round instead of passing for
+  an empty one: the reads that bound the phase-2 evidence carry their own
+  failures, so "nothing was written outside the sandbox" can no longer be
+  reported off a file nobody read (#714).
+- Installer rehearsals return borrowed boxes disarmed with their original repository registry restored (#712).
+- The real-fleet browser walk accepts prerelease engine stamps and skips fixture-only restart assertions. (#711).
+- A creds-free box's first tick now logs `cannot resolve own login` again
+  (#708).
+- The `auth: gh rejected us` and `auth: gh is working again` lines now reach
+  `duty.log` on the tick that produces them, instead of the value the tick
+  resolves its own login from (#708).
+- The repair `crew hire` and `crew status` print for an unconverged box now opens `box root` rather than `box shell` plus `sudo` (#700).
+- That repair now installs rig at the declared pin when the guest has none (#700).
+- `crew help reset` now describes the daily restart schedule and on-demand resets without advertising a removed weekly job (#688).
+- `crew status` reads the newest vitals record even when an older log segment contains binary data (#688).
+- Reviewer sizing guidance now accounts for clean worktree reclamation while retaining dirty-worktree capacity (#688).
+- `crew new` mints a box again on the box version crew's own floor requires:
+  a blank mint plus a `rig bootstrap <agent>-box`, replacing the
+  `--template <agent>-box` spelling box 0.10.0 retires (#679).
+- The guest tenant keeps the agent's own name — `claude`, `codex`, `grok`,
+  `kimi` — rather than silently becoming the blank seed's `dev` (#679).
+- `drill/rehearsal.sh` no longer dies at box creation on a current box host,
+  so the rehearsal can reach its assertions (#679).
+- `crew help`, `crew new`'s success response, `examples/fleet.roster` and
+  `shared/docs/single-role.md` described a retired `<agent>-box` box
+  template; all four now describe the blank mint and rig's `<agent>-box`
+  role (#679).
+- `crew new`'s response no longer says the vendor CLI is converging when rig
+  has already finished, and makes no rig claim at all on the clone path,
+  where no bootstrap ran (#679).
+- The platform report no longer reads `box: not found found`, and says the
+  guests could not be read rather than reporting an empty fleet when `jq`
+  is absent (#679).
+- Verdict submissions keep their byte-identical retry copy on the duty volume, so a full volatile temporary filesystem cannot discard a completed review (#672).
+- Reviewer sessions retry missing exact-head verdicts up to three times instead of suppressing live requests after a successful model turn (#671).
+- Builder checkouts now validate and cache their writable fork, repair stale remotes, and refuse dispatch when no unique head repository exists (#635).
+- Floor-only pull requests now run the shell suite, including its repo-wide
+  and cross-reader guards (#625).
+- `crew status` no longer reports a healthy box STUCK for spending time it
+  was dispatched to spend: the lock age is measured against the ceiling the
+  in-flight session declares, so the CLI and the floor grade one box alike
+  (#624).
+- The fleet god-view now flags usage-limited lanes with their cause and lane, and distinguishes terminal sessions from ordinary failures (#611).
+- Unit consoles now show collected operating-limit events and retention losses even when no alert channel is configured (#611).
+- The floor no longer reports a healthy box STUCK for spending time it was
+  dispatched to spend: the lock age is measured against the ceiling the
+  in-flight session declares, so a `build` entitled to 3600s is not alarmed
+  at minute 10 (#610).
+- Fleet probes read tick age and vitals past NUL bytes in `duty.log`, avoiding false SILENT boxes (#608).
+- Reviewer ticks reclaim finished review scratch while preserving dirty work and verdict records (#606).
+- Reviewer ticks reclaim finished review scratch without reading the PR's state (#606, #597).
+- A dirty review worktree is preserved by moving it to `kept-<name>-<head>` rather than left on the path the next review needs (#606).
+- Reviewer repo-wide checks now run from the detached PR checkout, excluding sibling worktrees and mutation fixtures. (#605).
+- Session records now distinguish kernel OOM kills from wall-clock timeouts (#600).
+- Productive memory-killed sessions resume with cause-aware guidance, while error-only logs start fresh (#600).
+- Reviewers cap local ShellCheck memory, never retry kernel-killed checks, and rely on same-head CI for repo-wide lint. (#598).
+- Review ticks reclaim detached worktrees left by ended sessions before dispatch, while preserving branch-holding builder worktrees (#597).
+- Fleet-floor test call logs now keep each concurrent box invocation in one atomic record (#563).
+- Reconstructed orphan session records now retain every observed field, using unknown markers when the original value cannot be recovered (#553).
+- A terminal the vendor did not cause is no longer cleared by a vendor probe
+  succeeding, so a box that kills its own sessions is stopped rather than
+  throttled to three dispatches every four ticks (#551).
+- A lane held by such a terminal clears on an observed session end instead —
+  a session that ran to its own `SESSION END`, whatever its outcome, which is
+  the evidence that the box survived it (#551).
+- A held lane is retried on a widening interval bounded by
+  `SESSION_TERMINAL_HOLD_MAX_TICKS`, so it is never tried every tick and never
+  left permanently dark (#551).
+- The breaker's trip alert fires on the transition alone, so a held lane's
+  trial dispatches no longer raise an alert pair per cycle (#551).
+- Operator-launched sessions now inherit the layered fleet and role configuration and use the longest applicable session timeout unless explicitly overridden (#537).
+- Reviewer sessions now use bounded PID or sentinel waits instead of self-matching process polls (#530).
+- Fleet-wide mention batches stay visible without becoming links to a repository named `fleet` (#528).
+- `crew upgrade` from an installed tree no longer ships `__pycache__/` directories into the payload (#517).
+- Duty logs name missing session-classifier hooks once per agent profile per boot (#501).
+- Claude quota-reset sessions now reach the terminal breaker (#501).
+- A pull request touching only `postmortems/`, `.box/README.md`, `shared/crontab.example`, `.github/workflows/labels-sweep.yml` or the release artifact hook now carries a scope label (#500).
+- Installer payloads now exclude ignored dependency trees and reject known-excluded paths before installation (#498).
+- The runbook's Phase 3 report step describes the target the round derives from
+  the ref it drilled, instead of routing findings to a long-merged pull
+  request (#497).
+- Drill records now enumerate every declared leg and explain each leg that did not execute. (#495).
+- Drill rounds distinguish disarmed-only agreement from a measured armed, ticking, clock-skewed comparison and run both without extra boxes (#494).
+- Drill rounds without an armed roster stay incomplete and retain their boxes for inspection (#494).
+- Rehearsal reuse now refuses dirty sandboxes, while every role removes only the exact fixtures its current run created, on both success and failure (#493).
+- The drill's exit footers name the pull request derived from the ref actually
+  drilled, instead of a hard-coded long-merged one (#492).
+- A drill round whose source names no pull request — a branch, a tag, a commit,
+  a local `--tree` — prints no report instruction rather than a stale one (#492).
+- Rehearsal rounds continue independent sections after a phase failure and report every section as passed, failed, or skipped-by in the summary (#491).
+- Role rehearsals now resolve a candidate ref once and drill the same commit in every box (#490).
+- The fleet-floor browser walk now checks byline overlap against one settled viewport frame at a time. (#489).
+- `crew hire` reads a box with a narrowed registry as narrowed, rather than as
+  a box about to be armed against the production registry (#488).
+- `crew hire` compares the registry a box carries against the fleet's through
+  the same reader on both sides, so a trailing space or a CRLF in either file
+  no longer reads as a narrowing and lets an off-roster box be armed against
+  the production registry (#51, #488).
+- A floor restart reads its own stop result before starting: a stop that failed
+  is reported as a failed restart and the start is not attempted, rather than a
+  box being started by a lever that never stopped it. A box that was already
+  stopped is started, not reported as a failed stop (#487).
+- `wake-silent` no longer sends its wake into a box whose `box exec` is wedged.
+  That box is named for a restart instead of costing the action a full timeout
+  to report a wake it could not deliver (#487).
+- Resume detection no longer loses a pull request whose comment thread grows
+  past 131,072 bytes: the thread reaches `jq` down a pipe rather than as one
+  argument, so the bound that applies is the one that scales (#479).
+- Every failure on that path now warns (#479).
+- A structural failure there — one that will not clear on its own, unlike a
+  transient `gh` error, which is still retried next tick — now reaches the
+  operator once per head instead of skipping the pull request forever (#479).
+- That escalation also leaves a comment on the pull request naming the head, so
+  the record survives an alert that was never delivered (#479).
+- A session killed with its box no longer leaves a `SESSION START` nothing
+  answers: the next tick emits the missing terminal with `outcome=ORPHANED`,
+  and with `rc=-` and `dur=-` rather than a figure it cannot know (#478).
+- A reconstructed terminal counts toward its kind's session breaker, on the
+  same counter an observed one feeds: three in a row trip that lane and it is
+  refused for the rest of the tick that trips it, until the next tick's CLI
+  probe succeeds and clears the breaker (#478).
+- Doctrine checkout warnings now report each frozen state once, include its age, and announce recovery without modifying session-owned Git state (#477).
+- Credential failures now report rejected GitHub credentials and API responses instead of blaming configured git authors (#476).
+- Git identity failures now name configured authors and the GitHub login in use (#476).
+- The session subshell is raised in the kernel's OOM victim scoring before the
+  CLI starts, so a box out of memory loses the session that is growing rather
+  than `cron`, `sshd` or the engine itself (#474).
+- The fleet floor's box probe lists `*.log` from the log directory rather than
+  everything in it, so a poll landing while a session runs no longer spends one
+  of its forty slots on that session's scratch file (#473).
+- `acted=` in `duty.log` reports `yes`, `no` or `unknown` on claude and grok boxes, where it was always `unknown` (#467).
+- Triage batches fresh mention threads from every repository into one capped session per tick (#466).
+- Builder signals exclude ready issues marked as operator-owned work. (#461).
+- Claims now stop before editing repositories where the `claimed` label is unavailable (#459).
+- Failed issue claims now preserve the ready queue state and report repair or withdrawal failures (#459).
+- The breaker drill reports profiles without `bot_session_terminal` as named INCOMPLETE skips instead of failures (#454).
+- A maintainer's `CHANGES_REQUESTED` now wakes the builder to a fix round,
+  once per block rather than forever (#452).
+- The handoff no longer refires under a standing human change request, so a
+  handed-off pull request stops bouncing back at the human with a fresh
+  review request and a fresh notification (#452).
+- A round answered with argument at an unchanged head still converges, so the
+  argument reaches the human (#452).
+
+### Removed
+
+- The `authored PR(s) outside repos.txt` warning (#728).
+
 ## 0.1.2 — 2026-08-10
 
 ### Added
