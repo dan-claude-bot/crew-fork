@@ -28,22 +28,23 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016  # single-quoted GraphQL/jq programs with $vars are intended
 
+# The selector is lib/jq/discussions.jq (#757 D8): a thread wakes triage when
+# its last word is not triage's own, or when triage's own last word carries a
+# `returns on <date>` that has arrived. Bodies and timestamps are fetched for
+# that; the old query read logins only and could not see a promise at all.
 _triage_discussion_items() {  # _triage_discussion_items REPO OWNER NAME
   local repo="$1" owner="$2" name="$3"
-  TR_ME="$ME" TR_R="$repo" gh api graphql -f owner="$owner" -f name="$name" -f query='
+  TR_ME="$ME" TR_R="$repo" TR_TODAY="$(date -u +%Y-%m-%d)" \
+    gh api graphql -f owner="$owner" -f name="$name" -f query='
     query($owner:String!,$name:String!){
       repository(owner:$owner,name:$name){
         discussions(first:50,states:OPEN){
           nodes{ number updatedAt
-            comments(first:50){ nodes{ author{ login }
-              replies(first:20){ nodes{ author{ login } } } } } }
+            comments(first:50){ nodes{ author{ login } body createdAt
+              replies(first:20){ nodes{ author{ login } body createdAt } } } } }
         }
       }
-    }' --jq '[.data.repository.discussions.nodes[]
-              | select( [ .comments.nodes[] | .author.login,
-                          .replies.nodes[].author.login ]
-                        | index(env.TR_ME) | not )
-              | "\(env.TR_R)#\(.number) \(.updatedAt)"] | .[]'
+    }' --jq "$(cat "$DUTY_DIR/lib/jq/discussions.jq")"
 }
 
 _triage_unblockable_items() {  # _triage_unblockable_items REPO BLOCKED_JSON NUMSTATES
@@ -341,7 +342,10 @@ duty_triage() {
   mapfile -t repos < <(read_repo_list "$REPOS_FILE")
 
   # (d) unread mentions — one notifications snapshot and one session for the
-  # whole tick. The session remains first, so every per-repo board poll below
+  # whole tick. A discussion's `author` and `comment` notifications count too
+  # (#757 D8): a human answering a thread triage opened arrives as `author`,
+  # not `mention`, and was dropped — five of ten non-mention rows on
+  # 2026-09-03 were exactly that shape. The session remains first, so every per-repo board poll below
   # observes changes made while answering a mention (#253).
   all_mentions='[]'
   repo_json="$(printf '%s\n' "${repos[@]}" | awk 'NF' | jq -R . | jq -cs .)"
@@ -351,7 +355,9 @@ duty_triage() {
      all_mentions="$(printf '%s\n' "$notification_pages" | jq -c -s --argjson repos "$repo_json" '
        (add // [])
        | [ .[]
-           | select((.reason == "mention" or .reason == "team_mention")
+           | select((.reason == "mention" or .reason == "team_mention"
+                     or ((.subject.type // "") == "Discussion"
+                         and (.reason == "author" or .reason == "comment")))
                     and (.repository.full_name as $repo | $repos | index($repo)))
            | {repo: .repository.full_name, thread: .id,
               subject: .subject.url, updated: .updated_at} ]

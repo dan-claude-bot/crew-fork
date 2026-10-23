@@ -903,7 +903,7 @@ fi
 t operator-filter-precedes-ready-board before "$r1"
 
 # The composing flag is configured beside the other cross-cutting names and
-# never enters either copy of the six-member queue set. The existing #358 set
+# never enters either copy of the five-member queue set. The existing #358 set
 # equality above is the behavioural half; these assertions pin the tempting
 # but wrong "seventh queue label" tidy-up.
 if grep -q '^LABEL_OPERATOR="operator"$' "$SHARED/conf/fleet.defaults.conf"; then
@@ -914,7 +914,7 @@ fi
 t operator-conf-defines-composing-label defined "$r1"
 op461_queue_count="$(sed -n '/^LABEL_READY=/,/^LABEL_NEEDS_TRIAGE=/p' \
   "$SHARED/conf/fleet.defaults.conf" | grep -c '^LABEL_[A-Z_]*=')"
-t operator-queue-set-stays-six 6 "$op461_queue_count"
+t operator-queue-set-stays-five 5 "$op461_queue_count"
 op461_queue_block="$(sed -n '/^LABEL_READY=/,/^LABEL_NEEDS_TRIAGE=/p' \
   "$SHARED/conf/fleet.defaults.conf")"
 if grep -q 'LABEL_OPERATOR' <<<"$op461_queue_block"; then
@@ -1273,5 +1273,57 @@ t triage503-paginated-board-still-takes-no-action 0 \
 # above cannot be satisfied by a shim that hands out page two unconditionally.
 if grep -q -e '-f after=TR-CURSOR-PAGE-2 ' "$TR_CALLS"; then r1=carried; else r1=DROPPED; fi
 t triage503-second-page-carries-the-cursor carried "$r1"
+
+# ── #757 D8 — the discussion return clock, and a human's reply wakes triage ──
+# Signal (c)'s selector used to drop every thread $ME had commented on, so
+# converging a discussion removed it from the wake set for good: an ask or an
+# escalate with `returns on <date>` was never read again. The selector is now
+# lib/jq/discussions.jq, driven here over a fixture board on three dates.
+TR_D8_FIX="$TRF/d8-discussions.json"
+cat >"$TR_D8_FIX" <<'JSON'
+{"data":{"repository":{"discussions":{"nodes":[
+ {"number":1,"updatedAt":"2026-10-01T00:00:00Z","comments":{"nodes":[]}},
+ {"number":2,"updatedAt":"2026-10-02T00:00:00Z","comments":{"nodes":[{"author":{"login":"me"},"body":"I will look","createdAt":"2026-10-01T01:00:00Z","replies":{"nodes":[{"author":{"login":"dan"},"body":"thanks, any news?","createdAt":"2026-10-02T00:00:00Z"}]}}]}},
+ {"number":3,"updatedAt":"2026-10-03T00:00:00Z","comments":{"nodes":[{"author":{"login":"me"},"body":"converged: declined.","createdAt":"2026-10-03T00:00:00Z","replies":{"nodes":[]}}]}},
+ {"number":4,"updatedAt":"2026-10-04T00:00:00Z","comments":{"nodes":[{"author":{"login":"me"},"body":"Asked the operator; returns on 2026-10-20.","createdAt":"2026-10-04T00:00:00Z","replies":{"nodes":[]}}]}},
+ {"number":5,"updatedAt":"2026-10-05T00:00:00Z","comments":{"nodes":[{"author":{"login":"me"},"body":"escalated; returns on 2026-12-01.","createdAt":"2026-10-05T00:00:00Z","replies":{"nodes":[]}}]}},
+ {"number":6,"updatedAt":"2026-10-06T00:00:00Z","comments":{"nodes":[{"author":{"login":"dan"},"body":"first","createdAt":"2026-10-01T00:00:00Z","replies":{"nodes":[]}},{"author":{"login":"me"},"body":"returns on 2026-10-09; then returns on 2026-10-22.","createdAt":"2026-10-06T00:00:00Z","replies":{"nodes":[]}}]}}
+]}}}}
+JSON
+d8_sel() { TR_ME=me TR_R=o/r TR_TODAY="$1" jq -r -f "$SHARED/lib/jq/discussions.jq" "$TR_D8_FIX" | paste -sd' ' -; }
+t d8-selector-on-2026-10-23 \
+  "o/r#1 2026-10-01T00:00:00Z o/r#2 2026-10-02T00:00:00Z o/r#4 2026-10-20T00:00:00Z o/r#6 2026-10-22T00:00:00Z" \
+  "$(d8_sel 2026-10-23)"
+t d8-a-thread-nobody-answered-wakes 1 "$(d8_sel 2026-10-23 | grep -o 'o/r#1 ' | wc -l | tr -d ' ')"
+t d8-a-humans-reply-wakes-even-after-mine 1 "$(d8_sel 2026-10-23 | grep -o 'o/r#2 ' | wc -l | tr -d ' ')"
+t d8-my-converged-thread-stays-silent 0 "$(d8_sel 2026-10-23 | grep -o 'o/r#3 ' | wc -l | tr -d ' ')"
+t d8-a-future-return-waits 0 "$(d8_sel 2026-10-23 | grep -o 'o/r#5 ' | wc -l | tr -d ' ')"
+t d8-the-return-arrives-the-day-it-says 1 "$(d8_sel 2026-10-20 | grep -o 'o/r#4 2026-10-20T00:00:00Z' | wc -l | tr -d ' ')"
+t d8-the-return-is-not-due-the-day-before 0 "$(d8_sel 2026-10-19 | grep -o 'o/r#4 ' | wc -l | tr -d ' ')"
+t d8-the-last-date-in-the-body-is-the-promise 0 "$(d8_sel 2026-10-21 | grep -o 'o/r#6 ' | wc -l | tr -d ' ')"
+t d8-the-last-date-in-the-body-arrives 1 "$(d8_sel 2026-10-22 | grep -o 'o/r#6 ' | wc -l | tr -d ' ')"
+# The ledger key moves with the clock: a due return carries the return date,
+# which is later than the thread's own updatedAt, so a thread the ledger saw at
+# its updatedAt is new again the day the promise falls due.
+t d8-a-due-return-advances-the-ledger-key 1 "$(d8_sel 2026-10-23 | grep -o 'o/r#4 2026-10-20T00:00:00Z' | wc -l | tr -d ' ')"
+t d8-the-engine-reads-the-selector-from-its-file 1 "$(grep -c -- '--jq "$(cat "$DUTY_DIR/lib/jq/discussions.jq")"' "$SHARED/lib/duty-triage.sh")"
+t d8-the-query-fetches-bodies-and-times 2 "$(grep -c 'author{ login } body createdAt' "$SHARED/lib/duty-triage.sh")"
+# The worse half: a human answering a thread triage opened arrives as a
+# notification with reason `author` (or `comment`), not `mention`, and was
+# dropped. On a Discussion those reasons wake the mention session; on an Issue
+# they still do not.
+TR_D8_DISC_AUTHOR='[{"id":"t8","reason":"author","updated_at":"2026-08-01T15:40:00Z","repository":{"full_name":"o/r"},"subject":{"url":"https://api/d","type":"Discussion"}}]'
+TR_D8_DISC_COMMENT='[{"id":"t9","reason":"comment","updated_at":"2026-08-01T15:41:00Z","repository":{"full_name":"o/r"},"subject":{"url":"https://api/d","type":"Discussion"}}]'
+TR_D8_ISSUE_AUTHOR='[{"id":"t10","reason":"author","updated_at":"2026-08-01T15:42:00Z","repository":{"full_name":"o/r"},"subject":{"url":"https://api/i","type":"Issue"}}]'
+tr_fix "$TR_D8_DISC_AUTHOR" '[]' '[]' '[]' '[]' '[]'
+tr_run 0
+t d8-discussion-author-notification-wakes-the-mention-session 1 "$(trc '^SESSION mention$')"
+tr_fix "$TR_D8_DISC_COMMENT" '[]' '[]' '[]' '[]' '[]'
+tr_run 0
+t d8-discussion-comment-notification-wakes-the-mention-session 1 "$(trc '^SESSION mention$')"
+tr_fix "$TR_D8_ISSUE_AUTHOR" '[]' '[]' '[]' '[]' '[]'
+tr_run 0
+t d8-issue-author-notification-stays-silent 0 "$(trc '^SESSION mention$')"
+unset -f d8_sel
 
 suite_finish
