@@ -10408,7 +10408,7 @@ CI_FLOOR_FN="$(sed -n '/^cmd_floor()/,/^}/p' "$CI_CREW")"
 case "$CI_FLOOR_FN" in *'fleet-floor/index.html'*'CREW_FLOOR_PORT='*'CREW_FLOOR_BIND='*'CREW_FLOOR_USER='*'CREW_FLOOR_PASS='*'CREW_FLOOR_INTERVAL='*'CREW_FLOOR_ROSTER='*'fleet-floor/server/floor.py'*) r1=bridged ;; *) r1=BROKEN ;; esac
 t cli-floor-server-contract bridged "$r1"
 CI_CONSOLE_VERBS='down drain floor hire init new pause profiles status up upgrade usage'
-CI_CONSOLE_PROSE_VERBS='and cut hangs makes on reads stopped would'
+CI_CONSOLE_PROSE_VERBS='and cut hangs makes on reads sources stopped would'
 CI_CONSOLE_CANDIDATES="$(grep -ohE 'crew [a-z][a-z-]*' \
   "$ROOT/fleet-floor/server/floor.py" "$ROOT"/fleet-floor/server/floor/*.py \
   "$ROOT/fleet-floor/src/app.js" \

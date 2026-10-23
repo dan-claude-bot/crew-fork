@@ -2401,6 +2401,86 @@ duty_builder() {
   done <<<"$duty_repos"
 }
 
+
+# --- The handoff note (#760) --------------------------------------------------
+#
+# The builder's own record of a claim is the pull request body's `## Worklog`
+# and `## Round log` (BUILDER.md): what was done, verified, and next. The
+# engine does not write it — the session does — but the engine READS it first
+# and keeps a copy: at every dispatch for a claim the sections are fetched,
+# saved to $DUTY_DIR/.handoff-<repo>-<num> (the probe ships it, the store
+# holds it, so a re-minted box and the host both have the last checkpoint),
+# and injected into the prompt ahead of the repository. After a session that
+# ran to completion the copy is refreshed — the checkpoint. A fetch that
+# fails falls back to the copy, never to nothing said.
+_handoff_file() { printf '%s/.handoff-%s-%s' "$DUTY_DIR" "${1//\//_}" "$2"; }
+
+# _handoff_sections BODY — the two sections, each to its next `## ` heading.
+_handoff_sections() {
+  awk '
+    /^## (Worklog|Round log)[[:space:]]*$/ { keep = 1; print; next }
+    /^## / { keep = 0 }
+    keep { print }
+  ' <<<"$1"
+}
+
+# _handoff_fetch REPO NUM — fetch, save, print the note (or the saved copy).
+_handoff_fetch() {
+  local repo="$1" num="$2" file body head note
+  file="$(_handoff_file "$repo" "$num")"
+  if body="$(gh pr view "$num" -R "$repo" --json body,headRefOid \
+      --jq '.headRefOid + "\n" + (.body // "")' 2>/dev/null)" && [ -n "$body" ]; then
+    head="${body%%$'\n'*}"
+    note="$(_handoff_sections "${body#*$'\n'}")"
+    { printf '# %s#%s head=%s at=%s\n' "$repo" "$num" "$head" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      printf '%s\n' "$note"; } >"$file.tmp" && mv -f "$file.tmp" "$file"
+  fi
+  [ -r "$file" ] || return 1
+  sed '1d' "$file"
+}
+
+# _handoff_block REPO NUMS — the prompt block for these pull requests.
+_handoff_block() {
+  local repo="$1" nums="$2" num note out=""
+  for num in $nums; do
+    case "$num" in ''|none|*[!0-9]*) continue ;; esac
+    note="$(_handoff_fetch "$repo" "$num" 2>/dev/null || true)"
+    [ -n "${note//[[:space:]]/}" ] || note="(no worklog yet — start one under \`## Worklog\` in the PR body)"
+    out="$out### $repo#$num
+$note
+
+"
+  done
+  [ -n "$out" ] || { printf 'none\n'; return 0; }
+  printf '%s' "$out"
+}
+
+# --- Parked waits (#760) -----------------------------------------------------
+#
+# park-until.sh leaves $DUTY_DIR/.wait-<repo>-<num> — `repo num head at` —
+# and ends the session. Every builder tick reads them: a wait whose checks
+# have concluded, or whose head has moved since (the wait is moot), is due:
+# the file is removed and the pull request joins this tick's resume set with
+# `why=wait#repo#num`. A wait still pending costs one API read and nothing
+# else. The host's tick reads the same files from the store while the box
+# sleeps (shared/lib/host/wake.sh), so a parked box is woken for it.
+_builder_waits_due() { # REPO — due pull request numbers, one per line
+  local repo="$1" f wrepo num head at rollup pending now_head
+  for f in "$DUTY_DIR/.wait-${repo//\//_}-"*; do
+    [ -f "$f" ] || continue
+    read -r wrepo num head at <"$f" || continue
+    [ "$wrepo" = "$repo" ] || continue
+    rollup="$(gh pr view "$num" -R "$repo" --json headRefOid,statusCheckRollup 2>/dev/null)" || continue
+    now_head="$(jq -r '.headRefOid // ""' <<<"$rollup")"
+    pending="$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length' <<<"$rollup")"
+    if [ "$pending" = 0 ] || { [ -n "$now_head" ] && [ "$now_head" != "$head" ]; }; then
+      rm -f "$f"
+      log "$repo#$num: parked wait is due (pending=$pending head=${now_head:0:7} parked-at=${head:0:7} since $at)"
+      printf '%s\n' "$num"
+    fi
+  done
+}
+
 _builder_repo() {
   local R="$1"
   local slug="${R//\//__}" owner="${R%%/*}" name="${R##*/}"
@@ -2409,6 +2489,12 @@ _builder_repo() {
   wt_rules="$(render_prompt fragment-wt-rules.txt WT_DIR="$TREES_DIR/$slug" ME="$ME" NAME="$name")"
   oneshot_rules="$(render_prompt fragment-oneshot-rules.txt BIN="$BIN_DIR")"
   operator_clause="$(_operator_build_prompt_clause "${LABEL_OPERATOR:-}")"
+  local wait_rules wait_nums wait_why=""
+  wait_rules="$(render_prompt fragment-wait-rules.txt BIN="$BIN_DIR" REPO="$R")"
+  # Parked waits that have concluded join this tick's resume set (#760).
+  wait_nums="$(_builder_waits_due "$R" | tr '\n' ' ')"
+  wait_nums="${wait_nums% }"
+  [ -z "$wait_nums" ] || wait_why="$(printf '%s\n' $wait_nums | sed "s|^|wait#$R#|" | paste -sd, -)"
 
   # panel_for_repo deliberately falls back to FLEET_BENCH when neither the
   # local clone nor the contents API yields a roster. Resolve this author-aware
@@ -2570,17 +2656,28 @@ _builder_repo() {
   _round_cap_census "$R" "$panel_json" "$resume_json"
   round_rules="$(render_prompt fragment-round-rules.txt TRIAGE="$FLEET_TRIAGE" BENCH="$FLEET_BENCH" MARK_ADDRESSING="$MARK_ADDRESSING" MARK_ANSWERED="$MARK_ANSWERED" ROUND_CAP="$ROUND_CAP_NAMED")"
 
+  if [ -n "$wait_nums" ]; then
+    draft_nums="$(printf '%s %s' "${draft_nums:-}" "$wait_nums" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | paste -sd' ' -)"
+  fi
   if [ -n "${draft_nums// /}" ] || [ -n "${orphan_nums// /}" ] || [ -n "${stranded_nums// /}" ]; then
     log "$R: resume duty (drafts: ${draft_nums:-none}; orphaned claims:${orphan_nums:-" none"}; unsignalled ready PRs: ${stranded_nums:-none}; of those, signals that missed the wire: ${near_miss_desc:-none}, green heads owed a signal: ${green_head_nums:-none}; drafts owed a flip: ${flip_owed_nums:-none})"
     ensure_main_clone "$R" "$dir" || return 0
     RUN_SESSION_RC=1
+    local handoff_block
+    handoff_block="$(render_prompt fragment-handoff.txt \
+      HANDOFF="$(_handoff_block "$R" "${draft_nums:-} ${stranded_nums:-}")")"
+    WAKE_REASON="${WAKE_REASON:-cron}${wait_why:+,$wait_why}" \
     run_session resume "$R" "$dir" "$TIMEOUT_RESUME" \
       "$(render_prompt resume.txt ME="$ME" REPO="$R" NAME="$name" \
         DRAFTS="${draft_nums:-none}" ORPHANS="${orphan_nums:-none}" \
         STRANDED="${stranded_nums:-none}" NEAR_MISS="${near_miss_desc:-none}" \
         GREEN_HEAD="${green_head_nums:-none}" FLIP_OWED="${flip_owed_nums:-none}" \
         MARK_RESUME="$MARK_RESUME" \
-        WT_RULES="$wt_rules" ROUND_RULES="$round_rules")"
+        WT_RULES="$wt_rules" ROUND_RULES="$round_rules" \
+        HANDOFF_BLOCK="$handoff_block" WAIT_RULES="$wait_rules")"
+    # The checkpoint: the copy the host and a re-minted box read is the
+    # session's own last word, refreshed only when it ran to completion.
+    [ "${RUN_SESSION_RC:-1}" -ne 0 ] || _handoff_block "$R" "${draft_nums:-} ${stranded_nums:-}" >/dev/null
     # Committed only on rc 0, exactly as .seen-build and .seen-ci-red are: a
     # crashed or timed-out session must re-dispatch next tick, never lose the
     # wake it never got to act on.
@@ -2700,11 +2797,14 @@ _builder_repo() {
         red_num="${red_key#*#}"; red_num="${red_num%@*}"
         log "$R#$red_num: check RED at head — launching ci-red session (${red_checks:-unknown})"
         ensure_main_clone "$R" "$dir" || continue
+        local red_handoff
+        red_handoff="$(render_prompt fragment-handoff.txt HANDOFF="$(_handoff_block "$R" "$red_num")")"
         RUN_SESSION_RC=1
         run_session ci-red "$R#$red_num" "$dir" "$TIMEOUT_CIRED" \
           "$(render_prompt ci-red.txt ME="$ME" REPO="$R" NUM="$red_num" \
             CHECKS="${red_checks:-unknown}" WT_RULES="$wt_rules" \
-            ROUND_RULES="$round_rules")"
+            ROUND_RULES="$round_rules" \
+            HANDOFF_BLOCK="$red_handoff" WAIT_RULES="$wait_rules")"
         if [ "${RUN_SESSION_RC:-1}" -eq 0 ]; then
           local settled_json
           settled_json="$(gh pr view "$red_num" -R "$R" \
@@ -2881,7 +2981,8 @@ _builder_repo() {
         DECLINE_MARK="$_DECLINE_MARK" DECLINE_REASONS="$_DECLINE_REASONS" \
         OPERATOR_CLAUSE="$operator_clause" \
         HEAD_CHECKS="$head_checks" \
-        WT_RULES="$wt_rules" ROUND_RULES="$round_rules" ONESHOT_RULES="$oneshot_rules")"
+        WT_RULES="$wt_rules" ROUND_RULES="$round_rules" ONESHOT_RULES="$oneshot_rules" \
+        WAIT_RULES="$wait_rules")"
     # Record what this session SAW, at the state it saw it in — but only if the
     # session actually ran to completion. A crash or timeout leaves the ids
     # uncommitted so the next tick retries: declined and never-got-there must

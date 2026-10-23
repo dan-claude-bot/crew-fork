@@ -89,6 +89,26 @@ t why-drops-the-vetoed-ones "attention#o/r#13" "$(wake_why "$(wake_veto alpha "$
 HT_BREAKER=""
 t why-is-empty-when-nothing-survives "" "$(wake_why "veto:ready#o/r#12:seen")"
 
+# ── #760 — a parked wait wakes the member when its checks conclude ─────────
+HT_STATES=""; HT_PENDING=0; HT_HEAD=h1
+wake_store() {
+  case "$1" in
+    states) [ -n "$HT_STATES" ] && printf '%s\n' "$HT_STATES" ;;
+    *) return 1 ;;
+  esac
+}
+wake_gh() { printf '{"headRefOid":"%s","statusCheckRollup":[%s]}\n' "$HT_HEAD" "$([ "$HT_PENDING" -gt 0 ] && printf '{"status":"IN_PROGRESS","conclusion":null}')"; }
+t wait-no-parks-no-reasons "" "$(wake_wait_reasons alpha)"
+HT_STATES=$'.wait-o_r-7\to/r 7 h1 2026-10-23T10:00:00Z'
+HT_PENDING=1
+t wait-a-pending-park-is-not-a-reason "" "$(wake_wait_reasons alpha)"
+HT_PENDING=0
+t wait-a-concluded-park-is-a-reason "wait#o/r#7 -" "$(wake_wait_reasons alpha)"
+HT_PENDING=1; HT_HEAD=h2
+t wait-a-moved-head-is-a-reason "wait#o/r#7 -" "$(wake_wait_reasons alpha)"
+HT_STATES=$'.seen-build\to/r#1 2026-10-23T00:00:00Z'
+t wait-other-state-files-are-not-parks "" "$(wake_wait_reasons alpha)"
+
 # ── crew tick, end to end: shims for box and gh, a real store ─────────────
 # shellcheck source=shared/lib/platform.sh
 source "$ROOT/shared/lib/platform.sh"
@@ -237,6 +257,34 @@ rm -f "$STATE/board.prs"; : >"$STATE/calls"
 capture tick
 t tick-an-unreadable-board-is-no-change 1 "$(grep -c 'o/r: board unreadable this tick — no change assumed' <<<"$OUT")"
 t tick-an-unreadable-board-starts-nothing 0 "$(calls 'start ')"
+
+# (7) a parked wait in the store wakes a stopped member when its checks conclude
+ht_board 'I 99 2026-10-23T10:00:00Z needs-triage -' '' ''
+{ printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
+  printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
+  printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
+  printf '::statefiles .identity .wait-o_r-7\n::filestart .identity\ndan-claude-bot\n::fileend\n'
+  printf '::filestart .wait-o_r-7\no/r 7 h1 2026-10-23T10:00:00Z\n::fileend\n'
+  printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
+} >"$STATE/alpha.record"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box alpha <"$STATE/alpha.record" >/dev/null
+t store-states-lists-the-park ".wait-o_r-7	o/r 7 h1 2026-10-23T10:00:00Z" "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" states --box alpha --prefix .wait-)"
+cat >"$SHIM/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "issue list") cat "$HT_STATE/board.issues" 2>/dev/null || exit 1 ;;
+  "pr list")    cat "$HT_STATE/board.prs" 2>/dev/null || exit 1 ;;
+  "api graphql") cat "$HT_STATE/board.discs" 2>/dev/null || exit 1 ;;
+  "pr view")    printf '{"headRefOid":"h1","statusCheckRollup":[%s]}\n' "${HT_PR_VIEW:-}" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$SHIM/gh"
+echo stopped >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
+rm -f "$CONF/store/wake"/alpha.*; : >"$STATE/calls"
+HT_PR_VIEW='' capture tick
+t tick-a-concluded-park-starts-the-member 1 "$(grep -c 'alpha: starting why=wait#o/r#7' <<<"$OUT")"
+t tick-the-wake-names-the-park "wake alpha wait#o/r#7" "$(grep '^wake alpha' "$STATE/calls" | head -1)"
 
 # --- wiring pins ----------------------------------------------------------------
 t crontab-example-runs-the-host-tick 1 "$(grep -c 'crew tick' "$ROOT/shared/host-crontab.example")"

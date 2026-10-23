@@ -2271,7 +2271,8 @@ declare -A doctrine_builder_occurrences=(
   [fragment-graph-changed.txt]=0 [fragment-round-count.txt]=0
   [fragment-round-rules.txt]=3 [fragment-signals.txt]=0
   [fragment-unblockable.txt]=0
-  [fragment-wt-rules.txt]=0 [hygiene.txt]=0 [mention.txt]=0
+  [fragment-wt-rules.txt]=0 [fragment-handoff.txt]=0 [fragment-wait-rules.txt]=0
+  [hygiene.txt]=0 [mention.txt]=0
   [rebase.txt]=0 [resume.txt]=4 [review.txt]=0 [triage.txt]=0
 )
 for doctrine_prompt in "$SHARED"/prompts/*.txt; do
@@ -4099,7 +4100,9 @@ t ci-red-rollup-fetched fetched "$r1"
 # defect one layer down: parsing a field you already have is not fetching it.
 # Only a `--json` argument list can name a field to fetch, so that is what is
 # counted, and the explanation above can say `statusCheckRollup` freely.
-t ci-red-rollup-fetched-on-three-listings 3 \
+# ...plus the parked-wait read since #760: _builder_waits_due names the rollup
+# in its own --json list, one per parked wait, which is the fourth listing.
+t ci-red-rollup-fetched-on-three-listings 4 \
   "$(grep -c -- '--json [^ ]*statusCheckRollup' "$BMOD")"
 # The resume half of that count adds no CALL — the listing was already being
 # fetched, and #384 put two more fields on it. A `gh` call inside either new
@@ -6390,5 +6393,75 @@ d7_fin="$(sed -n '/^_handoff_finalize() {/,/^}/p' "$SHARED/lib/duty-builder.sh")
 t d7-finalize-posts-the-mark-after-the-label 1 \
   "$(awk '/add-label "\$LABEL_NEEDS_HUMAN"/{l=NR} /post-once.sh/{p=NR} END{print (l && p && p>l) ? 1 : 0}' <<<"$d7_fin")"
 unset -f d7_pr d7_mark
+
+# ── #760 — the handoff note, the parked waits, the wait idiom ─────────────
+H760="$TMP/h760"; mkdir -p "$H760"
+h760_body='Closes #12.
+
+## Worklog
+- [x] wrote the thing
+- [ ] run the suite
+
+## Round log
+### Current state
+round 1 answered at abc1234
+
+## Something else
+not part of the note'
+t handoff-sections-keep-worklog-and-round-log "## Worklog|- [x] wrote the thing|- [ ] run the suite||## Round log|### Current state|round 1 answered at abc1234|" \
+  "$(_handoff_sections "$h760_body" | paste -sd'|' -)"
+t handoff-sections-of-a-body-without-them-are-empty "" "$(_handoff_sections 'just prose')"
+h760_run() {  # h760_run <gh-mode> <fn> <args...> — the fn's stdout, under a gh that answers one way
+  (
+    DUTY_DIR="$H760"
+    case "$1" in
+      ok)   gh() { printf '%s\n' 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$h760_body"; } ;;
+      fail) gh() { return 1; } ;;
+      pending) gh() { printf '{"headRefOid":"h1","statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":null}]}\n'; } ;;
+      green)   gh() { printf '{"headRefOid":"h1","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}\n'; } ;;
+      moved)   gh() { printf '{"headRefOid":"h2","statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":null}]}\n'; } ;;
+    esac
+    log() { :; }
+    shift; "$@"
+  )
+}
+h760_note="$(h760_run ok _handoff_fetch o/r 12)"
+t handoff-fetch-prints-the-note 1 "$(grep -c '^- \[ \] run the suite$' <<<"$h760_note")"
+t handoff-fetch-saves-a-copy-with-its-header 1 "$(grep -c '^# o/r#12 head=deadbeef' "$H760/.handoff-o_r-12")"
+t handoff-a-failed-fetch-falls-back-to-the-copy 1 "$(h760_run fail _handoff_fetch o/r 12 | grep -c '^- \[x\] wrote the thing$')"
+rm -f "$H760/.handoff-o_r-12"
+t handoff-a-failed-fetch-with-no-copy-is-1 1 "$(h760_run fail _handoff_fetch o/r 12 >/dev/null; echo $?)"
+t handoff-block-names-each-pr 1 "$(h760_run ok _handoff_block o/r "12 none" | grep -c '^### o/r#12$')"
+t handoff-block-of-nothing-is-none none "$(h760_run ok _handoff_block o/r "none")"
+printf 'o/r 7 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-o_r-7"
+t waits-a-pending-wait-is-not-due "" "$(h760_run pending _builder_waits_due o/r)"
+t waits-a-pending-wait-keeps-its-file yes "$([ -e "$H760/.wait-o_r-7" ] && echo yes || echo no)"
+t waits-a-concluded-wait-is-due 7 "$(h760_run green _builder_waits_due o/r)"
+t waits-a-due-wait-is-consumed no "$([ -e "$H760/.wait-o_r-7" ] && echo yes || echo no)"
+printf 'o/r 7 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-o_r-7"
+t waits-a-moved-head-makes-the-wait-moot-and-due 7 "$(h760_run moved _builder_waits_due o/r)"
+printf 'x/y 9 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-x_y-9"
+t waits-another-repos-park-is-not-this-repos "" "$(h760_run green _builder_waits_due o/r)"
+# The helpers a session calls.
+h760_gh="$TMP/h760-bin"; mkdir -p "$h760_gh"
+printf '#!/usr/bin/env bash\ncase "$*" in *statusCheckRollup*) printf "%%s\\n" "$H760_ROLLUP" ;; *headRefOid*) printf "h1\\n" ;; esac\n' >"$h760_gh/gh"; chmod +x "$h760_gh/gh"
+t wait-for-usage-is-2 2 "$(PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" nothing >/dev/null 2>&1; echo $?)"
+t wait-for-settled-checks-return-0 0 "$(H760_ROLLUP=0 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 1 >/dev/null 2>&1; echo $?)"
+t wait-for-pending-checks-run-out-the-budget 1 "$(H760_ROLLUP=2 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 0 >/dev/null 2>&1; echo $?)"
+t wait-for-a-gone-pid-returns-0 0 "$(bash "$SHARED/bin/wait-for.sh" pid 999999999 --timeout 5 >/dev/null 2>&1; echo $?)"
+t park-until-writes-the-park "o/r 7 h1" "$(DUTY_DIR="$H760" PATH="$h760_gh:$PATH" bash "$SHARED/bin/park-until.sh" checks o/r 7 >/dev/null; cut -d' ' -f1-3 "$H760/.wait-o_r-7")"
+t park-until-tells-the-session-to-end 1 "$(DUTY_DIR="$H760" PATH="$h760_gh:$PATH" bash "$SHARED/bin/park-until.sh" checks o/r 7 | grep -c 'End your session now')"
+t park-until-usage-is-2 2 "$(bash "$SHARED/bin/park-until.sh" checks >/dev/null 2>&1; echo $?)"
+# The prompts carry the contract, and every dispatch renders it.
+t prompts-resume-reads-the-handoff-first 1 "$(grep -c '{{HANDOFF_BLOCK}}' "$SHARED/prompts/resume.txt")"
+t prompts-ci-red-reads-the-handoff-first 1 "$(grep -c '{{HANDOFF_BLOCK}}' "$SHARED/prompts/ci-red.txt")"
+t prompts-every-lane-carries-the-wait-rules "build ci-red resume review" \
+  "$(grep -l '{{WAIT_RULES}}' "$SHARED"/prompts/{build,ci-red,resume,review}.txt | xargs -n1 basename | sed 's/\.txt$//' | paste -sd' ' -)"
+t prompts-the-wait-fragment-names-the-helpers 2 "$(grep -o -E '(wait-for|park-until)\.sh' "$SHARED/prompts/fragment-wait-rules.txt" | sort -u | wc -l | tr -d ' ')"
+t engine-renders-the-wait-rules-on-every-builder-lane 3 "$(grep -c 'WAIT_RULES="$wait_rules"' "$SHARED/lib/duty-builder.sh")"
+t engine-renders-the-wait-rules-for-the-reviewer 1 "$(grep -c 'fragment-wait-rules.txt' "$SHARED/lib/duty-review.sh")"
+t engine-passes-the-wait-reason-into-the-resume-session 1 "$(grep -c 'WAKE_REASON="${WAKE_REASON:-cron}${wait_why:+,$wait_why}"' "$SHARED/lib/duty-builder.sh")"
+t engine-checkpoints-the-note-after-a-complete-session 1 "$(grep -c -- '-ne 0 \] || _handoff_block "$R"' "$SHARED/lib/duty-builder.sh")"
+rm -rf "$H760" "$h760_gh"; unset -f h760_run
 
 suite_finish

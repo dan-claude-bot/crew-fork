@@ -779,11 +779,14 @@ $key $updated"
       fi
     done
     expected_heads="${expected_heads# }"; ready_prs="${ready_prs# }"
+    local wait_rules
+    wait_rules="$(render_prompt fragment-wait-rules.txt BIN="$BIN_DIR" REPO="$SR")"
     prompt="$(render_prompt review.txt ME="$ME" REPO="$SR" PRS="$prs" \
       BIN="$BIN_DIR" DUTY="$DUTY_DIR" REVIEW_WT_PARENT="$TREES_DIR/$slug" \
       MARK_REVIEWING="$MARK_REVIEWING" \
       HEAD_CHECKS="$check_evidence" \
       PARK_RESULTS="${park_evidence:--}" \
+      WAIT_RULES="$wait_rules" \
       ONESHOT_RULES="$(render_prompt fragment-oneshot-rules.txt BIN="$BIN_DIR")")"
     RUN_SESSION_RC=1
     RUN_SESSION_LOG=""

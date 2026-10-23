@@ -964,6 +964,20 @@ def main(argv=None):
             return 1
         sys.stdout.write(row[0] if row[0].endswith("\n") or row[0] == "" else row[0] + "\n")
         return 0
+    if verb == "states":
+        box, prefix = _arg(argv, "--box"), _arg(argv, "--prefix", "")
+        if not box:
+            raise SystemExit("store.py states: --box is required")
+        conn = connect()
+        try:
+            rows = conn.execute("SELECT name, content FROM state_files WHERE box=? ORDER BY name",
+                                (box,)).fetchall()
+        finally:
+            conn.close()
+        rows = [(n, c) for n, c in rows if n.startswith(prefix)]
+        for name, content in rows:
+            print("%s\t%s" % (name, (content or "").split("\n")[0]))
+        return 0 if rows else 1
     if verb == "ledger":
         box, name = _arg(argv, "--box"), _arg(argv, "--name")
         if not box:
@@ -1003,7 +1017,7 @@ def main(argv=None):
         return 0
     raise SystemExit("usage: store.py init | ingest --box NAME | fail --box NAME | "
                      "status --box NAME [--brief] | usage [--since W] [--by G] | path | "
-                     "state --box NAME --name FILE | ledger --box NAME [--name FILE] | "
+                     "state --box NAME --name FILE | states --box NAME [--prefix P] | ledger --box NAME [--name FILE] | "
                      "sessions-count --box NAME [--kind K] [--since W]")
 
 

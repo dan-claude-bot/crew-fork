@@ -4062,6 +4062,7 @@ tick_run() { # DRY_RUN
       [ "${DIGEST[$repo]}" != "$prev" ] || continue
       reasons="$reasons$(wake_reasons "$roles" "$login" "$repo" "${ROWS[$repo]}")"$'\n'
     done
+    reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
     reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
     surviving="$(tick_veto "$name" "$roles" "$reasons")"
     while IFS= read -r line; do

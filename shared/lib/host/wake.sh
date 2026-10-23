@@ -131,6 +131,23 @@ wake_veto() {
   done <<<"$reasons"
 }
 
+# wake_wait_reasons BOX — parked waits the member left (park-until.sh), read
+# from the store while the box sleeps: one whose checks have concluded is a
+# reason of its own, `wait#repo#num`, never ledger-vetoed (the member parked
+# it on purpose). A wait still pending costs one read and no wake.
+wake_wait_reasons() {
+  local box="$1" name content wrepo num head _at pending
+  while IFS=$'\t' read -r name content; do
+    case "$name" in .wait-*) ;; *) continue ;; esac
+    read -r wrepo num head _at <<<"$content"
+    [ -n "$wrepo" ] && [ -n "$num" ] || continue
+    pending="$(wake_gh pr view "$num" -R "$wrepo" --json headRefOid,statusCheckRollup 2>/dev/null \
+      | jq -r --arg head "$head" 'if (.headRefOid // "") != $head then 0 else ([.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length) end' 2>/dev/null)"
+    [ "$pending" = 0 ] && echo "wait#$wrepo#$num -"
+  done < <(wake_store states --box "$box" --prefix .wait- 2>/dev/null)
+  return 0
+}
+
 # wake_why REASONS — the `why=` token the box's SESSION END lines will carry:
 # the surviving reasons' names, comma-joined, one token.
 wake_why() {
