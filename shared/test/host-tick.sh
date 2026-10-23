@@ -93,7 +93,8 @@ t why-is-empty-when-nothing-survives "" "$(wake_why "veto:ready#o/r#12:seen")"
 # shellcheck source=shared/lib/platform.sh
 source "$ROOT/shared/lib/platform.sh"
 export CREW_PLATFORM_BOX_MIN
-export XDG_CONFIG_HOME="$TMP/xdg-empty"; mkdir -p "$XDG_CONFIG_HOME"
+export XDG_CONFIG_HOME="$TMP/xdg-empty"
+mkdir -p "$XDG_CONFIG_HOME"
 CLI="$ROOT/cli/crew"
 CONF="$TMP/conf"; SHIM="$TMP/shim"; STATE="$TMP/state"; HT_STATE="$STATE"; export HT_STATE
 mkdir -p "$CONF" "$SHIM" "$STATE"

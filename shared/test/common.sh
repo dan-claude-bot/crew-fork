@@ -10407,7 +10407,7 @@ CI_CREW="$ROOT/cli/crew"
 CI_FLOOR_FN="$(sed -n '/^cmd_floor()/,/^}/p' "$CI_CREW")"
 case "$CI_FLOOR_FN" in *'fleet-floor/index.html'*'CREW_FLOOR_PORT='*'CREW_FLOOR_BIND='*'CREW_FLOOR_USER='*'CREW_FLOOR_PASS='*'CREW_FLOOR_INTERVAL='*'CREW_FLOOR_ROSTER='*'fleet-floor/server/floor.py'*) r1=bridged ;; *) r1=BROKEN ;; esac
 t cli-floor-server-contract bridged "$r1"
-CI_CONSOLE_VERBS='down drain floor hire init new profiles status up upgrade usage'
+CI_CONSOLE_VERBS='down drain floor hire init new pause profiles status up upgrade usage'
 CI_CONSOLE_PROSE_VERBS='and cut hangs makes on reads stopped would'
 CI_CONSOLE_CANDIDATES="$(grep -ohE 'crew [a-z][a-z-]*' \
   "$ROOT/fleet-floor/server/floor.py" "$ROOT"/fleet-floor/server/floor/*.py \
@@ -11075,8 +11075,8 @@ t duty-exports-the-reason-to-sessions 1 "$(grep -c '^export WAKE_REASON$' "$W759
 t duty-publishes-the-identity 1 "$(grep -c 'printf .%s.n. "$ME" >"$DUTY_DIR/.identity"' "$W759_DUTY")"
 # The idle counter is written on every exit path: as many accountings as
 # `duty run end` lines, and each immediately before one.
-t duty-idle-accounts-on-every-exit "$(grep -c '^log "duty run end"$' "$W759_DUTY")" \
-  "$(grep -c -B1 '^log "duty run end"$' "$W759_DUTY" | true; grep -B1 '^log "duty run end"$' "$W759_DUTY" | grep -c '^duty_idle_account$')"
+t duty-idle-accounts-on-every-exit "$(grep -cE '^[[:space:]]*log "duty run end"$' "$W759_DUTY")" \
+  "$(grep -B1 -E '^[[:space:]]*log "duty run end"$' "$W759_DUTY" | grep -cE '^[[:space:]]*duty_idle_account$')"
 W759_HOME="$TMP/idle-home"; mkdir -p "$W759_HOME"
 eval "$(sed -n '/^duty_idle_account() {/,/^}/p' "$W759_DUTY")"
 ( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; duty_idle_account; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"

@@ -1497,11 +1497,11 @@ t budget-off-says-nothing-about-budgets 0 \
 budget_off_golden() {
   cat <<'GOLDEN'
 SESSION START kind=build key=fixture/test1 timeout=5s log=<slog>-build-fixture_test1.log holder=<holder> sid=unknown
-SESSION END kind=build key=fixture/test1 rc=0 dur=<n>s outcome=ok acted=yes reply_tail=ZmluYWwgcmVwbHk= log=17 left=0 tier=default oom=0 sid=unknown
+SESSION END kind=build key=fixture/test1 rc=0 dur=<n>s outcome=ok acted=yes reply_tail=ZmluYWwgcmVwbHk= log=17 left=0 tier=default oom=0 why=cron sid=unknown
 SESSION START kind=build key=fixture/test2 timeout=5s log=<slog>-build-fixture_test2.log holder=<holder> sid=unknown
-SESSION END kind=build key=fixture/test2 rc=0 dur=<n>s outcome=ok acted=yes reply_tail=ZmluYWwgcmVwbHk= log=17 left=0 tier=default oom=0 sid=unknown
+SESSION END kind=build key=fixture/test2 rc=0 dur=<n>s outcome=ok acted=yes reply_tail=ZmluYWwgcmVwbHk= log=17 left=0 tier=default oom=0 why=cron sid=unknown
 SESSION START kind=build key=fixture/test3 timeout=5s log=<slog>-build-fixture_test3.log holder=<holder> sid=unknown
-SESSION END kind=build key=fixture/test3 rc=0 dur=<n>s outcome=ok acted=yes reply_tail=ZmluYWwgcmVwbHk= log=17 left=0 tier=default oom=0 sid=unknown
+SESSION END kind=build key=fixture/test3 rc=0 dur=<n>s outcome=ok acted=yes reply_tail=ZmluYWwgcmVwbHk= log=17 left=0 tier=default oom=0 why=cron sid=unknown
 GOLDEN
 }
 # The last line is the state-file/alert tally the case above reads; everything
@@ -2589,7 +2589,7 @@ w759_end="$(WAKE_REASON='ready#o/r#12,attention#o/r#3' run_session build fixture
 t why-the-host-reason-is-on-the-line 1 "$(grep -c ' why=ready#o/r#12,attention#o/r#3 ' <<<"$w759_end")"
 t why-sid-stays-last 1 "$(grep -cE ' why=[^ ]+ sid=[^ ]+$' <<<"$w759_end")"
 t why-the-session-stamps-the-tick 1 "$([ -e "$DUTY_DIR/.tick-acted" ] && echo 1 || echo 0)"
-w759_end="$(env -u WAKE_REASON bash -c 'cd "'"$PWD"'"; source "$SHARED/lib/common.sh"; BOT_CLI_CMD=(bash -c "printf \"exec\\nfinal reply\\n\""); bot_session_acted() { grep -qx exec "$1"; }; run_session build fixture/why2 "'"$W759_WORK"'" 5 prompt' 2>/dev/null | tail -1)"
+w759_end="$( (unset WAKE_REASON; run_session build fixture/why2 "$W759_WORK" 5 prompt) | tail -1)"
 t why-cron-when-nothing-was-written 1 "$(grep -c ' why=cron ' <<<"$w759_end")"
 w759_end="$(WAKE_REASON='two words; and $punct' run_session build fixture/why3 "$W759_WORK" 5 prompt | tail -1)"
 t why-is-one-sanitised-token 1 "$(grep -c ' why=two_words__and__punct ' <<<"$w759_end")"
@@ -2601,7 +2601,7 @@ w759_tier() {  # w759_tier <MODEL_BUILD value> [BOT_CLI_TIER_CHEAP value]
     BOT_CLI_CMD=(vendor -p)
     # shellcheck disable=SC2317  # the profile hook, reached through _session_cli_cmd
     bot_cli_model_cmd() { BOT_CLI_MODEL_CMD=(vendor --model "$1" -p); }
-    _session_cli_cmd build 2>/dev/null; printf '%s|%s' "$_SESSION_TIER" "${_SESSION_CLI_CMD[*]}" )
+    _session_cli_cmd build >/dev/null 2>&1; printf '%s|%s' "$_SESSION_TIER" "${_SESSION_CLI_CMD[*]}" )
 }
 t tier-cheap-resolves-through-the-profile "haiku|vendor --model haiku -p" "$(w759_tier cheap haiku)"
 t tier-an-undefined-alias-stays-on-the-default "default|vendor -p" "$(w759_tier cheap)"
@@ -2615,5 +2615,58 @@ t budgets-ship-on "" "$w759_zero"
 t repair-lanes-ship-on-the-cheap-tier "MODEL_CI_RED=cheap MODEL_HYGIENE=cheap MODEL_REBASE=cheap" \
   "$(grep -hE '^MODEL_(REBASE|CI_RED|HYGIENE)=' "$SHARED"/conf/roles/*.conf | sort | tr '\n' ' ' | sed 's/ $//')"
 t hygiene-sweeps-daily 1 "$(grep -c '^HYGIENE_INTERVAL=86400$' "$SHARED/conf/roles/triage.conf")"
+
+# ── #760 — resume by default: an ok session is continued by the next dispatch ──
+# The kill-resume above answers a wall-clock kill once per head; this answers
+# the ordinary case — a session that ended ok and a next dispatch on the same
+# kind and key — by resuming the recorded id, so the next session starts from
+# where the last one stopped instead of re-reading the world.
+cont_stub() { printf '%s/.session-continue.build.%s' "$TMP/sid-$1" "$2"; }
+c1="$(sid_run cont fixture/cont 5 reply both)"
+CONT_SID="$(sid_argv_flag "$c1" --session-id)"
+t cont-first-dispatch-is-pinned-not-resumed "" "$(sid_argv_flag "$c1" --resume)"
+t cont-first-dispatch-minted-an-id uuid "$(sid_shape "$CONT_SID")"
+t cont-an-ok-session-writes-the-continue-stub present \
+  "$([ -s "$(cont_stub cont fixture_cont)" ] && printf present || printf MISSING)"
+t cont-the-stub-carries-the-id "$CONT_SID" "$(sid_stub_field "$(cont_stub cont fixture_cont)" sid)"
+c2="$(sid_run cont fixture/cont 5 reply both)"
+t cont-the-next-dispatch-resumes-the-recorded-id "$CONT_SID" "$(sid_argv_flag "$c2" --resume)"
+t cont-a-resumed-dispatch-is-not-pinned "" "$(sid_argv_flag "$c2" --session-id)"
+cont_starts="$(grep 'SESSION START' "$TMP/sid-cont/records" | sed -n 's/.* sid=\([^ ]*\).*/\1/p')"
+t cont-both-records-carry-one-id "$CONT_SID $CONT_SID" "$(printf '%s' "$cont_starts" | sed -n 1,2p | paste -sd' ' -)"
+t cont-the-try-counts-the-chain 1 "$(sid_stub_field "$(cont_stub cont fixture_cont)" try)"
+c3="$(sid_run cont fixture/elsewhere 5 reply both)"
+t cont-another-key-is-another-chain "" "$(sid_argv_flag "$c3" --resume)"
+# A failure breaks the chain: the next dispatch is fresh, not a resume of a
+# session that failed, and the stub is gone.
+sid_run cont fixture/cont 5 fail both >/dev/null
+t cont-a-failed-session-forgets-the-chain gone \
+  "$([ -e "$(cont_stub cont fixture_cont)" ] && printf present || printf gone)"
+c4="$(sid_run cont fixture/cont 5 reply both)"
+t cont-after-a-failure-the-dispatch-is-fresh "" "$(sid_argv_flag "$c4" --resume)"
+# The cap: a chain at SESSION_CONTINUE_MAX_TRIES starts over.
+SESSION_CONTINUE_MAX_TRIES=1
+c5="$(sid_run cont fixture/cont 5 reply both)"
+t cont-the-first-continuation-is-within-the-cap present "$([ -n "$(sid_argv_flag "$c5" --resume)" ] && printf present || printf MISSING)"
+c6="$(sid_run cont fixture/cont 5 reply both)"
+t cont-past-the-cap-the-dispatch-is-fresh "" "$(sid_argv_flag "$c6" --resume)"
+SESSION_CONTINUE_MAX_TRIES=12
+# A profile that cannot resume gets a fresh pinned session every time.
+sid_run contpin fixture/pin 5 reply pin-only >/dev/null
+c7="$(sid_run contpin fixture/pin 5 reply pin-only)"
+t cont-a-profile-without-resume-stays-fresh "" "$(sid_argv_flag "$c7" --resume)"
+# A transcript the profile says is gone starts fresh and clears the stub —
+# read straight off the plan, with the hook answering no.
+cont_plan_verdict="$(
+  DUTY_DIR="$TMP/sid-contplan"; mkdir -p "$DUTY_DIR"
+  printf 'sid=01a06ef6-ca2a-7fd0-a487-25913257471d\ntry=0\n' >"$DUTY_DIR/.session-continue.build.k"
+  bot_cli_resume_args() { BOT_CLI_RESUME_ARGS=(--resume "$1"); }
+  bot_session_transcript_present() { return 1; }
+  _SESSION_RESUMED=no
+  _session_continue_plan build k "$DUTY_DIR"
+  printf '%s %s' "$_SESSION_RESUMED" "$([ -e "$DUTY_DIR/.session-continue.build.k" ] && printf present || printf gone)"
+)"
+t cont-a-missing-transcript-starts-fresh-and-clears-the-stub "no gone" "$cont_plan_verdict"
+unset -f cont_stub
 
 suite_finish

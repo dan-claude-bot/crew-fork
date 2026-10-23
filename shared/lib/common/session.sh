@@ -283,6 +283,14 @@ _session_log_bytes() {
 # incident where raising it is worst. A second resume, if it is ever wanted, is
 # a deliberate change with its own evidence — not a config edit.
 SESSION_RESUME_MAX_TRIES=1
+# Continuation (#760): a session that ended `ok` is resumed by the NEXT
+# dispatch of the same kind and key — the vendor session continues, so the
+# next session starts from where the last one stopped instead of re-reading
+# the world. Bounded by SESSION_CONTINUE_MAX_TRIES consecutive continuations
+# (the vendor's own compaction carries a long chain; the cap is what stops a
+# chain nobody meant), and broken by any non-ok outcome, which hands the
+# decision to the kill-resume above.
+SESSION_CONTINUE_MAX_TRIES="${SESSION_CONTINUE_MAX_TRIES:-12}"
 
 # Set by `_session_resume_plan` when the next dispatch continues a session.
 # The outcome is carried in the stub rather than rediscovered from duty.log,
@@ -393,6 +401,62 @@ _session_resume_state() {
   local kind="$1" key="$2"
   printf '%s/.session-resume.%s.%s' \
     "$DUTY_DIR" "${kind//[^[:alnum:]._-]/_}" "${key//[^[:alnum:]._-]/_}"
+}
+
+# _session_continue_state KIND KEY — the continuation stub (#760): `sid=` and
+# `try=`, written after an ok session, read by the next dispatch of the same
+# kind and key. Beside the kill-resume stub, same slugging, different name.
+_session_continue_state() {
+  local kind="$1" key="$2"
+  printf '%s/.session-continue.%s.%s' \
+    "$DUTY_DIR" "${kind//[^[:alnum:]._-]/_}" "${key//[^[:alnum:]._-]/_}"
+}
+
+# _session_continue_record KIND KEY RC VERDICT — after an ok session with a
+# valid id, record it for the next dispatch; after anything else, forget the
+# chain (the kill-resume stub, if any, decides the next dispatch).
+_session_continue_record() {
+  local kind="$1" key="$2" rc="$3" verdict="$4" state sid try=0
+  state="$(_session_continue_state "$kind" "$key")"
+  if [ "$rc" -ne 0 ] || [ "$verdict" != ok ]; then
+    rm -f "$state" 2>/dev/null || true
+    return 0
+  fi
+  sid="$_SESSION_SID"
+  [ "$sid" != unknown ] || sid="$_SESSION_OBSERVED_SID"
+  _session_sid_valid "$sid" || { rm -f "$state" 2>/dev/null || true; return 0; }
+  [ "$_SESSION_RESUME_OUTCOME" = continue ] && try="$_SESSION_TRY"
+  printf 'sid=%s\ntry=%s\n' "$sid" "$try" >"$state.tmp" && mv -f "$state.tmp" "$state"
+}
+
+# _session_continue_plan KIND KEY — the continuation half of the resume plan:
+# called only when no kill-resume stub spoke. Resumes the recorded id when the
+# chain is under its cap, the profile can resume at all, and — when the
+# profile can say — the transcript is still on disk.
+_session_continue_plan() {
+  local kind="$1" key="$2" dir="$3" state sid="" try="" field value
+  state="$(_session_continue_state "$kind" "$key")"
+  [ -r "$state" ] || return 0
+  while IFS='=' read -r field value; do
+    case "$field" in sid) sid="$value" ;; try) try="$value" ;; esac
+  done <"$state"
+  _session_sid_valid "$sid" || { rm -f "$state"; return 0; }
+  case "$try" in ''|*[!0-9]*) try=0 ;; esac
+  if [ "$try" -ge "${SESSION_CONTINUE_MAX_TRIES:-12}" ]; then
+    rm -f "$state"; return 0
+  fi
+  if ! declare -F bot_cli_resume_cmd >/dev/null 2>&1 \
+      && ! declare -F bot_cli_resume_args >/dev/null 2>&1; then
+    return 0
+  fi
+  if declare -F bot_session_transcript_present >/dev/null 2>&1 \
+      && ! bot_session_transcript_present "$sid" "$dir"; then
+    rm -f "$state"; return 0
+  fi
+  _SESSION_SID="$sid"
+  _SESSION_RESUMED=yes
+  _SESSION_TRY=$((try + 1))
+  _SESSION_RESUME_OUTCOME=continue
 }
 
 # _session_resume_read FILE KIND KEY — the stub's fields, validated, as `k=v`
@@ -525,7 +589,10 @@ _session_resume_plan() {
   state="$(_session_resume_state "$kind" "$key")"
   fields="$(_session_resume_read "$state" "$kind" "$key")"
   rm -f "$state" 2>/dev/null || true
-  [ -n "$fields" ] || return 0
+  if [ -z "$fields" ]; then
+    _session_continue_plan "$kind" "$key" "$dir"
+    return 0
+  fi
   while IFS='=' read -r field value; do
     case "$field" in
       sid) sid="$value" ;; head) head="$value" ;; try) try="$value" ;;
@@ -997,6 +1064,7 @@ $prompt"
   # and that record can never disagree about what the session left behind.
   _session_resume_record "$kind" "$key" "$dir" "$rc" "$tmo" \
     "$log_bytes" "$survivor_count" "$verdict" "$acted" "$slog"
+  _session_continue_record "$kind" "$key" "$rc" "$verdict"
   _session_terminal_record "$kind" "$terminal" "$acted" "$slog"
   # The rolling counter is written alongside the line that carries the same
   # duration, so the budget and the log can never disagree about what a
