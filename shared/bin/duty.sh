@@ -243,6 +243,16 @@ if has_role triage; then
   fi
 fi
 
+# The release cut (#762): triage-only, every tick, decided in shell against
+# the main clone and the board; a session is bought only for a head that is
+# green, quiet, fragment-bearing and not yet cut, and it stops at the pull
+# request. Nothing to do when RELEASE_TRACKS is empty, which is what ships.
+if has_role triage; then
+  # shellcheck source=../lib/duty-release.sh disable=SC1091
+  source "$DUTY_DIR/lib/duty-release.sh"
+  duty_release
+fi
+
 # The reaper: EVERY role, self-scheduling on its own stamp file, inside this
 # tick's lock (#457). Not under `has_role triage` and not beside the hygiene
 # clock above: a builder box accretes at least as fast as the triage box the

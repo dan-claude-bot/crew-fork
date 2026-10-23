@@ -4108,6 +4108,7 @@ tick_run() { # DRY_RUN
       reasons="$reasons$(wake_reasons "$roles" "$login" "$repo" "${ROWS[$repo]}")"$'\n'
     done
     reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
+    reasons="$reasons$(wake_release_reasons "$name")"$'\n'
     reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
     surviving="$(tick_veto "$name" "$roles" "$reasons")"
     while IFS= read -r line; do
@@ -4250,7 +4251,8 @@ cmd_status() {
     # Observed peak memory (#761): the figure a role's BOX_MEMORY is sized by,
     # from the store's sessions, beside what the box was minted with.
     local peak_row
-    if peak_row="$(store_py peaks --box "$b" --since 7d 2>/dev/null | head -1)" && [ -n "$peak_row" ]; then
+    # A read never creates the store (cli-store pins it): no file, no line.
+    if [ -f "$(store_file)" ] && peak_row="$(store_py peaks --box "$b" --since 7d 2>/dev/null | head -1)" && [ -n "$peak_row" ]; then
       read -r _ peak_kib peak_n <<<"$peak_row"
       case "$peak_kib" in -|'') echo "peak memory: no session reported one in 7d" ;;
         *) echo "peak memory: $((peak_kib / 1024)) MiB over $peak_n session(s) in 7d (store) — minted with $(box_memory_of "$b")" ;; esac

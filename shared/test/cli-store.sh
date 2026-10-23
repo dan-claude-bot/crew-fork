@@ -219,8 +219,10 @@ OUT="$(cd "$TMP" && env -u CREW_CONFIG_DIR CS_STATE="$STATE" CS_RECORD="$RECORD"
 t cli-store-drain-refuses-under-the-examples-fallback 1 "$(grep -c 'refuses' <<<"$OUT")"
 t cli-store-drain-refuses-under-the-examples-fallback-rc 1 "$RC"
 
-# --- the exec budget: the CLI's one exec site is still the only one -----------------------
-t cli-store-no-new-box-exec-site 3 \
+# --- the exec budget: the CLI's exec sites are still the known ones -----------------------
+# Four since #761: the drain, the two the reset already had, and the memory
+# write-back that reset_restore_memory makes (`box exec … base64 -d`).
+t cli-store-no-new-box-exec-site 4 \
   "$(grep -vE '^[[:space:]]*#' "$CLI" | sed -e :a -e '/\\$/N; s/\\\n//; ta' | grep -cE 'box exec "')"
 
 suite_finish

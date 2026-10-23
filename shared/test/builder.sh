@@ -2262,7 +2262,8 @@ assert_doctrine_quote "$RG_PROMPT" 'under Claiming:' \
 # fragment-unblockable.txt,
 # fragment-wt-rules.txt,
 # hygiene.txt, mention.txt,
-# rebase.txt, review.txt, and triage.txt contain no direct occurrence.
+# rebase.txt, release.txt, review.txt, and triage.txt contain no direct
+# occurrence.
 # fragment-round-count.txt is sizing evidence read by TRIAGE, so it cites no
 # builder doctrine slot even though its subject is the builder's round cap.
 declare -A doctrine_builder_occurrences=(
@@ -2274,7 +2275,7 @@ declare -A doctrine_builder_occurrences=(
   [fragment-unblockable.txt]=0
   [fragment-wt-rules.txt]=0 [fragment-handoff.txt]=0 [fragment-wait-rules.txt]=0
   [hygiene.txt]=0 [mention.txt]=0
-  [rebase.txt]=0 [resume.txt]=4 [review.txt]=0 [triage.txt]=0
+  [rebase.txt]=0 [release.txt]=0 [resume.txt]=4 [review.txt]=0 [triage.txt]=0
 )
 for doctrine_prompt in "$SHARED"/prompts/*.txt; do
   doctrine_prompt_name="$(basename "$doctrine_prompt")"
@@ -5824,13 +5825,19 @@ t roundcap-census-performs-no-act-of-the-cut 0 "$RC_MUTATIONS"
 # The match runs off a here-string and never off a pipe: a `| grep -q` takes the
 # pipeline's status from grep under pipefail, and #449's guard reds on writing
 # the shape at all.
-RC_ENGINE_CODE="$(engine_lib_sources | xargs grep -hEv '^[[:space:]]*#')"
+# duty-release.sh is carved out by name (#762): the one `gh pr close` it
+# carries withdraws the engine's OWN release cut when main moves past it,
+# which is not the round-cap cut and is pinned on its own below — a carve-out
+# this guard cannot see is the only way to keep it a guard.
+RC_ENGINE_CODE="$(engine_lib_sources | grep -v '/duty-release\.sh$' | xargs grep -hEv '^[[:space:]]*#')"
 if grep -Eq 'gh pr (create|close|reopen)|closePullRequest' <<<"$RC_ENGINE_CODE"; then
   r1=ENGINE-CUTS
 else
   r1=session-cuts
 fi
 t roundcap-engine-opens-and-closes-no-pr session-cuts "$r1"
+t release-module-closes-only-its-own-cut 1 "$(grep -Ev '^[[:space:]]*#' "$SHARED/lib/duty-release.sh" | grep -cE 'gh pr (create|close|reopen)|closePullRequest')"
+t release-module-withdrawal-is-in-the-settle-step 1 "$(awk '/^_release_settle_cut\(\) \{/{f=1} f && /gh pr close "\$num" -R "\$repo" --delete-branch/{c++} /^}/{f=0} END{print c+0}' "$SHARED/lib/duty-release.sh")"
 # Said once per (PR, round count), not once per tick: a PR sits at the cap until
 # the builder cuts it, and #167's rule is that a line repeating forever is
 # wallpaper. The second census over the same state must add no log line.
@@ -6119,14 +6126,15 @@ rc_names roundcap-instruction-names-the-converged-carve-out \
   'THE CUT IS FOR A ROUND THAT CLOSED WITH WORK STILL OWED' \
   'it converges and goes to the human to merge' \
   'If the approvals are STALE because you have since pushed, the cut is owed again'
-# The carve-out is crew's reading of a collision between two unconditional
-# doctrine rules, not doctrine's own, and triage ruled that the citation "should
-# ride wherever this reading is stated in the build". This is one of the two
-# places it is stated; round-cap.jq's header is the other. Pinned so an edit
-# cannot drop the one link that says the reading is contingent and where it
-# would be overturned (#566 round 2, @claude-bot-andresmgsl).
-rc_names roundcap-instruction-cites-the-doctrine-collision \
-  "THAT CARVE-OUT IS CREW'S READING AND IT IS CITED" \
+# The carve-out was crew's reading of a collision between two unconditional
+# doctrine rules until ceremony 0.7.11 ruled it the same way ("A fifth round
+# that passes does not cut at its close"; a push after the human's return
+# fires the cut). The instruction now cites the ruling and keeps the link to
+# the discussion that carried it there, in both places the reading is stated
+# — here and round-cap.jq's header (#566 round 2, #762).
+rc_names roundcap-instruction-cites-the-doctrine-ruling \
+  "THIS IS DOCTRINE'S OWN RULING SINCE CEREMONY 0.7.11" \
+  'a push after the human returns it fires the cut' \
   'heavy-duty/ceremony#517'
 
 # --- #503: the same count, read against the issue and as a distribution -----

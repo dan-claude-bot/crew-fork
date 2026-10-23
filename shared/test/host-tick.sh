@@ -109,6 +109,17 @@ t wait-a-moved-head-is-a-reason "wait#o/r#7 -" "$(wake_wait_reasons alpha)"
 HT_STATES=$'.seen-build\to/r#1 2026-10-23T00:00:00Z'
 t wait-other-state-files-are-not-parks "" "$(wake_wait_reasons alpha)"
 
+# ── #762 — a deferred cut wakes the member when main's quiet window is due ──
+t release-no-deferral-no-reasons "" "$(wake_release_reasons alpha)"
+HT_STATES=".release-due-o_r	o/r $(( $(date +%s) + 600 ))"
+t release-a-cut-not-yet-due-is-not-a-reason "" "$(wake_release_reasons alpha)"
+HT_STATES=".release-due-o_r	o/r $(( $(date +%s) - 1 ))"
+t release-a-due-cut-is-a-reason "release#o/r -" "$(wake_release_reasons alpha)"
+HT_STATES=$'.release-due-o_r\to/r soon'
+t release-an-unreadable-due-time-is-not-a-reason "" "$(wake_release_reasons alpha)"
+HT_STATES=$'.release-cut-o_r\t91 release/x 0123abc'
+t release-the-cut-record-is-not-a-deferral "" "$(wake_release_reasons alpha)"
+
 # ── crew tick, end to end: shims for box and gh, a real store ─────────────
 # shellcheck source=shared/lib/platform.sh
 source "$ROOT/shared/lib/platform.sh"

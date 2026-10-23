@@ -140,11 +140,29 @@ wake_wait_reasons() {
   while IFS=$'\t' read -r name content; do
     case "$name" in .wait-*) ;; *) continue ;; esac
     read -r wrepo num head _at <<<"$content"
-    [ -n "$wrepo" ] && [ -n "$num" ] || continue
+    { [ -n "$wrepo" ] && [ -n "$num" ]; } || continue
     pending="$(wake_gh pr view "$num" -R "$wrepo" --json headRefOid,statusCheckRollup 2>/dev/null \
       | jq -r --arg head "$head" 'if (.headRefOid // "") != $head then 0 else ([.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length) end' 2>/dev/null)"
     [ "$pending" = 0 ] && echo "wait#$wrepo#$num -"
   done < <(wake_store states --box "$box" --prefix .wait- 2>/dev/null)
+  return 0
+}
+
+# wake_release_reasons BOX — a cut the member deferred for main to go quiet
+# (duty-release.sh writes `.release-due-<slug>` as `repo <epoch>`), read from
+# the store while the box sleeps: due is a reason of its own, `release#repo`,
+# never ledger-vetoed (the member deferred it on purpose). Not yet due costs
+# nothing and wakes nothing.
+wake_release_reasons() {
+  local box="$1" name content rrepo due now
+  now="$(date +%s)"
+  while IFS=$'\t' read -r name content; do
+    case "$name" in .release-due-*) ;; *) continue ;; esac
+    read -r rrepo due <<<"$content"
+    { [ -n "$rrepo" ] && [ -n "$due" ]; } || continue
+    case "$due" in *[!0-9]*|'') continue ;; esac
+    [ "$now" -ge "$due" ] && echo "release#$rrepo -"
+  done < <(wake_store states --box "$box" --prefix .release-due- 2>/dev/null)
   return 0
 }
 
