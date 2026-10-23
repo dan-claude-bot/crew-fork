@@ -170,6 +170,17 @@ d=json.load(sys.stdin)
 u=[x for x in d['units'] if x['box']=='$1']
 print(json.dumps(u[0]) if u else '{}')"; }
 uf()     { unit "$1" | python3 -c "import json,sys;u=json.load(sys.stdin);print($2)" 2>/dev/null; }
+# ufg BOX EXPR — like uf, with `g` bound to the snapshot's own `generated`
+# epoch: a reading that is "on the host timeline" is on the timeline of the
+# poll that produced it, not of whatever wall clock the assertion runs under
+# (a slower poll — the store's full pull, a loaded runner — made the old
+# `time.time()` comparison stale by the time units.sh reached it, #758).
+ufg()    { body GET /api/fleet | python3 -c "
+import json,sys,datetime
+d=json.load(sys.stdin)
+u=[x for x in d['units'] if x['box']=='$1'][0]
+g=datetime.datetime.strptime(d['generated'],'%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=datetime.timezone.utc).timestamp()
+print($2)" 2>/dev/null; }
 
 echo "== collector"
 CREW_FLOOR_PASS="$PASSWD" CREW_FLOOR_USER="$USER" CREW_FLOOR_PORT="$PORT" \
