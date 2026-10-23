@@ -63,19 +63,9 @@ rm -f "$DUTY_DIR/.wake-reason"
 [ -n "$WAKE_REASON" ] || WAKE_REASON=cron
 export WAKE_REASON
 rm -f "$DUTY_DIR/.tick-acted"
-# idle_ticks_account — the host's stop-on-idle reads $DUTY_DIR/.idle-ticks: the
-# number of consecutive ticks that bought no session, reset by the first tick
-# that does (run_session stamps .tick-acted). Written on every exit path.
-idle_ticks_account() {
-  local n
-  if [ -e "$DUTY_DIR/.tick-acted" ]; then
-    printf '0\n' >"$DUTY_DIR/.idle-ticks"
-  else
-    n="$(cat "$DUTY_DIR/.idle-ticks" 2>/dev/null || echo 0)"
-    case "$n" in ''|*[!0-9]*) n=0 ;; esac
-    printf '%s\n' "$((n + 1))" >"$DUTY_DIR/.idle-ticks"
-  fi
-}
+# idle_ticks_account (shared/lib/common/session.sh, beside the .tick-acted
+# stamp it reads) is called on every exit path below, right after the
+# `duty run end` line.
 mkdir -p "$WORK_DIR" "$TREES_DIR" "$LOG_DIR"
 # shellcheck source=../lib/duty-review.sh disable=SC1091
 source "$DUTY_DIR/lib/duty-review.sh"
@@ -164,7 +154,7 @@ check_vendor_credential
 if [ -z "$ME" ]; then
   warn "cannot resolve own login (gh auth dead?) — nothing to do this tick"
   log "duty run end"
-idle_ticks_account
+  idle_ticks_account
   exit 0
 fi
 
@@ -188,7 +178,7 @@ if ! converge_git_identity "$ME"; then
     credential)
       note_auth_failure gh "$GIT_IDENTITY_FAILURE_EVIDENCE"
       log "duty run end"
-idle_ticks_account
+      idle_ticks_account
       exit 0
       ;;
   esac
@@ -200,7 +190,7 @@ idle_ticks_account
     echo "$boot_id" >"$DUTY_DIR/.identity-alerted"
   fi
   log "duty run end"
-idle_ticks_account
+  idle_ticks_account
   exit 0
 fi
 

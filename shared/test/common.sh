@@ -11079,7 +11079,7 @@ t duty-publishes-the-identity 1 "$(grep -c 'printf .%s.n. "$ME" >"$DUTY_DIR/.ide
 t duty-idle-accounts-on-every-exit "$(grep -cE '^[[:space:]]*log "duty run end"$' "$W759_DUTY")" \
   "$(grep -A1 -E '^[[:space:]]*log "duty run end"$' "$W759_DUTY" | grep -cE '^[[:space:]]*idle_ticks_account$')"
 W759_HOME="$TMP/idle-home"; mkdir -p "$W759_HOME"
-eval "$(sed -n '/^idle_ticks_account() {/,/^}/p' "$W759_DUTY")"
+eval "$(sed -n '/^idle_ticks_account() {/,/^}/p' "$SHARED/lib/common/session.sh")"
 ( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; idle_ticks_account; idle_ticks_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
 t duty-idle-ticks-count-up 2 "$(cat "$TMP/idle-out")"
 ( DUTY_DIR="$W759_HOME"; : >"$DUTY_DIR/.tick-acted"; idle_ticks_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"

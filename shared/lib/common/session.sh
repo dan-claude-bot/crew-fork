@@ -1709,3 +1709,21 @@ session_mem_hit() {
   esac
   printf '%s' "$v"
 }
+
+# idle_ticks_account — the host's stop-on-idle reads $DUTY_DIR/.idle-ticks: the
+# number of consecutive ticks that bought no session, reset by the first tick
+# that does (run_session stamps .tick-acted above). duty.sh calls it on every
+# exit path, right after its `duty run end` line (#759). It lives here and
+# not in duty.sh because the first-tick fixture runs duty.sh's identity block
+# with only this library sourced, and the accounting is on that block's
+# exit paths too.
+idle_ticks_account() {
+  local n
+  if [ -e "$DUTY_DIR/.tick-acted" ]; then
+    printf '0\n' >"$DUTY_DIR/.idle-ticks"
+  else
+    n="$(cat "$DUTY_DIR/.idle-ticks" 2>/dev/null || echo 0)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s\n' "$((n + 1))" >"$DUTY_DIR/.idle-ticks"
+  fi
+}
