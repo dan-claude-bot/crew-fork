@@ -3772,8 +3772,9 @@ reset_restore_memory() {
     [ -f "$f" ] || continue
     base="${f##*/}"
     case "$base" in duty.log|.duty.lock*|.identity|.idle-ticks) continue ;; esac
-    base64 -w0 "$f" | box exec "$name" -- bash -lc "mkdir -p ~/duty && base64 -d > ~/duty/'$base'" 2>/dev/null \
-      && count=$((count + 1))
+    # Through bxput: the one stdin-shipping exec site the floor's suite
+    # already knows, atomic on the box side (stage, then mv).
+    bxput "$name" "$f" "duty/$base" 2>/dev/null && count=$((count + 1))
   done
   rm -rf "$dir"
   echo "  $name: memory restored from the store — $count file(s)"

@@ -254,8 +254,11 @@ case "$cmd" in
     elif [[ "$script" == *'df -Pk'* ]]; then
       printf 'free-probe %s\n' "$name" >>"$calls"
       printf '1200\n'
-    elif [[ "$script" == *'base64 -d > ~/duty/'* ]]; then
-      printf 'memory %s %s\n' "$name" "$(printf '%s' "$script" | sed -n "s|.*base64 -d > ~/duty/'\([^']*\)'.*|\1|p")" >>"$calls"
+    elif [[ "$script" == *'destination="$HOME/duty/'* ]]; then
+      # The memory write-back rides bxput (#761): the file arrives on stdin
+      # and the remote script names its destination under ~/duty.
+      cat >/dev/null
+      printf 'memory %s %s\n' "$name" "$(printf '%s' "$script" | sed -n 's|.*destination="\$HOME/duty/\([^"]*\)".*|\1|p' | head -1)" >>"$calls"
       cat >/dev/null
     elif [[ "$script" == *'crontab -l'* ]]; then
       exit 1
