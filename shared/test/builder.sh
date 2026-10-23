@@ -225,8 +225,10 @@ mk_pr() {  # head mergeable labels requests reviews
       reviewRequests:{nodes:($reqs|map({requestedReviewer:{login:.}}))},
       latestOpinionatedReviews:{nodes:$revs}}}}}'
 }
+CJ_ME="builder-me"
+CJ_MARK="🤝 handed off at head"   # MARK_HANDOFF, the wire string (fleet.defaults.conf)
 cj() {  # cj [signal-json] [panel-json] [human]
-  jq -r --argjson panel "${2:-$PANEL}" --arg needs_human state:needs-human \
+  jq -r --argjson panel "${2:-$PANEL}" --arg me "$CJ_ME" --arg mark_handoff "$CJ_MARK" \
     --arg human "${3-$CJ_HUMAN}" --argjson signal "${1:-$CJ_NO_SIG}" -f "$CJQ"
 }
 
@@ -5944,7 +5946,7 @@ rc_flow() (  # cap-payload pr-payload
   rc_signal="$(printf '%s' "$RC_PR" | jq -c --arg me "$ME" --arg mark "$MARK_ANSWERED" \
     -f "$RC_DUTY/lib/jq/answered-head.jq")"
   rc_conv="$(printf '%s' "$RC_PR" | jq -r --argjson panel '["rev-a","rev-b"]' \
-    --arg needs_human "$LABEL_NEEDS_HUMAN" --arg human "" --argjson signal "$rc_signal" \
+    --arg me "$ME" --arg mark_handoff "${MARK_HANDOFF:-🤝 handed off at head}" --arg human "" --argjson signal "$rc_signal" \
     -f "$RC_DUTY/lib/jq/converged.jq")"
   printf 'named=[%s] at_cap=%s requested=[%s] converged=%s' \
     "$ROUND_CAP_NAMED" "$rc_cap" "$(paste -sd, "$RC_LOG")" "$rc_conv"
@@ -6327,5 +6329,66 @@ rk_census "$(rk_payload 'Closes #503' 4)" "$RC_LISTING" >/dev/null
 RK_ACTIONS="$(grep -Ec '^gh .*(mutation|issue edit|pr edit|pr create|pr close|--add-label|--remove-label|-X PATCH|-X POST|-X PUT|-X DELETE)' \
   "$TMP/round-count-census" || true)"
 t roundcount-census-takes-no-automatic-action 0 "$RK_ACTIONS"
+
+# ── #535 — the handoff refire guard is the engine's own mark, never a label ──
+# converged.jq used to read state:needs-human as "already handed off"; the
+# reconciler owns that label and takes it off for reasons of its own, and each
+# removal re-armed the wake at an unchanged head (135 label events in 6h19m on
+# crew#516). The guard now reads the builder's own `MARK_HANDOFF <head>` line
+# in a comment by $me, whole first line, and nothing else.
+d7_pr() {  # d7_pr <head> <mergeable> <comments-json> [labels-json]
+  jq -n --arg head "$1" --arg m "$2" --argjson comments "$3" --argjson labels "${4:-[]}" \
+    --argjson revs "${REVS_OK//$H/$1}" \
+    '{data:{repository:{pullRequest:{
+      headRefOid:$head, mergeable:$m,
+      labels:{nodes:($labels|map({name:.}))},
+      reviewRequests:{nodes:[]},
+      comments:{nodes:$comments},
+      latestOpinionatedReviews:{nodes:$revs}}}}}'
+}
+D7_H1="1111111111111111111111111111111111111111"
+D7_H2="2222222222222222222222222222222222222222"
+d7_mark() { jq -n --arg a "$1" --arg b "$2" '[{author:{login:$a},body:$b}]'; }   # d7_mark <login> <body>
+t d7-converged-without-mark-hands-off true "$(d7_pr "$D7_H1" MERGEABLE '[]' | cj)"
+t d7-my-mark-at-head-is-handed-off handed-off \
+  "$(d7_pr "$D7_H1" MERGEABLE "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1"$'\n\nEvery panel verdict approves')" | cj)"
+# THE DEFECT: the label is not the guard in either direction.
+t d7-mark-survives-label-removal handed-off \
+  "$(d7_pr "$D7_H1" MERGEABLE "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1")" '[]' | cj)"
+t d7-label-alone-is-not-the-guard true \
+  "$(d7_pr "$D7_H1" MERGEABLE '[]' '["state:needs-human"]' | cj)"
+# A new head re-arms; nobody else's mark, and no prose mention, is the mark.
+t d7-mark-at-an-old-head-rearms true \
+  "$(d7_pr "$D7_H2" MERGEABLE "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1")" | cj)"
+t d7-another-login-mark-is-not-mine true \
+  "$(d7_pr "$D7_H1" MERGEABLE "$(d7_mark rev-a "$CJ_MARK $D7_H1")" | cj)"
+t d7-mark-in-prose-is-not-the-mark true \
+  "$(d7_pr "$D7_H1" MERGEABLE "$(d7_mark "$CJ_ME" "as noted, $CJ_MARK $D7_H1 earlier")" | cj)"
+t d7-mark-with-a-tail-is-not-the-mark true \
+  "$(d7_pr "$D7_H1" MERGEABLE "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1 (again)")" | cj)"
+# The guard answers only where "true" would have: unknown mergeability still
+# defers, and a human block still wins.
+t d7-mark-under-unknown-still-defers defer-unknown \
+  "$(d7_pr "$D7_H1" UNKNOWN "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1")" | cj)"
+d7_blocked="$(d7_pr "$D7_H1" MERGEABLE "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1")" \
+  | jq --arg h "$CJ_HUMAN" --arg head "$D7_H1" '.data.repository.pullRequest.latestOpinionatedReviews.nodes += [{author:{login:$h},state:"CHANGES_REQUESTED",submittedAt:"2026-08-11T10:00:00Z",commit:{oid:$head}}]')"
+t d7-mark-under-a-human-block-is-still-false false "$(printf '%s' "$d7_blocked" | cj)"
+# The flood: the same converged head over ten ticks is suppressed on every one.
+d7_flood=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  d7_flood="$d7_flood $(d7_pr "$D7_H1" MERGEABLE "$(d7_mark "$CJ_ME" "$CJ_MARK $D7_H1")" | cj)"
+done
+t d7-ten-ticks-at-one-head-are-all-suppressed 10 "$(grep -o 'handed-off' <<<"$d7_flood" | wc -l | tr -d ' ')"
+# The engine's side: the mark is passed, the label is not, the suppression is
+# logged, and _handoff_finalize posts the mark LAST so a crash retries whole.
+# shellcheck disable=SC2016  # the engine's own text, $ included
+t d7-engine-passes-the-mark-to-converged 1 \
+  "$(grep -A2 -- '--argjson panel "\$panel_json"' "$SHARED/lib/duty-builder.sh" | grep -c -- '--arg mark_handoff "\$MARK_HANDOFF"')"
+t d7-engine-no-longer-passes-the-label 0 "$(grep -c -- '--arg needs_human' "$SHARED/lib/duty-builder.sh" "$CJQ" | awk -F: '{s+=$2} END{print s}')"
+t d7-engine-logs-the-suppressed-refire 1 "$(grep -c 'refire suppressed (#535)' "$SHARED/lib/duty-builder.sh")"
+d7_fin="$(sed -n '/^_handoff_finalize() {/,/^}/p' "$SHARED/lib/duty-builder.sh")"
+t d7-finalize-posts-the-mark-after-the-label 1 \
+  "$(awk '/add-label "\$LABEL_NEEDS_HUMAN"/{l=NR} /post-once.sh/{p=NR} END{print (l && p && p>l) ? 1 : 0}' <<<"$d7_fin")"
+unset -f d7_pr d7_mark
 
 suite_finish
