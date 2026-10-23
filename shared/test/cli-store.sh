@@ -135,7 +135,7 @@ t cli-store-usage-bad-group-is-an-invocation-fault 2 "$RC"
 CS_CONF="$CONF_EMPTY" capture up
 t cli-store-up-with-nothing-to-do-exits-0 0 "$RC"
 t cli-store-up-creates-the-store yes "$([ -f "$CONF_EMPTY/store/fleet.sqlite" ] && echo yes || echo no)"
-t cli-store-up-store-has-a-schema-version 1 "$(q "$CONF_EMPTY/store/fleet.sqlite" "SELECT value FROM meta WHERE key='schema_version'")"
+t cli-store-up-store-has-a-schema-version 2 "$(q "$CONF_EMPTY/store/fleet.sqlite" "SELECT value FROM meta WHERE key='schema_version'")"
 CS_CONF="$CONF_EMPTY" capture up --dry-run
 t cli-store-up-dry-run-exits-0 0 "$RC"
 rm -rf "$CONF_EMPTY/store"

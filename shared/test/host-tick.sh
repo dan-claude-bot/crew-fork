@@ -328,7 +328,10 @@ t help-names-the-tick 1 "$(run_crew help 2>&1 | grep -c '^  tick ')"
 
 # ── the adversarial review's gaps (#763): a busy box, a frozen breaker, a pause that holds, triage's idle rule ──
 ht_board 'I 12 2026-10-23T10:00:00Z ready -' '' ''
-ht_record alpha dan-claude-bot; ht_record beta codex-bot; ht_record gamma triage-bot
+# alpha's ledger already holds #12 (a full pull is the truth, so the row is
+# shipped again here): the board gives it no reason, which is what makes
+# its idle counter the thing on trial.
+ht_record alpha dan-claude-bot 'o/r#12 2026-10-23T10:00:00Z'; ht_record beta codex-bot; ht_record gamma triage-bot
 rm -f "$CONF/store/wake"/* "$CONF/store/paused"/* "$STATE"/*.lock "$STATE"/*.idle
 # (1) a running box past the idle threshold whose duty lock is HELD is never stopped
 echo running >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
