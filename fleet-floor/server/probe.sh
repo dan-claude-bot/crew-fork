@@ -359,7 +359,7 @@ if [ "${PROBE_FULL:-0}" = 1 ]; then
             "$DUTY_DIR"/.review-owed "$DUTY_DIR"/.duty.lock.since \
             "$DUTY_DIR"/.identity "$DUTY_DIR"/.idle-ticks \
             "$DUTY_DIR"/.handoff-* "$DUTY_DIR"/.wait-* "$DUTY_DIR"/.session-continue.* \
-            "$DUTY_DIR"/.release-*; do
+            "$DUTY_DIR"/.release-* "$DUTY_DIR"/.panel-sized-*; do
     [ -f "$sf" ] || continue
     statefiles="$statefiles ${sf##*/}"
   done

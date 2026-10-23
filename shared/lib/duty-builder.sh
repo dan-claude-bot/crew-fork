@@ -393,6 +393,10 @@ _redraft_authored_pr() {
   fi
   is_draft="$(printf '%s' "$payload" | jq -r '.data.repository.pullRequest.isDraft // false' 2>/dev/null)"
   [ "$is_draft" = false ] || return 0
+  # The round is read against the panel sized for THIS head (#761): the
+  # reviewers the engine asked are the ones whose verdicts close it.
+  _panel_effective "$repo" "$num" "$(printf '%s' "$payload" | jq -r '.data.repository.pullRequest.headRefOid // ""' 2>/dev/null)" "$eff_panel"
+  eff_panel="$_PANEL_EFFECTIVE_JSON"
   redraft="$(printf '%s' "$payload" \
     | jq -c --arg addressing "$LABEL_ADDRESSING" \
         '.data.repository.pullRequest.labels.nodes |= map(select(.name != $addressing))' 2>/dev/null \
@@ -795,6 +799,33 @@ _panel_sized() {
     END { for (i = 0; i < k; i++) print line[(s + i) % c] }'
 }
 
+# _panel_effective REPO NUM HEAD PANEL_JSON — THE panel for this head: the
+# risk-sized subset of the resolved roster, as a JSON array in
+# _PANEL_EFFECTIVE_JSON, with the tier and its reason in _PANEL_RISK_TIER and
+# _PANEL_RISK_WHY. It is what request-panel.jq requests FROM and what
+# converged.jq counts approvals AGAINST, so a low-risk head is reviewed by one
+# reviewer and hands off on that one approval — sizing the panel, not the
+# order it is asked in. The reading is cached per head in
+# `.panel-sized-<repo>-<num>` (`<head> <tier> <why>`), so every tick of the
+# same head sizes the same way and the files read is one per head, not one per
+# tick; a new head reads again.
+_PANEL_EFFECTIVE_JSON="[]"
+_panel_effective() {
+  local repo="$1" num="$2" head="$3" panel_json="$4" cache c_head tier why sized
+  cache="$DUTY_DIR/.panel-sized-${repo//\//_}-$num"
+  if [ -n "$head" ] && [ -r "$cache" ] && read -r c_head tier why <"$cache" \
+      && [ "$c_head" = "$head" ] && [ -n "$tier" ]; then
+    _PANEL_RISK_TIER="$tier"; _PANEL_RISK_WHY="$why"
+  else
+    _panel_risk "$repo" "$num"
+    [ -z "$head" ] || { printf '%s %s %s\n' "$head" "$_PANEL_RISK_TIER" "$_PANEL_RISK_WHY" >"$cache.tmp" \
+      && mv -f "$cache.tmp" "$cache"; }
+  fi
+  sized="$(_panel_sized "$_PANEL_RISK_TIER" "$num" "$(printf '%s' "$panel_json" | jq -r '.[]' 2>/dev/null)")"
+  _PANEL_EFFECTIVE_JSON="$(printf '%s\n' "$sized" | awk 'NF' | jq -R . | jq -cs .)"
+  [ -n "$_PANEL_EFFECTIVE_JSON" ] || _PANEL_EFFECTIVE_JSON="$panel_json"
+}
+
 _request_panel() {
   local repo="$1" num="$2" payload="$3" panel_json="$4" check_state="$5" hc_head="$6"
   local at_cap="${7:-false}"
@@ -856,8 +887,11 @@ _request_panel() {
   # push landed between them, defer a tick rather than request on a head whose
   # check nobody has seen settle.
   [ "$hc_head" = "$gql_head" ] || { log "$repo#$num: head moved mid-tick — deferring panel request"; return 0; }
+  # The panel for THIS head (#761): risk-sized once per head, and the same
+  # subset converged.jq counts against, so the request and the handoff agree.
+  _panel_effective "$repo" "$num" "$gql_head" "$panel_json"
   to_request="$(printf '%s' "$payload" \
-    | jq -r --argjson panel "$panel_json" --argjson signal "$signal_json" \
+    | jq -r --argjson panel "$_PANEL_EFFECTIVE_JSON" --argjson signal "$signal_json" \
         -f "$DUTY_DIR/lib/jq/request-panel.jq" 2>/dev/null)"
   # Nothing to request is now the ROUND-CLOSED case as well as the
   # nothing-owed one (#286): a panel that answered with CHANGES_REQUESTED spends
@@ -866,19 +900,16 @@ _request_panel() {
   # PR stays in this loop for every tick until the human merges it, and a line
   # per tick per PR would bury the writes that matter.
   [ -n "${to_request//[[:space:]]/}" ] || return 0
-  # The panel follows the head's risk (#761): a low-risk head is requested
-  # from PANEL_LOW_RISK_SIZE of the panel, rotated by number; the tier and
-  # what decided it are posted on the pull request, once per head.
-  local risk_tier risk_why sized
-  _panel_risk "$repo" "$num"; risk_tier="$_PANEL_RISK_TIER"; risk_why="$_PANEL_RISK_WHY"
-  sized="$(_panel_sized "$risk_tier" "$num" "$to_request")"
-  if [ "$sized" != "$to_request" ]; then
-    log "$repo#$num: panel sized $risk_tier ($risk_why): requesting $(printf '%s' "$sized" | tr '\n' ' ')of $(printf '%s' "$to_request" | tr '\n' ' ')"
-  fi
+  # The tier and what decided it, on the pull request ONCE PER HEAD: the
+  # marker line is the key post-once matches, so a later tick that requests a
+  # further member of the same sized panel posts nothing new.
+  local risk_tier="$_PANEL_RISK_TIER" risk_why="$_PANEL_RISK_WHY" sized_marker
+  sized_marker="<!-- duty:panel-sized:$repo#$num@$gql_head -->"
+  log "$repo#$num: panel sized $risk_tier ($risk_why): $(printf '%s' "$_PANEL_EFFECTIVE_JSON" | jq -r 'join(" ")' 2>/dev/null)"
   "$BIN_DIR/post-once.sh" "$repo" "$num" \
-    "${MARK_PANEL_SIZED:-🧭 panel sized} $risk_tier at $gql_head: $(printf '%s' "$sized" | tr '\n' ' ' | sed 's/ $//') — $risk_why" >/dev/null 2>&1 \
+    "${MARK_PANEL_SIZED:-🧭 panel sized} $risk_tier at $gql_head: $(printf '%s' "$_PANEL_EFFECTIVE_JSON" | jq -r 'join(" ")' 2>/dev/null) — $risk_why
+$sized_marker" "$sized_marker" >/dev/null 2>&1 \
     || warn "$repo#$num: the panel-sized comment did not post (best-effort)"
-  to_request="$sized"
   # One reviewer per call, not a batched reviewers[] array: a single 422 (an
   # already-pending request that raced the predicate) must not drop the others.
   for rvr in $to_request; do
@@ -1852,7 +1883,9 @@ _flip_owed_resume_rows() {
     # next move is theirs. Both gates are needed and each does one job: this one
     # says nobody was ever asked, the one below says an ask is still owed. An
     # off-panel reviewer is advisory (BUILDER.md) and is never the ask.
-    if [ "$(printf '%s' "$pr" | jq -r --argjson panel "$panel" \
+    # Owed to the panel sized for this head, not the whole roster (#761).
+    _panel_effective "$repo" "$num" "$head" "$panel"
+    if [ "$(printf '%s' "$pr" | jq -r --argjson panel "$_PANEL_EFFECTIVE_JSON" \
         '[.reviewRequests[]? | .login // empty
           | select(. as $l | ($panel | index($l)) != null)] | length')" != 0 ]; then
       continue
@@ -1878,7 +1911,7 @@ _flip_owed_resume_rows() {
     [ -n "$signal_json" ] || signal_json='{"sha":"","createdAt":""}'
     [ "$(printf '%s' "$signal_json" | jq -r '.sha // ""')" = "$head" ] || continue
     to_request="$(printf '%s' "$payload" \
-      | jq -r --argjson panel "$panel" --argjson signal "$signal_json" \
+      | jq -r --argjson panel "$_PANEL_EFFECTIVE_JSON" --argjson signal "$signal_json" \
           -f "$BUILDER_LIB_DIR/jq/request-panel.jq" 2>/dev/null)"
     [ -n "${to_request//[[:space:]]/}" ] || continue
     warn "$repo#$num: a draft carrying a valid signal at green head $head, owing a panel ($(printf '%s' "$to_request" | tr '\n' ' ')) that has never been asked — the handoff was consumed, not completed; resuming this tick (#384). The flip stays yours."
@@ -2500,6 +2533,14 @@ _handoff_fetch() {
       printf '%s\n' "$note"; } >"$file.tmp" && mv -f "$file.tmp" "$file"
   fi
   [ -r "$file" ] || return 1
+  if [ -z "${head:-}" ]; then
+    # The live body could not be read: the copy is served, SAID to be a copy,
+    # with the head it was taken at, so a note from an older head is never
+    # read as current.
+    local hdr; hdr="$(head -1 "$file")"
+    printf '(stale copy: the live body could not be read; this note is from %s)\n' \
+      "$(printf '%s' "$hdr" | sed -n 's/^# [^ ]* \(head=[^ ]* at=[^ ]*\).*/\1/p')"
+  fi
   sed '1d' "$file"
 }
 
@@ -2538,11 +2579,19 @@ _builder_waits_due() { # REPO — due pull request numbers, one per line
     now_head="$(jq -r '.headRefOid // ""' <<<"$rollup")"
     pending="$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length' <<<"$rollup")"
     if [ "$pending" = 0 ] || { [ -n "$now_head" ] && [ "$now_head" != "$head" ]; }; then
-      rm -f "$f"
       log "$repo#$num: parked wait is due (pending=$pending head=${now_head:0:7} parked-at=${head:0:7} since $at)"
       printf '%s\n' "$num"
     fi
   done
+}
+
+# _builder_waits_clear REPO NUMS — the due waits, consumed: called once the
+# tick has acted on them (the resume session ran to completion, or there was
+# nothing left to resume), never before, so a clone or session failure keeps
+# the wake (#760).
+_builder_waits_clear() {
+  local repo="$1" num
+  for num in $2; do rm -f "$DUTY_DIR/.wait-${repo//\//_}-$num"; done
 }
 
 _builder_repo() {
@@ -2731,6 +2780,7 @@ _builder_repo() {
     local handoff_block
     handoff_block="$(render_prompt fragment-handoff.txt \
       HANDOFF="$(_handoff_block "$R" "${draft_nums:-} ${stranded_nums:-}")")"
+    SESSION_TASK="$(printf '%s\n' ${draft_nums:-} ${stranded_nums:-} | awk 'NF' | sort -un | paste -sd, -)" \
     WAKE_REASON="${WAKE_REASON:-cron}${wait_why:+,$wait_why}" \
     run_session resume "$R" "$dir" "$TIMEOUT_RESUME" \
       "$(render_prompt resume.txt ME="$ME" REPO="$R" NAME="$name" \
@@ -2743,6 +2793,7 @@ _builder_repo() {
     # The checkpoint: the copy the host and a re-minted box read is the
     # session's own last word, refreshed only when it ran to completion.
     [ "${RUN_SESSION_RC:-1}" -ne 0 ] || _handoff_block "$R" "${draft_nums:-} ${stranded_nums:-}" >/dev/null
+    [ "${RUN_SESSION_RC:-1}" -ne 0 ] || _builder_waits_clear "$R" "$wait_nums"
     # Committed only on rc 0, exactly as .seen-build and .seen-ci-red are: a
     # crashed or timed-out session must re-dispatch next tick, never lose the
     # wake it never got to act on.
@@ -2751,6 +2802,9 @@ _builder_repo() {
     fi
   else
     log "$R: no resume duty"
+    # A due wait with nothing to resume names a pull request this tick no
+    # longer owes anything on: spent, so the host stops waking for it.
+    _builder_waits_clear "$R" "$wait_nums"
   fi
 
   # --- One listing of my open PRs, several facts. The state of the check at
@@ -3211,8 +3265,10 @@ _builder_repo() {
         | jq -c --arg me "$ME" --arg mark "$MARK_ANSWERED" \
             -f "$DUTY_DIR/lib/jq/answered-head.jq" 2>/dev/null)"
       [ -n "$handoff_signal" ] || handoff_signal='{"sha":"","createdAt":""}'
+      # Against the SAME sized panel the request was made from (#761).
+      _panel_effective "$R" "$N" "$(jq -r '.data.repository.pullRequest.headRefOid // ""' <<<"$pr_payload" 2>/dev/null)" "$panel_json"
       converged="$(printf '%s' "$pr_payload" \
-        | jq -r --argjson panel "$panel_json" --arg me "$ME" --arg mark_handoff "$MARK_HANDOFF" \
+        | jq -r --argjson panel "$_PANEL_EFFECTIVE_JSON" --arg me "$ME" --arg mark_handoff "$MARK_HANDOFF" \
             --arg human "${FLEET_HUMAN:-}" --argjson signal "$handoff_signal" \
             -f "$DUTY_DIR/lib/jq/converged.jq" 2>/dev/null || echo err)"
       case "$converged" in

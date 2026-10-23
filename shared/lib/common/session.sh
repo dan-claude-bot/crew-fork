@@ -416,9 +416,23 @@ _session_continue_state() {
 # _session_continue_record KIND KEY RC VERDICT — after an ok session with a
 # valid id, record it for the next dispatch; after anything else, forget the
 # chain (the kill-resume stub, if any, decides the next dispatch).
+# _session_continue_task KIND KEY — the task a continuation is OF, or nothing.
+# A transcript is resumed only into a session about the same task: the caller
+# names it in SESSION_TASK (the builder's resume set, the reviewer's PR set),
+# or the key names it when it is task-shaped (`repo#num`). A session with no
+# task identity — a build that picks its own issue, a triage sweep — is never
+# continued, because the next one is about something else.
+_session_continue_task() {
+  local task="${SESSION_TASK:-}"
+  if [ -z "$task" ]; then case "$2" in *'#'*) task="$2" ;; esac; fi
+  printf '%s' "$task" | tr -c 'A-Za-z0-9#/,._-' '_'
+}
+
 _session_continue_record() {
-  local kind="$1" key="$2" rc="$3" verdict="$4" state sid try=0
+  local kind="$1" key="$2" rc="$3" verdict="$4" state sid try=0 task
   state="$(_session_continue_state "$kind" "$key")"
+  task="$(_session_continue_task "$kind" "$key")"
+  [ -n "$task" ] || { rm -f "$state" 2>/dev/null || true; return 0; }
   if [ "$rc" -ne 0 ] || [ "$verdict" != ok ]; then
     rm -f "$state" 2>/dev/null || true
     return 0
@@ -426,8 +440,8 @@ _session_continue_record() {
   sid="$_SESSION_SID"
   [ "$sid" != unknown ] || sid="$_SESSION_OBSERVED_SID"
   _session_sid_valid "$sid" || { rm -f "$state" 2>/dev/null || true; return 0; }
-  [ "$_SESSION_RESUME_OUTCOME" = continue ] && try="$_SESSION_TRY"
-  printf 'sid=%s\ntry=%s\n' "$sid" "$try" >"$state.tmp" && mv -f "$state.tmp" "$state"
+  [ "$_SESSION_RESUME_OUTCOME" = continue ] && try="$_SESSION_CONTINUE_TRY"
+  printf 'sid=%s\ntry=%s\ntask=%s\n' "$sid" "$try" "$task" >"$state.tmp" && mv -f "$state.tmp" "$state"
 }
 
 # _session_continue_plan KIND KEY — the continuation half of the resume plan:
@@ -435,13 +449,17 @@ _session_continue_record() {
 # chain is under its cap, the profile can resume at all, and — when the
 # profile can say — the transcript is still on disk.
 _session_continue_plan() {
-  local kind="$1" key="$2" dir="$3" state sid="" try="" field value
+  local kind="$1" key="$2" dir="$3" state sid="" try="" task="" field value
   state="$(_session_continue_state "$kind" "$key")"
   [ -r "$state" ] || return 0
   while IFS='=' read -r field value; do
-    case "$field" in sid) sid="$value" ;; try) try="$value" ;; esac
+    case "$field" in sid) sid="$value" ;; try) try="$value" ;; task) task="$value" ;; esac
   done <"$state"
   _session_sid_valid "$sid" || { rm -f "$state"; return 0; }
+  # The same task, or no continuation: a stub from another task is stale.
+  if [ -z "$task" ] || [ "$task" != "$(_session_continue_task "$kind" "$key")" ]; then
+    rm -f "$state"; return 0
+  fi
   case "$try" in ''|*[!0-9]*) try=0 ;; esac
   if [ "$try" -ge "${SESSION_CONTINUE_MAX_TRIES:-12}" ]; then
     rm -f "$state"; return 0
@@ -456,7 +474,10 @@ _session_continue_plan() {
   fi
   _SESSION_SID="$sid"
   _SESSION_RESUMED=yes
-  _SESSION_TRY=$((try + 1))
+  # The continuation chain has its own count; the kill-resume try stays 0, so a
+  # continued session that is killed is still kill-resumable once.
+  _SESSION_CONTINUE_TRY=$((try + 1))
+  _SESSION_TRY=0
   _SESSION_RESUME_OUTCOME="continue"
 }
 
@@ -586,6 +607,7 @@ _session_resume_plan() {
   _SESSION_SID=""
   _SESSION_RESUMED=no
   _SESSION_TRY=0
+  _SESSION_CONTINUE_TRY=0
   _SESSION_RESUME_OUTCOME=""
   state="$(_session_resume_state "$kind" "$key")"
   fields="$(_session_resume_read "$state" "$kind" "$key")"

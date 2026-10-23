@@ -2274,6 +2274,7 @@ declare -A doctrine_builder_occurrences=(
   [fragment-round-rules.txt]=3 [fragment-signals.txt]=0
   [fragment-unblockable.txt]=0
   [fragment-wt-rules.txt]=0 [fragment-handoff.txt]=0 [fragment-wait-rules.txt]=0
+  [fragment-wait-rules-review.txt]=0
   [hygiene.txt]=0 [mention.txt]=0
   [rebase.txt]=0 [release.txt]=0 [resume.txt]=4 [review.txt]=0 [triage.txt]=0
 )
@@ -6395,7 +6396,7 @@ t d7-ten-ticks-at-one-head-are-all-suppressed 10 "$(grep -o 'handed-off' <<<"$d7
 # logged, and _handoff_finalize posts the mark LAST so a crash retries whole.
 # shellcheck disable=SC2016  # the engine's own text, $ included
 t d7-engine-passes-the-mark-to-converged 1 \
-  "$(grep -A2 -- '--argjson panel "\$panel_json"' "$SHARED/lib/duty-builder.sh" | grep -c -- '--arg mark_handoff "\$MARK_HANDOFF"')"
+  "$(grep -A2 -- '--argjson panel "\$_PANEL_EFFECTIVE_JSON"' "$SHARED/lib/duty-builder.sh" | grep -c -- '--arg mark_handoff "\$MARK_HANDOFF"')"
 t d7-engine-no-longer-passes-the-label 0 "$(grep -c -- '--arg needs_human' "$SHARED/lib/duty-builder.sh" "$CJQ" | awk -F: '{s+=$2} END{print s}')"
 t d7-engine-logs-the-suppressed-refire 1 "$(grep -c 'refire suppressed (#535)' "$SHARED/lib/duty-builder.sh")"
 d7_fin="$(sed -n '/^_handoff_finalize() {/,/^}/p' "$SHARED/lib/duty-builder.sh")"
@@ -6448,11 +6449,18 @@ printf 'o/r 7 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-o_r-7"
 t waits-a-pending-wait-is-not-due "" "$(h760_run pending _builder_waits_due o/r)"
 t waits-a-pending-wait-keeps-its-file yes "$([ -e "$H760/.wait-o_r-7" ] && echo yes || echo no)"
 t waits-a-concluded-wait-is-due 7 "$(h760_run green _builder_waits_due o/r)"
-t waits-a-due-wait-is-consumed no "$([ -e "$H760/.wait-o_r-7" ] && echo yes || echo no)"
+# The reader consumes nothing: a due wait is cleared only once the tick has
+# acted on it, so a clone or session failure after the read keeps the wake.
+t waits-a-due-wait-is-not-consumed-by-the-read yes "$([ -e "$H760/.wait-o_r-7" ] && echo yes || echo no)"
+h760_run green _builder_waits_clear o/r 7
+t waits-clear-consumes-the-named-wait no "$([ -e "$H760/.wait-o_r-7" ] && echo yes || echo no)"
 printf 'o/r 7 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-o_r-7"
 t waits-a-moved-head-makes-the-wait-moot-and-due 7 "$(h760_run moved _builder_waits_due o/r)"
+h760_run green _builder_waits_clear o/r 7
 printf 'x/y 9 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-x_y-9"
 t waits-another-repos-park-is-not-this-repos "" "$(h760_run green _builder_waits_due o/r)"
+t waits-clear-leaves-another-repos-park yes "$(h760_run green _builder_waits_clear o/r 9; [ -e "$H760/.wait-x_y-9" ] && echo yes || echo no)"
+t engine-clears-waits-only-after-the-resume-ran 1 "$(grep -c '^    \[ "${RUN_SESSION_RC:-1}" -ne 0 \] || _builder_waits_clear "$R" "$wait_nums"$' "$SHARED/lib/duty-builder.sh")"
 # The helpers a session calls.
 h760_gh="$TMP/h760-bin"; mkdir -p "$h760_gh"
 # shellcheck disable=SC2016  # the stub's own source, read by the shell that runs it
@@ -6472,7 +6480,8 @@ t prompts-every-lane-carries-the-wait-rules "build ci-red resume review" \
 t prompts-the-wait-fragment-names-the-helpers 2 "$(grep -o -E '(wait-for|park-until)\.sh' "$SHARED/prompts/fragment-wait-rules.txt" | sort -u | wc -l | tr -d ' ')"
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t engine-renders-the-wait-rules-on-every-builder-lane 3 "$(grep -c 'WAIT_RULES="$wait_rules"' "$SHARED/lib/duty-builder.sh")"
-t engine-renders-the-wait-rules-for-the-reviewer 1 "$(grep -c 'fragment-wait-rules.txt' "$SHARED/lib/duty-review.sh")"
+t engine-renders-the-park-free-wait-rules-for-the-reviewer 1 "$(grep -c 'fragment-wait-rules-review.txt' "$SHARED/lib/duty-review.sh")"
+t the-reviewer-wait-rules-carry-no-park 0 "$(grep -c 'park-until.sh checks' "$SHARED/prompts/fragment-wait-rules-review.txt")"
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t engine-passes-the-wait-reason-into-the-resume-session 1 "$(grep -c 'WAKE_REASON="${WAKE_REASON:-cron}${wait_why:+,$wait_why}"' "$SHARED/lib/duty-builder.sh")"
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
@@ -6506,7 +6515,30 @@ t panel-knobs-ship "PANEL_LOW_RISK_SIZE=1 PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-request-posts-the-sizing-mark 1 "$(grep -c '"${MARK_PANEL_SIZED:-🧭 panel sized} $risk_tier at $gql_head:' "$SHARED/lib/duty-builder.sh")"
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
-t panel-request-requests-the-sized-set 1 "$(grep -c '^  to_request="$sized"$' "$SHARED/lib/duty-builder.sh")"
+# Two request sites — the engine's request and the flip-owed detection — and
+# both ask from the sized panel.
+t panel-request-requests-from-the-sized-panel 2 "$(grep -c -- '--argjson panel "$_PANEL_EFFECTIVE_JSON" --argjson signal "$signal_json"' "$SHARED/lib/duty-builder.sh")"
+t panel-redraft-reads-the-round-against-the-sized-panel 1 "$(grep -c '^  eff_panel="$_PANEL_EFFECTIVE_JSON"$' "$SHARED/lib/duty-builder.sh")"
+t panel-handoff-counts-against-the-sized-panel 1 "$(grep -c -- '--argjson panel "$_PANEL_EFFECTIVE_JSON" --arg me "$ME" --arg mark_handoff' "$SHARED/lib/duty-builder.sh")"
+t panel-sizing-mark-is-keyed-once-per-head 1 "$(grep -c 'sized_marker="<!-- duty:panel-sized:$repo#$num@$gql_head -->"' "$SHARED/lib/duty-builder.sh")"
+# The effective panel: a low-risk head is ONE reviewer, the same one every
+# tick of that head; a high-risk head is the roster; a new head re-reads.
+p761_eff() { # p761_eff <files-json-lines|FAIL> <head> [num]
+  (
+    PANEL_RISK_PATHS='^(shared/lib|shared/bin|cli|\.github/workflows)/'
+    PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80 PANEL_LOW_RISK_SIZE=1
+    fx="$1"
+    if [ "$fx" = FAIL ]; then gh() { return 1; }; else gh() { printf '%s\n' "$fx"; }; fi
+    _panel_effective o/r "${3:-7}" "$2" '["rev-a","rev-b","rev-c"]'
+    printf '%s|%s' "$_PANEL_RISK_TIER" "$_PANEL_EFFECTIVE_JSON"
+  )
+}
+rm -f "$TMP"/.panel-sized-*
+t effective-panel-low-is-one-reviewer 'low|["rev-b"]' "$(p761_eff $'docs/a.md 2' h1)"
+t effective-panel-same-head-is-cached-not-re-read 'low|["rev-b"]' "$(p761_eff FAIL h1)"
+t effective-panel-new-head-re-reads 'high|["rev-a","rev-b","rev-c"]' "$(p761_eff FAIL h2)"
+t effective-panel-cache-names-the-head-and-tier 1 "$(grep -c '^h2 high ' "$TMP/.panel-sized-o_r-7")"
+rm -f "$TMP"/.panel-sized-*
 unset -f p761_risk
 
 suite_finish

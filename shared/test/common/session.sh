@@ -2626,6 +2626,9 @@ t hygiene-sweeps-daily 1 "$(grep -c '^HYGIENE_INTERVAL=86400$' "$SHARED/conf/rol
 # kind and key — by resuming the recorded id, so the next session starts from
 # where the last one stopped instead of re-reading the world.
 cont_stub() { printf '%s/.session-continue.build.%s' "$TMP/sid-$1" "$2"; }
+# A continuation is OF A TASK: the caller names it (SESSION_TASK), or the key
+# does when it is task-shaped. These chains are all about one task.
+export SESSION_TASK=task-a
 c1="$(sid_run cont fixture/cont 5 reply both)"
 CONT_SID="$(sid_argv_flag "$c1" --session-id)"
 t cont-first-dispatch-is-pinned-not-resumed "" "$(sid_argv_flag "$c1" --resume)"
@@ -2641,6 +2644,18 @@ t cont-both-records-carry-one-id "$CONT_SID $CONT_SID" "$(printf '%s' "$cont_sta
 t cont-the-try-counts-the-chain 1 "$(sid_stub_field "$(cont_stub cont fixture_cont)" try)"
 c3="$(sid_run cont fixture/elsewhere 5 reply both)"
 t cont-another-key-is-another-chain "" "$(sid_argv_flag "$c3" --resume)"
+# Another TASK on the same key is another chain — a build for #13 never
+# resumes #12's transcript — and a session with no task identity is never
+# continued at all; a task-shaped key (`repo#num`) names its own task.
+c3b="$(SESSION_TASK=task-b sid_run cont fixture/cont 5 reply both)"
+t cont-another-task-on-the-same-key-is-fresh "" "$(sid_argv_flag "$c3b" --resume)"
+t cont-another-task-replaces-the-stub task-b "$(sid_stub_field "$(cont_stub cont fixture_cont)" task)"
+(unset SESSION_TASK; sid_run cont fixture/notask 5 reply both >/dev/null)
+t cont-no-task-writes-no-stub gone "$([ -e "$(cont_stub cont fixture_notask)" ] && printf present || printf gone)"
+(unset SESSION_TASK; sid_run cont 'fixture/cont#5' 5 reply both >/dev/null)
+t cont-a-task-shaped-key-is-its-own-task present "$([ -s "$(cont_stub cont fixture_cont_5)" ] && printf present || printf MISSING)"
+c3c="$(sid_run cont fixture/cont 5 reply both)"
+t cont-the-first-task-starts-over-after-the-other "" "$(sid_argv_flag "$c3c" --resume)"
 # A failure breaks the chain: the next dispatch is fresh, not a resume of a
 # session that failed, and the stub is gone.
 sid_run cont fixture/cont 5 fail both >/dev/null
@@ -2672,6 +2687,7 @@ cont_plan_verdict="$(
   printf '%s %s' "$_SESSION_RESUMED" "$([ -e "$DUTY_DIR/.session-continue.build.k" ] && printf present || printf gone)"
 )"
 t cont-a-missing-transcript-starts-fresh-and-clears-the-stub "no gone" "$cont_plan_verdict"
+unset SESSION_TASK
 unset -f cont_stub
 
 suite_finish
