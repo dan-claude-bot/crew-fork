@@ -947,8 +947,64 @@ def main(argv=None):
         for line in usage_table(rows, since, by):
             print(line)
         return 0
+    # The host tick's reads (#759): one state file, one ledger, one lane's
+    # session count — each from the store alone, so a wake decision about a
+    # box that is OFF costs no exec. Absent is an exit of 1 and no output.
+    if verb == "state":
+        box, name = _arg(argv, "--box"), _arg(argv, "--name")
+        if not box or not name:
+            raise SystemExit("store.py state: --box and --name are required")
+        conn = connect()
+        try:
+            row = conn.execute("SELECT content FROM state_files WHERE box=? AND name=?",
+                               (box, name)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return 1
+        sys.stdout.write(row[0] if row[0].endswith("\n") or row[0] == "" else row[0] + "\n")
+        return 0
+    if verb == "ledger":
+        box, name = _arg(argv, "--box"), _arg(argv, "--name")
+        if not box:
+            raise SystemExit("store.py ledger: --box is required")
+        conn = connect()
+        try:
+            if name:
+                rows = conn.execute("SELECT id, ts FROM ledger WHERE box=? AND name=? ORDER BY id",
+                                    (box, name)).fetchall()
+            else:
+                rows = conn.execute("SELECT id, ts FROM ledger WHERE box=? ORDER BY name, id",
+                                    (box,)).fetchall()
+        finally:
+            conn.close()
+        for rid, ts in rows:
+            print("%s %s" % (rid, ts))
+        return 0 if rows else 1
+    if verb == "sessions-count":
+        box, kind = _arg(argv, "--box"), _arg(argv, "--kind")
+        since = _arg(argv, "--since", "24h")
+        if not box:
+            raise SystemExit("store.py sessions-count: --box is required")
+        conn = connect()
+        try:
+            cutoff = _since_iso(since)
+            if kind:
+                n = conn.execute("SELECT COUNT(*) FROM sessions WHERE box=? AND kind=? AND ts_end>=?",
+                                 (box, kind, cutoff)).fetchone()[0]
+            else:
+                n = conn.execute("SELECT COUNT(*) FROM sessions WHERE box=? AND ts_end>=?",
+                                 (box, cutoff)).fetchone()[0]
+        except ValueError as e:
+            raise SystemExit("store.py sessions-count: %s" % e)
+        finally:
+            conn.close()
+        print(n)
+        return 0
     raise SystemExit("usage: store.py init | ingest --box NAME | fail --box NAME | "
-                     "status --box NAME [--brief] | usage [--since W] [--by G] | path")
+                     "status --box NAME [--brief] | usage [--since W] [--by G] | path | "
+                     "state --box NAME --name FILE | ledger --box NAME [--name FILE] | "
+                     "sessions-count --box NAME [--kind K] [--since W]")
 
 
 if __name__ == "__main__":

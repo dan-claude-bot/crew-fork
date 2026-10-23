@@ -356,7 +356,8 @@ if [ "${PROBE_FULL:-0}" = 1 ]; then
             "$DUTY_DIR"/.resume-* "$DUTY_DIR"/.limit-events \
             "$DUTY_DIR"/.limit-events.dropped "$DUTY_DIR"/.auth-fail.* \
             "$DUTY_DIR"/.hygiene-last "$DUTY_DIR"/.reaper-last \
-            "$DUTY_DIR"/.review-owed "$DUTY_DIR"/.duty.lock.since; do
+            "$DUTY_DIR"/.review-owed "$DUTY_DIR"/.duty.lock.since \
+            "$DUTY_DIR"/.identity "$DUTY_DIR"/.idle-ticks; do
     [ -f "$sf" ] || continue
     statefiles="$statefiles ${sf##*/}"
   done
