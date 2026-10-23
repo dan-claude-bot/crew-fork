@@ -151,15 +151,52 @@ ok()   { echo "ok   $1"; PASS=$((PASS + 1)); }
 skip() { echo "skip $1"; SKIP=$((SKIP + 1)); }
 fail() { echo "FAIL $1"; FAILS+=("$1"); }
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else fail "$name"; fi; }
-wait_for() {  # wait_for <seconds> <name> <cmd...>
+# wait_for <seconds> <name> <cmd...> — poll a predicate until it is satisfied
+# or the budget runs out. The predicate's exit status is a STATE, not a
+# boolean (#749): 0 satisfied; 1 not yet, keep polling; 2 cannot grade — the
+# row is refused at once with the reason, because no number of retries makes
+# an ungradable predicate gradable; 3 could not read — polled like "not yet",
+# since a read can recover, but a budget that runs out on it says so, because
+# "I could not look" is never evidence that the condition is false. Any other
+# status is a predicate that does not speak the protocol (the `bash -c` rows)
+# and reads as not-yet, which is what it always was.
+#
+# The predicate's stdout is discarded as before. Its STDERR is kept, and the
+# last attempt's goes out with the failing row, so a FAIL is falsifiable from
+# the transcript alone: the two label rows print the label set they read.
+# The interval is a variable so the suite can drive the loop without sleeping.
+WAIT_FOR_INTERVAL="${WAIT_FOR_INTERVAL:-10}"
+wait_for() {
   local t="$1" name="$2"; shift 2
-  local end=$((SECONDS + t))
+  local end=$((SECONDS + t)) rc=1 seen=""
   while [ "$SECONDS" -lt "$end" ]; do
-    if "$@" >/dev/null 2>&1; then ok "$name"; return 0; fi
-    sleep 10
+    seen="$("$@" 2>&1 >/dev/null)"; rc=$?
+    seen="${seen//$'\n'/ | }"
+    case "$rc" in
+      0) ok "$name"; return 0 ;;
+      2) fail "$name (cannot grade: ${seen:-the predicate refused to grade})"; return 2 ;;
+    esac
+    sleep "$WAIT_FOR_INTERVAL"
   done
-  fail "$name (timeout ${t}s)"
+  if [ "$rc" -eq 3 ]; then
+    fail "$name (could not read within ${t}s: ${seen:-no diagnostic})"
+    return 3
+  fi
+  fail "$name (timeout ${t}s; last observed: ${seen:-nothing})"
   return 1
+}
+# wait_for_lane <KIND> <name> <cmd...> — wait_for on the budget the box
+# itself installed for the lane being graded (#750): TIMEOUT_<KIND> read
+# through the engine's own layering, never a literal. A box that cannot answer
+# refuses the row as ungradable rather than grading it on a number the drill
+# made up.
+wait_for_lane() {
+  local kind="$1" name="$2" budget; shift 2
+  if ! budget="$(rehearsal_lane_budget "$kind")"; then
+    fail "$name (cannot grade: the installed TIMEOUT_$kind could not be read from the box)"
+    return 2
+  fi
+  wait_for "$budget" "$name" "$@"
 }
 bx() { box exec "$BOX_NAME" -- bash -lc "$1"; }
 # shellcheck disable=SC2034  # read and updated by rehearsal-safety.sh
@@ -786,7 +823,7 @@ else
   # data, never into the filter as source text, and the answer comes back as an
   # exit status rather than through `gh api --jq`, which marshals a null to
   # NOTHING and so cannot carry a boolean at all.
-  wait_for 300 "attention: label removed (ack re-arms)" \
+  wait_for_lane ATTENTION "attention: label removed (ack re-arms)" \
     rehearsal_attention_flag_cleared "$SANDBOX" "$inum"
 
   # The census's other half (#714, D2/D3). Deliberately AFTER the two rows
@@ -926,7 +963,7 @@ else
       fail "builder: PR authored by $ME2 for this run's fixture issue"
     fi
     # The claim must be visible on the board, not just in the PR.
-    wait_for 300 "builder: issue moved off ready (claimed)" \
+    wait_for_lane BUILD "builder: issue moved off ready (claimed)" \
       rehearsal_builder_left_the_queue "$SANDBOX" "$bnum"
     # Re-tick must not phantom-rebuild: this issue still resolves to one PR.
     BPR="$bpr"

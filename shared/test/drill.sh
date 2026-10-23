@@ -3294,4 +3294,165 @@ t d725-roll-call-falls-back-to-the-quiet-line 1 \
   "$(rehearsal_resume_roll_call_from_log "$D725_REPO" "$D725_QUIET" | grep -c 'no resume duty')"
 unset -f d725_log
 
+# ── #749 / #750 — wait_for grades STATES, and the two label rows grade on the ──
+# ── lane's installed budget ──────────────────────────────────────────────────
+# The real wait_for, extracted from rehearsal.sh and run with ok()/fail()
+# supplied as rehearsal.sh defines them, so the ROW it prints is what the
+# transcript shows — the grade is observed, never inferred from a return code.
+w749_run() {  # w749_run <budget> <name> <cmd...> — the rows, then "rc=N"
+  (
+    # shellcheck disable=SC2317  # supplied to the extracted wait_for
+    ok()   { echo "ok   $1"; }
+    # shellcheck disable=SC2317
+    fail() { echo "FAIL $1"; }
+    # shellcheck disable=SC2034  # read by the extracted wait_for
+    WAIT_FOR_INTERVAL=0
+    eval "$(sed -n '/^wait_for() {/,/^}/p' "$ROOT/drill/rehearsal.sh")"
+    wait_for "$@"; echo "rc=$?"
+  ) </dev/null
+}
+# shellcheck disable=SC2317  # the predicates are invoked by wait_for, indirectly
+w749_say() {  # w749_say <rc> <stderr...> — a predicate answering one state, noisily on stdout
+  local rc="$1"; shift
+  printf '%s\n' "$@" >&2
+  echo "stdout-noise"
+  return "$rc"
+}
+W749_COUNT="$TMP/w749-count"
+# shellcheck disable=SC2317
+w749_counted() { echo x >>"$W749_COUNT"; echo "labels on o/r#1: [ready]" >&2; return "$1"; }
+
+w749_out="$(w749_run 1 row w749_say 0 'labels on o/r#1: []')"
+t w749-satisfied-is-the-ok-row 1 "$(grep -cx 'ok   row' <<<"$w749_out")"
+t w749-satisfied-rc 1 "$(grep -cx 'rc=0' <<<"$w749_out")"
+w749_out="$(w749_run 1 row w749_say 1 'labels on o/r#1: [ready]')"
+t w749-not-yet-runs-out-the-budget-and-prints-what-it-saw 1 \
+  "$(grep -cx 'FAIL row (timeout 1s; last observed: labels on o/r#1: \[ready\])' <<<"$w749_out")"
+t w749-not-yet-rc 1 "$(grep -cx 'rc=1' <<<"$w749_out")"
+: >"$W749_COUNT"
+w749_out="$(w749_run 30 row w749_counted 2)"
+t w749-cannot-grade-refuses-at-once 1 "$(wc -l <"$W749_COUNT" | tr -d ' ')"
+t w749-cannot-grade-names-the-reason 1 \
+  "$(grep -cx 'FAIL row (cannot grade: labels on o/r#1: \[ready\])' <<<"$w749_out")"
+t w749-cannot-grade-rc 1 "$(grep -cx 'rc=2' <<<"$w749_out")"
+w749_out="$(w749_run 1 row w749_say 3 'could not read repos/o/r/issues/1')"
+t w749-could-not-read-is-its-own-state 1 \
+  "$(grep -cx 'FAIL row (could not read within 1s: could not read repos/o/r/issues/1)' <<<"$w749_out")"
+t w749-could-not-read-never-reads-as-false 0 "$(grep -c 'timeout' <<<"$w749_out")"
+t w749-could-not-read-rc 1 "$(grep -cx 'rc=3' <<<"$w749_out")"
+w749_out="$(w749_run 1 row w749_say 1 'first line' 'second line')"
+t w749-multi-line-diagnostics-stay-on-the-row 1 \
+  "$(grep -cx 'FAIL row (timeout 1s; last observed: first line | second line)' <<<"$w749_out")"
+t w749-predicate-stdout-is-still-discarded 0 \
+  "$(w749_run 1 row w749_say 1 'x' | grep -c stdout-noise)"
+t w749-a-silent-not-yet-says-nothing-observed 1 \
+  "$(w749_run 1 row w749_say 1 '' | grep -cx 'FAIL row (timeout 1s; last observed: nothing)')"
+# A predicate outside the protocol — the `bash -c` rows, grep's 1 — is not-yet.
+t w749-off-protocol-status-reads-as-not-yet 1 \
+  "$(w749_run 1 row bash -c 'exit 7' | grep -cx 'rc=1')"
+
+# The two predicates, against a gh that answers each state. Sourced AFTER the
+# label names are set? No — rehearsal-fixtures.sh resets them at source time,
+# so they are set after, exactly as rehearsal.sh's board read sets them.
+W749_GH="$TMP/gh749"
+mkdir -p "$W749_GH"
+cat >"$W749_GH/gh" <<'GH'
+#!/usr/bin/env bash
+case "${GH749:-}" in
+  fail)    echo "gh: HTTP 502 from the fixture" >&2; exit 1 ;;
+  present) printf '{"labels":[{"name":"ready"},{"name":"attention"}]}\n' ;;
+  absent)  printf '{"labels":[{"name":"claimed"}]}\n' ;;
+  garbage) printf 'not json\n' ;;
+esac
+GH
+chmod +x "$W749_GH/gh"
+w749_grade() {  # w749_grade <mode> <predicate> — "rc=N", then the predicate's stderr
+  (
+    export GH749="$1"
+    # The predicates call `gh api …`; a function is the stub, so PATH is not
+    # modified in a subshell (SC2030/SC2031 pair with the mint shim above).
+    # shellcheck disable=SC2317
+    gh() { "$W749_GH/gh" "$@"; }
+    # shellcheck disable=SC2317  # the sourced file's reads go through bx
+    bx() { return 1; }
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
+    REHEARSAL_LABEL_READY=ready
+    REHEARSAL_LABEL_ATTENTION=attention
+    [ "$1" != unnamed ] || { REHEARSAL_LABEL_READY=""; REHEARSAL_LABEL_ATTENTION=""; }
+    err="$("$2" owner/repo 1 2>&1 >/dev/null)"; rc=$?
+    echo "rc=$rc"; printf '%s\n' "$err"
+  ) </dev/null
+}
+for w749_fn in rehearsal_builder_left_the_queue rehearsal_attention_flag_cleared; do
+  w749_out="$(w749_grade fail "$w749_fn")"
+  t "w749-$w749_fn-read-failure-is-3" 1 "$(grep -cx 'rc=3' <<<"$w749_out")"
+  t "w749-$w749_fn-read-failure-says-so" 1 "$(grep -c 'could not read repos/owner/repo/issues/1' <<<"$w749_out")"
+  t "w749-$w749_fn-read-failure-keeps-gh-stderr" 1 "$(grep -c 'HTTP 502' <<<"$w749_out")"
+  w749_out="$(w749_grade present "$w749_fn")"
+  t "w749-$w749_fn-present-is-not-yet" 1 "$(grep -cx 'rc=1' <<<"$w749_out")"
+  t "w749-$w749_fn-present-prints-the-set" 1 "$(grep -cx 'labels on owner/repo#1: \[ready attention\]' <<<"$w749_out")"
+  w749_out="$(w749_grade absent "$w749_fn")"
+  t "w749-$w749_fn-absent-is-satisfied" 1 "$(grep -cx 'rc=0' <<<"$w749_out")"
+  t "w749-$w749_fn-absent-still-prints-the-set" 1 "$(grep -cx 'labels on owner/repo#1: \[claimed\]' <<<"$w749_out")"
+  w749_out="$(w749_grade garbage "$w749_fn")"
+  t "w749-$w749_fn-unparsable-answer-is-3" 1 "$(grep -cx 'rc=3' <<<"$w749_out")"
+  w749_out="$(w749_grade unnamed "$w749_fn")"
+  t "w749-$w749_fn-empty-name-is-2" 1 "$(grep -cx 'rc=2' <<<"$w749_out")"
+  t "w749-$w749_fn-empty-name-says-so" 1 "$(grep -c 'cannot grade: the label name is empty' <<<"$w749_out")"
+done
+
+# #750 — the budget is the box's, read the way the engine reads it.
+w750_budget() {  # w750_budget <bx-stdout> <bx-rc> <kind> — "rc=N value=V"
+  (
+    W750_ANSWER="$1" W750_RC="$2"
+    # shellcheck disable=SC2317
+    bx() { printf '%s' "$W750_ANSWER"; return "$W750_RC"; }
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
+    v="$(rehearsal_lane_budget "$3")"; echo "rc=$? value=$v"
+  ) </dev/null
+}
+t w750-budget-is-the-installed-timeout "rc=0 value=1800" "$(w750_budget $'1800\n' 0 ATTENTION)"
+t w750-budget-survives-the-transport-cr "rc=0 value=3600" "$(w750_budget $'3600\r\n' 0 BUILD)"
+t w750-budget-takes-the-last-line "rc=0 value=1800" "$(w750_budget $'noise from a login shell\n1800\n' 0 ATTENTION)"
+t w750-no-answer-is-a-refusal "rc=1 value=" "$(w750_budget '' 0 ATTENTION)"
+t w750-a-word-is-a-refusal "rc=1 value=" "$(w750_budget $'abc\n' 0 ATTENTION)"
+t w750-zero-is-a-refusal "rc=1 value=" "$(w750_budget $'0\n' 0 ATTENTION)"
+t w750-a-failed-box-read-is-a-refusal "rc=1 value=" "$(w750_budget $'1800\n' 2 ATTENTION)"
+t w750-a-kind-outside-the-alphabet-is-a-refusal "rc=1 value=" "$(w750_budget $'1800\n' 0 'ATTENTION; rm -rf /')"
+w750_read="$(sed -n '/^rehearsal_lane_budget() {/,/^}/p' "$ROOT/drill/rehearsal-fixtures.sh")"
+# shellcheck disable=SC2016  # the markers are the box-side text, $ included
+t w750-the-read-layers-every-file-load-conf-does "1,1,1,1,1" \
+  "$(for w750_m in 'fleet.defaults.conf' 'fleet.conf' 'instance.conf' 'agents/"$BOT_AGENT".conf' 'roles/"$role".conf'; do
+       grep -cF -- "$w750_m" <<<"$w750_read"; done | paste -sd,)"
+# wait_for_lane: the row refuses when the box cannot say, and delegates when it can.
+w750_lane() {  # w750_lane <budget-or-empty> — the row, then "rc=N"
+  (
+    # shellcheck disable=SC2317  # supplied to the extracted wait_for_lane
+    ok()   { echo "ok   $1"; }
+    # shellcheck disable=SC2317
+    fail() { echo "FAIL $1"; }
+    W750_B="$1"
+    # shellcheck disable=SC2317
+    rehearsal_lane_budget() { [ -n "$W750_B" ] || return 1; printf '%s\n' "$W750_B"; }
+    # shellcheck disable=SC2034  # read by the extracted wait_for
+    WAIT_FOR_INTERVAL=0
+    eval "$(sed -n '/^wait_for() {/,/^}/p; /^wait_for_lane() {/,/^}/p' "$ROOT/drill/rehearsal.sh")"
+    wait_for_lane ATTENTION row true; echo "rc=$?"
+  ) </dev/null
+}
+t w750-unreadable-budget-refuses-the-row 1 \
+  "$(w750_lane '' | grep -cx 'FAIL row (cannot grade: the installed TIMEOUT_ATTENTION could not be read from the box)')"
+t w750-unreadable-budget-rc 1 "$(w750_lane '' | grep -cx 'rc=2')"
+t w750-readable-budget-grades-the-row 1 "$(w750_lane 1 | grep -cx 'ok   row')"
+# The two rows name the lane and carry no literal, so a literal cannot drift back.
+t w750-attention-row-grades-on-the-lane 1 \
+  "$(grep -c 'wait_for_lane ATTENTION "attention: label removed (ack re-arms)"' "$ROOT/drill/rehearsal.sh")"
+t w750-builder-row-grades-on-the-lane 1 \
+  "$(grep -c 'wait_for_lane BUILD "builder: issue moved off ready (claimed)"' "$ROOT/drill/rehearsal.sh")"
+t w750-neither-row-carries-a-literal 0 \
+  "$(grep -cE 'wait_for [0-9]+ "(attention: label removed|builder: issue moved off ready)' "$ROOT/drill/rehearsal.sh")"
+unset -f w749_run w749_say w749_counted w749_grade w750_budget w750_lane
+
 suite_finish
