@@ -7363,8 +7363,8 @@ t blockers-quoted-phrase-before-table-is-not-declared '[]' \
 t blockers-quoted-clause-in-quotes-is-not-declared '[]' \
   "$(bjq_set '*"Blocked by #5"* is how #9 reads its gate.')"
 # A live declaration beside a quoted one keeps exactly its own members.
+# shellcheck disable=SC2016  # the backticks are the fixture body's own prose
 t blockers-live-clause-beside-quote '["5"]' \
-  # shellcheck disable=SC2016  # the backticks are the fixture body's own prose
   "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"
 # A struck-through or emphasised marker still declares: markup around the
 # marker is not quotation.
