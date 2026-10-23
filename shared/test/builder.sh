@@ -6466,7 +6466,15 @@ h760_gh="$TMP/h760-bin"; mkdir -p "$h760_gh"
 # shellcheck disable=SC2016  # the stub's own source, read by the shell that runs it
 printf '#!/usr/bin/env bash\ncase "$*" in *statusCheckRollup*) printf "%%s\\n" "$H760_ROLLUP" ;; *headRefOid*) printf "h1\\n" ;; esac\n' >"$h760_gh/gh"; chmod +x "$h760_gh/gh"
 t wait-for-usage-is-2 2 "$(PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" nothing >/dev/null 2>&1; echo $?)"
-t wait-for-settled-checks-return-0 0 "$(H760_ROLLUP=0 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 1 >/dev/null 2>&1; echo $?)"
+# The stub answers the poller's jq: `<pending> <total>`.
+t wait-for-settled-checks-return-0 0 "$(H760_ROLLUP='0 2' PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 1 >/dev/null 2>&1; echo $?)"
+# An EMPTY rollup is not "settled" on sight (the first poll after a push can
+# land before any run is reported): it is confirmed on a second poll, and
+# said for what it is. A pending run (REQUESTED counts) runs out the budget.
+t wait-for-an-empty-rollup-is-confirmed-then-said "no checks reported on o/r#7" \
+  "$(H760_ROLLUP='0 0' WAIT_FOR_POLL_S=0 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 5 2>/dev/null | sed 's/ (.*//')"
+t wait-for-a-pending-run-runs-out-the-budget 1 "$(H760_ROLLUP='1 1' WAIT_FOR_POLL_S=0 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 2 >/dev/null 2>&1; echo $?)"
+t wait-for-every-poller-counts-requested-and-expected-as-pending 3 "$(grep -l '"REQUESTED" or (.status // "") == "EXPECTED"' "$SHARED/bin/wait-for.sh" "$SHARED/lib/host/wake.sh" "$SHARED/lib/duty-builder.sh" | wc -l | tr -d ' ')"
 t wait-for-pending-checks-run-out-the-budget 1 "$(H760_ROLLUP=2 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 0 >/dev/null 2>&1; echo $?)"
 t wait-for-a-gone-pid-returns-0 0 "$(bash "$SHARED/bin/wait-for.sh" pid 999999999 --timeout 5 >/dev/null 2>&1; echo $?)"
 t park-until-writes-the-park "o/r 7 h1" "$(DUTY_DIR="$H760" PATH="$h760_gh:$PATH" bash "$SHARED/bin/park-until.sh" checks o/r 7 >/dev/null; cut -d' ' -f1-3 "$H760/.wait-o_r-7")"

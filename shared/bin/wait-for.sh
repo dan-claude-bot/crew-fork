@@ -16,6 +16,9 @@
 set -uo pipefail
 what="${1:-}"; shift || true
 timeout_s=1800
+# The poll interval; a suite sets it to 0 to walk the loop without the wait.
+poll="${WAIT_FOR_POLL_S:-30}"; case "$poll" in ''|*[!0-9]*) poll=30 ;; esac
+step="$poll"; [ "$step" -gt 0 ] || step=1
 case "$what" in
   checks)
     repo="${1:-}"; num="${2:-}"; shift 2 || { echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>]" >&2; exit 2; }
@@ -37,7 +40,7 @@ case "$what" in
         ''|*[!0-9]*) : ;;
         *) empty_seen=0 ;;
       esac
-      sleep 30; waited=$((waited + 30))
+      sleep "$poll"; waited=$((waited + step))
     done
     echo "checks on $repo#$num still pending after ${timeout_s}s" >&2; exit 1 ;;
   pid)
@@ -47,7 +50,7 @@ case "$what" in
     waited=0
     while [ "$waited" -lt "$timeout_s" ]; do
       kill -0 "$pid" 2>/dev/null || { echo "pid $pid is gone"; exit 0; }
-      sleep 5; waited=$((waited + 5))
+      sleep "$poll"; waited=$((waited + step))
     done
     echo "pid $pid still alive after ${timeout_s}s" >&2; exit 1 ;;
   *) echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>] | pid <pid> [--timeout <s>]" >&2; exit 2 ;;
