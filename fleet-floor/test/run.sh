@@ -44,7 +44,8 @@ port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3<&- 3>&-;
 # fast-polling churn one, and #204's empty-floor one. Checked up front, because
 # a busy port discovered four minutes in reads as a broken collector.
 for _p in "${FLOOR_TEST_PORT:-8791}" $(( ${FLOOR_TEST_PORT:-8791} + 1 )) \
-          $(( ${FLOOR_TEST_PORT:-8791} + 2 )) $(( ${FLOOR_TEST_PORT:-8791} + 3 )); do
+          $(( ${FLOOR_TEST_PORT:-8791} + 2 )) $(( ${FLOOR_TEST_PORT:-8791} + 3 )) \
+          $(( ${FLOOR_TEST_PORT:-8791} + 4 )); do
   if port_busy "$_p"; then
     echo "port $_p is already in use — another run of this suite is probably still going." >&2
     echo "  re-run with a different base:  FLOOR_TEST_PORT=8891 $0 $*" >&2
@@ -140,6 +141,7 @@ cleanup() {
   [ -n "${SRV2:-}" ] && kill "$SRV2" 2>/dev/null
   [ -n "${SRV3:-}" ] && kill "$SRV3" 2>/dev/null
   [ -n "${SRV4:-}" ] && kill "$SRV4" 2>/dev/null
+  [ -n "${SRV5:-}" ] && kill "$SRV5" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
@@ -253,6 +255,12 @@ source "$HERE/floor/units.sh"
 source "$HERE/floor/roster.sh"
 # shellcheck source=floor/fleet.sh
 source "$HERE/floor/fleet.sh"
+# store.sh reads no state another suite writes — its first half drives
+# store.py in-process over fixture records and its second boots a collector
+# of its own on PORT+4 over a private fixture — so by the rule above its
+# position is free; it sits with the collector suites it is about (#758).
+# shellcheck source=floor/store.sh
+source "$HERE/floor/store.sh"
 # shellcheck source=floor/server.sh
 source "$HERE/floor/server.sh"
 # shellcheck source=floor/actions.sh

@@ -472,6 +472,8 @@ CMDS=(
   "down^[--force]^Drain and stop every roster box; --force skips the drain^cmd_down"
   "reset^[--cut] <box>... | --all [--force-after <hours>]^Restore boxes to their 'armed' checkpoint; --cut takes that checkpoint^cmd_reset"
   "status^[<box>]^Engine version and duty evidence, per box^cmd_status"
+  "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
+  "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
   "use^<version>^Switch the default host version; report box engines left behind^cmd_use"
   "uninstall^[<version>] [--all] [--force]^Remove one host version or the whole console, with fleet guards^cmd_uninstall"
@@ -853,6 +855,27 @@ an INCOMPLETE one names the bootstrap recovery rather than 'crew hire', and
 'crew hire' refuses it. Every other column here is derived through the
 engine, which does not exist until hire — so before hiring, this is the only
 column that can carry the failure.
+EOF
+      ;;
+    usage) cat <<'EOF'
+
+Reads the host's store (<config-dir>/store/fleet.sqlite) and asks no box:
+the figures are whatever the floor's collector and 'crew drain' have pulled,
+so a box that is off still counts. --since takes <n>h or <n>d (default 24h);
+--by groups per member (box), per credential pool or per session kind.
+Cost is tokens times shared/conf/model-prices.conf, parsed and never
+sourced; a session whose model is unpriced counts as unpriced, never as $0.
+EOF
+      ;;
+    drain) cat <<'EOF'
+
+One full probe of the box — every state file under ~/duty and the whole
+duty.log — landed in the host's store in one transaction. Idempotent: what
+a cadence pull already landed is refused by the store's keys. Run it before
+a box is stopped, so the box's last session, held claim and ledgers are
+reportable while it is off ('crew status' and the floor then read the store
+and say so). A box that does not answer records a failed pull and leaves
+every stored row where it was.
 EOF
       ;;
     profiles) cat <<'EOF'
@@ -2619,6 +2642,9 @@ cmd_up() {
   # no configuration yet, so it keeps working and carries the banner. The
   # converging form creates boxes and arms cron, so it refuses.
   if [ "$dry" -eq 1 ]; then fallback_banner; else require_operator_config "crew up"; fi
+  # The fleet's store exists from the first converge (#758): created here if
+  # absent, never on a dry run, and never a reason for `up` to stop.
+  [ "$dry" -eq 1 ] || store_init
 
   # The platform check, at the earliest point on this verb that knows the host
   # (#679 D12). `up` is where a fleet is converged, so it is where a floor is
@@ -3799,6 +3825,91 @@ reset_run() { # CUT FORCE_SECONDS FORCE_HOURS TARGET...
 # per row, with auth problems FLAGGED (an unauthenticated member fails
 # loudly in its own duty.log every tick; this is the host-side view of the
 # same fact). With a box name: the detailed view.
+# --- the host's store (#758) -------------------------------------------------
+#
+# fleet-floor/server/floor/store.py holds the schema and every reader; these
+# are the CLI's doors to it. Nothing here asks a box anything: `crew drain`
+# is the one verb that does, through bxn, and what it pulls is landed by the
+# same ingest the floor's collector runs on every poll.
+store_file() { printf '%s\n' "${CREW_FLOOR_STORE:-$CONFIG_DIR/store/fleet.sqlite}"; }
+store_py() {
+  CREW_CONFIG_DIR="$CONFIG_DIR" python3 "$CREW_ROOT/fleet-floor/server/floor/store.py" "$@"
+}
+# store_init — create the store if absent. Reports and never refuses: a host
+# without python3 converges its fleet exactly as before, with no store.
+store_init() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "up: no python3 on this host — the fleet store is not created" >&2
+    return 0
+  fi
+  store_py init >/dev/null 2>&1 \
+    || echo "up: WARNING — could not create the fleet store at $(store_file)" >&2
+  return 0
+}
+# stored_note NAME [--brief] — the store's reading of a box, labelled
+# `stored` on every line, or nothing. Never creates the store (`crew up`
+# does) and never asks the box: this is what `crew status` prints for a box
+# that did not answer, so the operator reads the last pull rather than a dash.
+stored_note() {
+  local name="$1"; shift
+  [ -f "$(store_file)" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  store_py status --box "$name" "$@" 2>/dev/null || true
+}
+
+cmd_usage() {
+  local since="24h" by="member"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since) need_value "$@"; since="$2"; shift 2 ;;
+      --by)    need_value "$@"; by="$2";    shift 2 ;;
+      -h|--help) show_help usage; return 0 ;;
+      *) usage_error "crew usage: unknown option '$1' (usage: $(synopsis_of usage))" ;;
+    esac
+  done
+  [[ "$since" =~ ^[0-9]+[hd]$ ]] || usage_error "crew usage: --since takes <n>h or <n>d, e.g. 24h or 7d"
+  case "$by" in member|pool|kind) ;; *) usage_error "crew usage: --by must be member, pool or kind" ;; esac
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 is required for 'crew usage' (stdlib only, nothing to install)"
+  # The store alone, deliberately: no `need_box`, no exec. A fleet that is
+  # entirely off still has a bill.
+  [ -f "$(store_file)" ] \
+    || die "no store at $(store_file) yet — 'crew up' creates it; the floor's collector and 'crew drain' fill it"
+  echo "usage — from the host's store, no box asked ($(store_file))"
+  store_py usage --since "$since" --by "$by"
+}
+
+cmd_drain() {
+  max_args drain 1 "$@"
+  need_box
+  local b="${1:-}"
+  [ -n "$b" ] || usage_error "usage: $(synopsis_of drain)"
+  # A write to the host: the same refusal every mutating verb makes under the
+  # shipped examples (#216).
+  require_operator_config "crew drain"
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 is required for 'crew drain' (stdlib only, nothing to install)"
+  box_exists "$b" || die "no box named '$b' — 'crew status' lists the roster"
+  local agent role _from record rc=0
+  read -r agent role _from <<<"$(roster_line "$b")"
+  # Full mode from line 1: a drain is the WHOLE file, not the tail. It runs
+  # before a stop, and what a cadence pull already landed is refused by the
+  # store's keys rather than skipped by this verb — the one case where
+  # reading twice is cheaper than being wrong about where the last read ended.
+  # Through bxn, so the exec is the one call site it has always been; the
+  # agent profile probe.sh accepts on stdin is not needed to read files.
+  record="$(bxn "$b" "export PROBE_FULL=1 PROBE_LOG_FROM=1
+$(cat "$CREW_ROOT/fleet-floor/server/probe.sh")" 2>/dev/null | tr -d '\r')" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$record" ]; then
+    store_py fail --box "$b" --note "drain: box did not answer" >/dev/null 2>&1 || true
+    die "drain: $b did not answer — nothing pulled; the store keeps what it had"
+  fi
+  local -a ident=()
+  [ -z "$agent" ] || ident+=(--agent "$agent")
+  [ -z "$role" ]  || ident+=(--roles "$role")
+  printf '%s\n' "$record" | store_py ingest --box "$b" "${ident[@]}"
+}
+
 cmd_status() {
   max_args status 1 "$@"
   need_box
@@ -4015,6 +4126,9 @@ cmd_status() {
     fi
     if [ -z "$state" ] && [ "$rconv" = unknown ]; then
       echo "  (unreachable)"
+      # The store's reading for the box that did not answer (#758): labelled
+      # `stored` on every line, read off the host, never off the box.
+      stored_note "$b" | sed 's/^/  /'
     elif [ "$state" = absent ]; then
       # No engine, so a missing duty log is not the news — the absent engine
       # is. Factual and not prescriptive: `crew hire` is the action, but
@@ -4070,7 +4184,7 @@ cmd_status() {
   local supp_age supp_kind supp_key supp_subject log_timestamped session_active lock_age
   local session_kind session_ceiling lock_ceiling lock_bound
   local report estate erecorded edisplay
-  local rreport conv convnote
+  local rreport conv convnote stored_brief
   while read -r name agent role _from; do
     if ! box_exists "$name"; then
       # shellcheck disable=SC2059
@@ -4080,10 +4194,14 @@ cmd_status() {
     state="$(box_state "$name")"
     if [ "$state" = "stopped" ]; then
       # shellcheck disable=SC2059
-      printf "$fmt" "$name" stopped "$host" - - - - "crew up starts it"
+      printf "$fmt" "$name" stopped "$host" - - - - "crew up starts it$(stored_brief="$(stored_note "$name" --brief)"; printf '%s' "${stored_brief:+ · $stored_brief}")"
       continue
     fi
     report="$(engine_report "$name")"
+    # A box that answered nothing gets the store's reading beside whatever
+    # the row concludes (#758): the last pull, labelled as such.
+    stored_brief=""
+    [ -n "$report" ] || stored_brief="$(stored_note "$name" --brief)"
     hired="$(report_field stamp "$report")"
     estate="$(report_field state "$report")"
     erecorded="$(report_field recorded "$report")"
@@ -4314,6 +4432,7 @@ cmd_status() {
     # (cmd_upgrade's loop, hire_box's force_arg) — the short form takes the
     # test's exit status, and here the common case is the empty one.
     if [ -n "$convnote" ]; then note="$convnote"; fi
+    if [ -n "$stored_brief" ]; then note="${note:+$note · }$stored_brief"; fi
     # The wire vocabulary is lowercase; MODIFIED shouts for the same reason
     # MISSING does — it is the one row an operator must not skim past, and the
     # note names the version it diverged from so the column stays one word.

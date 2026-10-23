@@ -1749,6 +1749,9 @@ var dataCache={}, floorFilter={state:"all",role:"all"};
 function VENDORCOL(a){return VCOL[a]||"#8aa0b8";}
 function hexA(h,a){h=h.replace("#","");return "rgba("+parseInt(h.substr(0,2),16)+","+parseInt(h.substr(2,2),16)+","+parseInt(h.substr(4,2),16)+","+a+")";}
 function pad2(n){return (n<10?"0":"")+n;}
+/* #758 — the wall-clock HH:MM of the store's last ok pull, in the viewer's
+   zone; "—" when the stamp is missing or unreadable. */
+function storedClock(iso){var t=iso?new Date(iso):null;if(!t||isNaN(t.getTime()))return "—";return pad2(t.getHours())+":"+pad2(t.getMinutes());}
 function ri2(a,b){return a+Math.floor(Math.random()*(b-a+1));}
 function kindOf(room){return room==="builder"?"build":room==="reviewer"?"review":"triage";}
 function outcomeFor(k){return k==="build"?["opened PR","pushed fixups","needs-human","resumed"][ri2(0,3)]:k==="review"?["approved","changes-requested","commented"][ri2(0,2)]:["labeled ready","routed to builder","marked blocked","ruling posted"][ri2(0,3)];}
@@ -1911,6 +1914,11 @@ function liveData(u){
   d.limited=u.limited||null;d.floorEvents=u.floor_events||[];
   d.limitDropped=u.limit_dropped===undefined?null:u.limit_dropped;
   d.note=u.note||"";d.paused=!!u.paused;d.logs=u.logs||[];d.repos=u.repos||[];
+  /* #758 — WHERE the record came from. "stored" is a box that did not answer,
+     served from the host's store with the time of its last ok pull; the panel
+     marks it so an old reading is never taken for a fresh one. A collector
+     older than the field sends none, which renders as no mark. */
+  d.source=u.source||"";d.storedAt=u.stored_at||null;
   /* #189 gave the collector this flag and nothing here read it, so every
      deliberately-stopped box came through as a bare state:"offline" and got
      shouted at as SILENT (#203). Defaulted like the fields above: a collector
@@ -2276,7 +2284,7 @@ function populateDash(){
   /* The note under the big card always named the real reason, so an operator
      who read the sub-text was never blind — but the word in 40px type above it
      said SILENT for all three, and that is the one the eye takes. */
-  if(off)cs+='<div class="big" style="color:'+(stw?"#8aa0b8":"#ff5147")+'">— '+(stw||"SILENT")+' —</div><div class="task">'+esc(LIVE&&d.note?d.note:"no active session · cron missed")+'</div>';
+  if(off)cs+='<div class="big" style="color:'+(stw?"#8aa0b8":"#ff5147")+'">— '+(stw||"SILENT")+' —</div><div class="task">'+esc(LIVE&&d.note?d.note:"no active session · cron missed")+'</div>'+(d.source==="stored"?'<div class="task" id="cur-stored" style="color:#8aa0b8">off · stored '+storedClock(d.storedAt)+'</div>':'');
   /* STUCK outranks the running-session view even though a session IS running.
      That is the whole point: cron is ticking, duty.log is fresh, the box looks
      busy — and it has been holding the same lock for longer than two tick
