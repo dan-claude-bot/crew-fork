@@ -494,7 +494,6 @@ print(c.execute("SELECT COUNT(*) FROM pulls WHERE box=\"st-idle\" AND ok=0").fet
       c.execute("SELECT COUNT(*) FROM sessions WHERE box=\"st-idle\"").fetchone()[0] >= 1)
 ')"
 kill "$SRV5" 2>/dev/null
-unset -f st_api st_unit st_uf st_py st_record
 
 # ── #763 review: the store is the box's memory, not more than it ───────────
 # A ledger row keeps its whole line; a full pull is the truth, so a row the
@@ -574,4 +573,4 @@ from floor import store
 c = store.connect(readonly=True)
 print(c.execute("SELECT count(*) FROM sessions WHERE box=\"alpha\" AND key=\"crew#0\"").fetchone()[0])
 ')"
-
+unset -f st_api st_unit st_uf st_py st_record

@@ -6460,6 +6460,7 @@ h760_run green _builder_waits_clear o/r 7
 printf 'x/y 9 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-x_y-9"
 t waits-another-repos-park-is-not-this-repos "" "$(h760_run green _builder_waits_due o/r)"
 t waits-clear-leaves-another-repos-park yes "$(h760_run green _builder_waits_clear o/r 9; [ -e "$H760/.wait-x_y-9" ] && echo yes || echo no)"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t engine-clears-waits-only-after-the-resume-ran 1 "$(grep -c '^    \[ "${RUN_SESSION_RC:-1}" -ne 0 \] || _builder_waits_clear "$R" "$wait_nums"$' "$SHARED/lib/duty-builder.sh")"
 # The helpers a session calls.
 h760_gh="$TMP/h760-bin"; mkdir -p "$h760_gh"
@@ -6526,8 +6527,11 @@ t panel-request-posts-the-sizing-mark 1 "$(grep -c '"${MARK_PANEL_SIZED:-🧭 pa
 # Two request sites — the engine's request and the flip-owed detection — and
 # both ask from the sized panel.
 t panel-request-requests-from-the-sized-panel 2 "$(grep -c -- '--argjson panel "$_PANEL_EFFECTIVE_JSON" --argjson signal "$signal_json"' "$SHARED/lib/duty-builder.sh")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-redraft-reads-the-round-against-the-sized-panel 1 "$(grep -c '^  eff_panel="$_PANEL_EFFECTIVE_JSON"$' "$SHARED/lib/duty-builder.sh")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-handoff-counts-against-the-sized-panel 1 "$(grep -c -- '--argjson panel "$_PANEL_EFFECTIVE_JSON" --arg me "$ME" --arg mark_handoff' "$SHARED/lib/duty-builder.sh")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-sizing-mark-is-keyed-once-per-head 1 "$(grep -c 'sized_marker="<!-- duty:panel-sized:$repo#$num@$gql_head -->"' "$SHARED/lib/duty-builder.sh")"
 # The effective panel: a low-risk head is ONE reviewer, the same one every
 # tick of that head; a high-risk head is the roster; a new head re-reads.
