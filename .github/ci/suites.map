@@ -44,11 +44,12 @@ shared/lib/version-skew.sh	common,cli-lifecycle,boot-gate
 shared/bin/*	common,common/tick-health,boot-gate,vitals,reaper
 shared/prompts/*	builder,review,triage,hygiene
 shared/conf/*	conf,model-prices,common/conf,boot-gate,vitals
-shared/host-crontab.example	cli-lifecycle,cli-reset
+shared/host-crontab.example	cli-lifecycle,cli-reset,host-tick
 shared/docs/*	none
 shared/README.md	none
 shared/test/README.md	none
-cli/crew	cli-lifecycle,cli-reset,common
+shared/lib/host/*	host-tick,cli-lifecycle
+cli/crew	cli-lifecycle,cli-reset,cli-store,host-tick,common
 drill/*	drill,install-drill,drill-teardown
 install.sh	install-lifecycle,artifact,install-drill
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate

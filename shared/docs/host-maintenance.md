@@ -258,3 +258,27 @@ A cut has its own refusals for its own reasons — a box that is stopped, not
 logged in, not hired, or still over `CREW_RESET_CUT_MAX_USED_PCT` of its disk
 after the on-demand reaper has run. `crew help reset` has all of them. Re-cut
 attended, read what it says, and repair what it names before you reset.
+
+## The host tick — `crew tick` (#759)
+
+The host's cron runs `crew tick` every five minutes (`shared/host-crontab.example`).
+A tick reads each registered board once — issues, pull requests, discussions —
+and, for every roster member, compares the board to what that member last saw.
+A member's box is started only when the board moved **and** the move names
+work its roles own (a ready issue nobody holds for a builder, a review request
+for a reviewer, anything at all for triage, an `attention` demand for anyone)
+**and** the store's memory of that member does not already answer it: an item
+its seen-ledgers hold at that timestamp, a lane whose breaker is tripped, a
+lane whose session budget is spent. Each refusal is logged by name
+(`veto <reason>:<why>`), so a wake that is missing is never silent.
+
+At most `FLEET_MAX_RUNNING` boxes run at once; a member with work past the cap
+is `held`, by name, and re-evaluated next tick. A running box that bought no
+session for `IDLE_TICKS_BEFORE_STOP` consecutive ticks is drained to the store
+(`crew drain`) and stopped. A started box is handed its reason in
+`~/duty/.wake-reason` and ticked at once; every `SESSION END` that tick
+writes carries it as `why=`.
+
+`crew pause <box>` keeps a member off: the host tick never starts it and its own
+cron is commented while it runs; `crew resume <box>` undoes both. `crew tick
+--dry-run` prints every decision and changes nothing.

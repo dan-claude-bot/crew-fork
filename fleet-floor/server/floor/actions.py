@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from floor import FLOOR_ENVELOPE
 from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
-from floor.roster import box_states, read_roster
+from floor.roster import CREW_ROOT, box_states, read_roster
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -82,31 +82,18 @@ def floor_message_prompt(operator_text):
 # fed from that snapshot rather than from a second `crontab -l`: the counts
 # and the text being rewritten are then the same crontab, so the delta check
 # below means what it says. It costs one read rather than adding one.
-PAUSE_SH = r"""
-cron="$(crontab -l 2>/dev/null || true)"
-armed="$(printf '%s\n' "$cron" | grep -cE '^[^#].*tick\.sh' || true)"
-[ "$armed" -gt 0 ] || { echo "nothing to pause: no armed tick.sh line"; exit 0; }
-was="$(printf '%s\n' "$cron" | grep -c '^#CREW-FLOOR-PAUSED' || true)"
-printf '%s\n' "$cron" | sed -E 's|^([^#].*tick\.sh.*)$|#CREW-FLOOR-PAUSED \1|' | crontab - \
-  || { echo "pause: crontab write failed" >&2; exit 1; }
-now="$(crontab -l 2>/dev/null | grep -c '^#CREW-FLOOR-PAUSED' || true)"
-[ "$(( now - was ))" -eq "$armed" ] \
-  || { echo "pause: crontab write reported success, $(( now - was )) of $armed lines are commented" >&2; exit 1; }
-echo "paused $armed"
-"""
+# Both scripts are read out of shared/lib/host/pause.sh, the one copy (#284):
+# cli/crew sources that file and the floor extracts the two marked blocks, so
+# `crew pause` and the floor's pause button run byte-identical shell (#759).
+def _host_shell_block(name):
+    path = os.path.join(CREW_ROOT, "shared", "lib", "host", "pause.sh")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    start = text.index("# ---%s---\n" % name) + len("# ---%s---\n" % name)
+    return text[start:text.index("# ---END---", start)]
 
-RESUME_SH = r"""
-cron="$(crontab -l 2>/dev/null || true)"
-paused="$(printf '%s\n' "$cron" | grep -c '^#CREW-FLOOR-PAUSED' || true)"
-[ "$paused" -gt 0 ] || { echo "nothing to resume: no paused tick.sh line"; exit 0; }
-was="$(printf '%s\n' "$cron" | grep -cE '^[^#].*tick\.sh' || true)"
-printf '%s\n' "$cron" | sed -E 's|^#CREW-FLOOR-PAUSED ||' | crontab - \
-  || { echo "resume: crontab write failed" >&2; exit 1; }
-now="$(crontab -l 2>/dev/null | grep -cE '^[^#].*tick\.sh' || true)"
-[ "$(( now - was ))" -eq "$paused" ] \
-  || { echo "resume: crontab write reported success, $(( now - was )) of $paused lines are live" >&2; exit 1; }
-echo "resumed $paused"
-"""
+PAUSE_SH = _host_shell_block("PAUSE_SH")
+RESUME_SH = _host_shell_block("RESUME_SH")
 
 # The operator's message becomes a real session of the box's own vendor CLI,
 # detached so the HTTP request does not hold a model run open, and logged where

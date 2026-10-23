@@ -77,3 +77,8 @@
 # There is no second line. The weekly reset is deferred, above; the real-host
 # drill is operator-attended by construction and is deliberately not scheduled
 # here either.
+# The host tick (#759): one board read per repository, boxes started only for
+# work their member owns and stopped when idle, under FLEET_MAX_RUNNING. Five
+# minutes, the engine's own cadence; the box's cron keeps ticking while it is
+# up, and this line is what brings a stopped box back.
+*/5 * * * * $HOME/.local/bin/crew tick

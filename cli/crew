@@ -47,6 +47,12 @@ source "$CREW_ROOT/shared/lib/box-mint.sh"
 # and floor drift (#484).
 # shellcheck disable=SC1091
 source "$CREW_ROOT/shared/lib/common/tick-health.sh"
+# The host tick's decision and the pause shell (#759, #284): the decision is a
+# library so the suite drives it with fixtures; cli/crew only acts on it.
+# shellcheck source=shared/lib/host/wake.sh
+source "$CREW_ROOT/shared/lib/host/wake.sh"
+# shellcheck source=shared/lib/host/pause.sh
+source "$CREW_ROOT/shared/lib/host/pause.sh"
 ROLES_DIR="$CREW_ROOT/shared/conf/roles"
 AGENTS_DIR="$CREW_ROOT/shared/conf/agents"
 
@@ -472,6 +478,9 @@ CMDS=(
   "down^[--force]^Drain and stop every roster box; --force skips the drain^cmd_down"
   "reset^[--cut] <box>... | --all [--force-after <hours>]^Restore boxes to their 'armed' checkpoint; --cut takes that checkpoint^cmd_reset"
   "status^[<box>]^Engine version and duty evidence, per box^cmd_status"
+  "tick^[--dry-run]^The host tick: read each board once, start a box only for work its member owns, stop an idle one^cmd_tick"
+  "pause^<box>^Keep a box off: the host tick never starts it, and its own cron is commented until resume^cmd_pause"
+  "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
   "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
   "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
@@ -3940,6 +3949,225 @@ $(cat "$CREW_ROOT/fleet-floor/server/probe.sh")" 2>/dev/null | tr -d '\r')" || r
   [ -z "$agent" ] || ident+=(--agent "$agent")
   [ -z "$role" ]  || ident+=(--roles "$role")
   printf '%s\n' "$record" | store_py ingest --box "$b" "${ident[@]}"
+}
+
+# --- The host tick (#759) -----------------------------------------------------
+#
+# One board read per repository per tick, on this host; a box is started only
+# when the board moved since its member last saw it AND the move names work
+# the member's roles own AND the store's memory of the member (its ledgers,
+# breakers and budgets) does not already answer it; a running box that bought
+# no session for IDLE_TICKS_BEFORE_STOP ticks is drained to the store and
+# stopped; at most FLEET_MAX_RUNNING boxes run at once and the rest are held,
+# visibly. The decision is shared/lib/host/wake.sh; this is the acting half.
+#
+# What a tick logs is the whole product: every start names its why= (the
+# same token the box's SESSION END lines will carry), every hold names the
+# cap, every veto names its reason, every stop names the idle count. A tick
+# that is silent is a tick that found nothing — and says so, once.
+TICK_DIGEST_DIR() { printf '%s/store/wake' "$CONFIG_DIR"; }
+tick_digest_file() { # MEMBER REPO
+  printf '%s/%s.%s.digest' "$(TICK_DIGEST_DIR)" "$1" "$(printf '%s' "$2" | tr '/' '_')"
+}
+tick_paused_file() { printf '%s/store/paused/%s' "$CONFIG_DIR" "$1"; }
+
+# tick_conf_knobs — the fleet's own knobs, read the way the engine layers
+# them (defaults, then fleet.conf over them), in THIS shell: these four are
+# host-side numbers and nothing else from those files is read here.
+tick_conf_knobs() {
+  local line
+  for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW; do
+    eval "$line=\"\$(tick_conf_value $line)\""
+  done
+  : "${FLEET_MAX_RUNNING:=2}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}"
+}
+tick_conf_value() { # KEY — the last assignment wins, fleet.conf after defaults
+  { sed -n "s/^$1=//p" "$CREW_ROOT/shared/conf/fleet.defaults.conf"
+    [ ! -f "$CONFIG_DIR/fleet.conf" ] || sed -n "s/^$1=//p" "$CONFIG_DIR/fleet.conf"
+  } | tail -1 | tr -d '"' | tr -d "'"
+}
+
+# tick_veto MEMBER ROLES REASONS — wake_veto under the member's own role
+# ceilings, in a subshell so the role confs' many variables never reach this
+# process (BOX_CPU and friends mean something else here).
+tick_veto() {
+  local member="$1" roles="$2" reasons="$3" role files
+  files="$CREW_ROOT/shared/conf/fleet.defaults.conf"
+  [ ! -f "$CONFIG_DIR/fleet.conf" ] || files="$files $CONFIG_DIR/fleet.conf"
+  for role in $roles; do
+    [ ! -f "$CREW_ROOT/shared/conf/roles/$role.conf" ] || files="$files $CREW_ROOT/shared/conf/roles/$role.conf"
+  done
+  (
+    # Only the BUDGET_* lines, in file order so fleet.conf and the role confs
+    # win over the defaults: the confs carry many more names (BOX_CPU, the
+    # timeouts) that mean something else in this process.
+    # shellcheck disable=SC2086  # $files is a word list by construction
+    eval "$(cat $files | sed -n '/^BUDGET_[A-Z_]*=[0-9]*$/p')"
+    wake_veto "$member" "$reasons"
+  )
+}
+
+# tick_box_ready NAME SECONDS — wait for a started box's guest to answer.
+tick_box_ready() {
+  local name="$1" budget="$2" waited=0
+  while [ "$waited" -lt "$budget" ]; do
+    bxn "$name" true >/dev/null 2>&1 && return 0
+    sleep 5; waited=$((waited + 5))
+  done
+  return 1
+}
+
+# tick_wake NAME WHY — hand the box its reason and tick it now rather than
+# waiting for its own cron: the first session this wake buys carries why=.
+tick_wake() {
+  local name="$1" why="$2"
+  bxn "$name" "mkdir -p ~/duty && printf '%s\n' '$why' > ~/duty/.wake-reason && ~/duty/bin/tick.sh" >/dev/null 2>&1 \
+    || echo "  $name: woke, but the tick did not run cleanly (its own cron will)"
+}
+
+tick_run() { # DRY_RUN
+  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line
+  local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0
+  local -A ROWS=() DIGEST=()
+  mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
+  store_py init >/dev/null 2>&1 || true
+  tick_conf_knobs
+  # 1. One read per repository, for the whole fleet.
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    if ! rows="$(wake_board_rows "$repo")"; then
+      echo "  $repo: board unreadable this tick — no change assumed"
+      continue
+    fi
+    ROWS[$repo]="$rows"
+    DIGEST[$repo]="$(printf '%s\n' "$rows" | wake_digest)"
+  done <<<"$(production_registry)"
+  # 2. Who is running now.
+  while read -r name _rest; do
+    [ -n "$name" ] || continue
+    [ "$(box_state "$name")" = running ] && running=$((running + 1))
+  done <<<"$(read_roster)"
+  # 3. Each member, against the boards that moved since it last looked.
+  while read -r name _agent roles _rest; do
+    [ -n "$name" ] || continue
+    roles="${roles//,/ }"
+    if [ -e "$(tick_paused_file "$name")" ]; then
+      echo "  $name: paused — left alone"
+      continue
+    fi
+    login="$(store_py state --box "$name" --name .identity 2>/dev/null | head -1 | tr -d '\r')"
+    reasons=""
+    for repo in "${!ROWS[@]}"; do
+      prev="$(cat "$(tick_digest_file "$name" "$repo")" 2>/dev/null || true)"
+      [ "${DIGEST[$repo]}" != "$prev" ] || continue
+      reasons="$reasons$(wake_reasons "$roles" "$login" "$repo" "${ROWS[$repo]}")"$'\n'
+    done
+    reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
+    surviving="$(tick_veto "$name" "$roles" "$reasons")"
+    while IFS= read -r line; do
+      case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
+    done <<<"$surviving"
+    why="$(wake_why "$surviving")"
+    state="$(box_state "$name")"
+    if [ -n "$why" ]; then
+      case "$state" in
+        running)
+          echo "  $name: woke (running) why=$why"
+          [ "$dry" -eq 1 ] || tick_wake "$name" "$why"
+          woke=$((woke + 1)) ;;
+        stopped)
+          if [ "$running" -ge "$FLEET_MAX_RUNNING" ]; then
+            echo "  $name: held — $running of $FLEET_MAX_RUNNING boxes running; why=$why"
+            held=$((held + 1))
+            continue   # no digest recorded: the next tick re-evaluates
+          fi
+          echo "  $name: starting why=$why"
+          if [ "$dry" -eq 0 ]; then
+            if ! box start "$name" </dev/null; then echo "  $name: start FAILED"; continue; fi
+            if ! tick_box_ready "$name" "$HOST_TICK_READY_S"; then
+              echo "  $name: started, but its guest did not answer within ${HOST_TICK_READY_S}s — next tick"
+              continue
+            fi
+            tick_wake "$name" "$why"
+          fi
+          running=$((running + 1)); started=$((started + 1)) ;;
+        *) echo "  $name: state '$state' — left alone; why=$why"; continue ;;
+      esac
+    else
+      if [ "$state" = running ]; then
+        idle="$(bxn "$name" 'cat ~/duty/.idle-ticks 2>/dev/null' 2>/dev/null | tr -d '\r' | head -1)"
+        case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
+        if [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ]; then
+          echo "  $name: stopping after $idle idle ticks (drained to the store first)"
+          if [ "$dry" -eq 0 ]; then
+            if ! cmd_drain "$name" >/dev/null 2>&1; then
+              echo "  $name: drain failed — not stopping a box whose evidence the store does not hold"
+              continue
+            fi
+            box down "$name" </dev/null || { echo "  $name: stop FAILED"; continue; }
+          fi
+          running=$((running - 1)); stopped=$((stopped + 1))
+        else
+          echo "  $name: idle $idle/$IDLE_TICKS_BEFORE_STOP"
+        fi
+      else
+        quiet=$((quiet + 1))
+      fi
+    fi
+    # The member has seen these boards: woken, idle, or nothing for it.
+    [ "$dry" -eq 1 ] || for repo in "${!ROWS[@]}"; do printf '%s\n' "${DIGEST[$repo]}" >"$(tick_digest_file "$name" "$repo")"; done
+  done <<<"$(read_roster)"
+  echo "tick: started $started, woke $woke, held $held, stopped $stopped, vetoed $vetoed, nothing-for $quiet; running $running of $FLEET_MAX_RUNNING"
+  return 0
+}
+
+cmd_tick() {
+  local dry=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=1; shift ;;
+      *) usage_error "unknown argument '$1' (usage: $(synopsis_of tick))" ;;
+    esac
+  done
+  need_box
+  [ -f "$ROSTER" ] || die "no roster at $ROSTER"
+  require_operator_config "crew tick"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for 'crew tick' (the store)"
+  host_job tick tick_run "$dry"
+}
+
+# --- pause / resume (#284, #759) ---------------------------------------------
+# A paused member is one the host tick never starts, and whose own cron is
+# commented while it runs: one marker on the host, one on the box, and the
+# shell that edits the crontab is the file the floor's button runs too.
+cmd_pause() {
+  max_args pause 1 "$@"
+  local b="${1:-}"; [ -n "$b" ] || usage_error "usage: $(synopsis_of pause)"
+  need_box
+  require_operator_config "crew pause"
+  box_exists "$b" || die "no box named '$b' — 'crew status' lists the roster"
+  mkdir -p "$CONFIG_DIR/store/paused"
+  date -u '+%Y-%m-%dT%H:%M:%SZ' >"$(tick_paused_file "$b")"
+  if [ "$(box_state "$b")" = running ]; then
+    bxn "$b" "$(host_pause_sh)" || echo "  $b: paused on the host; the box's crontab did not take the pause (it is off the host tick regardless)"
+  else
+    echo "  $b: paused on the host (box not running — only the host tick could start it, and it will not)"
+  fi
+  echo "  $b: the host tick will not start it until 'crew resume $b'. An in-flight duty finishes; only future ticks are prevented."
+}
+
+cmd_resume() {
+  max_args resume 1 "$@"
+  local b="${1:-}"; [ -n "$b" ] || usage_error "usage: $(synopsis_of resume)"
+  need_box
+  require_operator_config "crew resume"
+  box_exists "$b" || die "no box named '$b' — 'crew status' lists the roster"
+  rm -f "$(tick_paused_file "$b")"
+  if [ "$(box_state "$b")" = running ]; then
+    bxn "$b" "$(host_resume_sh)" || echo "  $b: resumed on the host; the box's crontab did not take the resume"
+  else
+    echo "  $b: resumed on the host (box not running; the host tick may start it again)"
+  fi
 }
 
 cmd_status() {
