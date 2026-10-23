@@ -9,8 +9,7 @@
 # It stays the backstop for every fail-safe default in duty-triage.sh. Two
 # things keep that true rather than nominal: HYGIENE_FLOOR, which sweeps a
 # never-changing board anyway because some of what hygiene owns turns on the
-# clock and not on the board (a 48h reclaim, a 7-day post-merge nudge, an issue
-# the world made obsolete); and a gate that FAILS OPEN — a listing that errors
+# clock and not on the board (a 48h reclaim, an issue the world made obsolete); and a gate that FAILS OPEN — a listing that errors
 # or a ledger line that will not parse sweeps and warns, because a budget that
 # cannot read its balance must not spend, while a backstop that cannot read the
 # board must not stop being the backstop (#59, #464).

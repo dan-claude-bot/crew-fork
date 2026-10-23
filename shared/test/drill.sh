@@ -2166,7 +2166,7 @@ bv_drive() {
 }
 
 # The phase-2 fixture path, in the drill's own order: the vocabulary, the
-# attention demand, the triage post-merge fixture, the builder's ready issue,
+# attention demand, the builder's ready issue,
 # the attention leg's claimed+flagged demand, the audit leg's two malformed
 # shapes, then both disarming cleanups. Every mint and every DELETE in one
 # trace, so a site left literal is visible as a wrong name rather than as a
@@ -2175,7 +2175,6 @@ bv_drive() {
 BV_PHASE2='
   rehearsal_mint_board_vocabulary owner/repo
   inum="$(rehearsal_mint_attention_demand owner/repo box-identity t b)"
-  rehearsal_mint_post_merge_fixture owner/repo t b >/dev/null
   rehearsal_mint_builder_ready_fixture owner/repo t b >/dev/null
   rehearsal_attention_file_fixture owner/repo box-identity t b
   rehearsal_attention_audit_file_fixtures owner/repo stamp
@@ -2198,11 +2197,11 @@ bv_box_conf 'LABEL_ATTENTION="needs-human"' 'LABEL_READY="queued"'
 # the path made, which is the only place a mint's label name is observable.
 bv_drive "$BV_PHASE2" >/dev/null
 t drill-board-vocab-moved-mint-names 1 \
-  "$(grep -c '^needs-human:d93f0b needs-triage:fbca04 queued:0e8a16 claimed:1d76db blocked:b60205 post-merge:006b75 epic:5319e7$' <<<"$(bv_vocab)" || true)"
-# ...and the FIXTURES, in order: the attention demand, post-merge, the ready
-# issue, the claimed+flagged demand, the audit's unassigned issue, its PR.
+  "$(grep -c '^needs-human:d93f0b needs-triage:fbca04 queued:0e8a16 claimed:1d76db blocked:b60205 epic:5319e7$' <<<"$(bv_vocab)" || true)"
+# ...and the FIXTURES, in order: the attention demand, the ready issue, the
+# claimed+flagged demand, the audit's unassigned issue, its PR.
 t drill-board-vocab-moved-fixture-labels 1 \
-  "$(grep -c '^needs-human post-merge queued claimed,needs-human needs-human,blocked$' <<<"$(bv_mints)" || true)"
+  "$(grep -c '^needs-human queued claimed,needs-human needs-human,blocked$' <<<"$(bv_mints)" || true)"
 t drill-board-vocab-moved-attention-demand 1 "$(bv_minted needs-human)"
 t drill-board-vocab-moved-ready-fixture 1 "$(bv_minted queued)"
 # The audit leg labels its PR through the add endpoint, not at creation.
@@ -2214,7 +2213,7 @@ t drill-board-vocab-moved-cleanup-deletes 1 \
   "$(grep -c '^needs-human$' <<<"$(bv_deletes)" || true)"
 # Not one request in the whole path spells either shipped name. Neither string
 # is a substring of any name this board resolves — needs-human, needs-triage,
-# queued, claimed, blocked, post-merge, epic — so a bare match is the assertion
+# queued, claimed, blocked, epic — so a bare match is the assertion
 # and needs no word boundary to be exact.
 t drill-board-vocab-moved-mints-no-shipped-name 0 \
   "$(grep -cE 'attention|ready' "$BV_TRACE" || true)"
@@ -2238,18 +2237,14 @@ bv_board_put 200 needs-human           # still flagged under the moved name
 bv_board_put 201 attention             # flagged under a name nobody moved to
 bv_board_put 202 queued                # the builder's issue, not yet claimed
 bv_board_put 203 ready                 # ...the shipped name, on a moved board
-bv_board_put 204 post-merge            # the terminal fixture, untouched
 bv_board_put 205 queued,needs-human    # ruled into the moved queue
 bv_board_put 206 ready                 # ruled into the SHIPPED queue name
-bv_board_put 207 post-merge,epic       # a label the session added
 # shellcheck disable=SC2016  # the snippet is eval'd by bv_drive, which is where it expands
 BV_PRED="$(bv_drive '
   rehearsal_attention_flag_cleared owner/repo 200 && echo cleared-200 || echo armed-200
   rehearsal_attention_flag_cleared owner/repo 201 && echo cleared-201 || echo armed-201
   rehearsal_builder_left_the_queue owner/repo 202 && echo off-202 || echo on-202
   rehearsal_builder_left_the_queue owner/repo 203 && echo off-203 || echo on-203
-  rehearsal_post_merge_labels_intact owner/repo 204 post-merge && echo intact-204 || echo moved-204
-  rehearsal_post_merge_labels_intact owner/repo 207 post-merge && echo intact-207 || echo moved-207
   rehearsal_load_installed_queue_labels
   echo "QUEUESET=$(paste -sd, - <<<"$REHEARSAL_QUEUE_LABELS")"
   rehearsal_stray_left_the_queue owner/repo 205 && echo ruled-205 || echo stray-205
@@ -2265,41 +2260,30 @@ t drill-board-vocab-flag-armed-under-moved-name 1 "$(grep -cx armed-200 <<<"$BV_
 t drill-board-vocab-flag-clear-ignores-shipped-name 1 "$(grep -cx cleared-201 <<<"$BV_PRED" || true)"
 t drill-board-vocab-queue-holds-under-moved-name 1 "$(grep -cx on-202 <<<"$BV_PRED" || true)"
 t drill-board-vocab-queue-off-ignores-shipped-name 1 "$(grep -cx off-203 <<<"$BV_PRED" || true)"
-t drill-board-vocab-post-merge-intact 1 "$(grep -cx intact-204 <<<"$BV_PRED" || true)"
-t drill-board-vocab-post-merge-touched-reds 1 "$(grep -cx moved-207 <<<"$BV_PRED" || true)"
 t drill-board-vocab-ready-swap-reads-moved-name 1 "$(grep -cx swapped-moved <<<"$BV_PRED" || true)"
 t drill-board-vocab-ready-swap-ignores-shipped-name 1 "$(grep -cx unswapped-shipped <<<"$BV_PRED" || true)"
 # ...and the swap is a SWAP: the moved ready set with claimed still standing is
 # not a release, which is the half that reads the claimed name.
 t drill-board-vocab-ready-swap-needs-claimed-gone 1 "$(grep -cx unswapped-half <<<"$BV_PRED" || true)"
 
-# The other two names a fixture sends, on a board that moved THEM: `post-merge`
-# is minted and read back by the triage terminal fixture, and `claimed` is half
+# The other name a fixture sends, on a board that moved IT: `claimed` is half
 # of both the attention leg's demand and the swap above. Moving LABEL_ATTENTION
-# and LABEL_READY leaves those two sites passing under the shipped names by
-# coincidence, so they get a board of their own.
-bv_box_conf 'LABEL_POST_MERGE="landed"' 'LABEL_CLAIMED="wip"'
-bv_board_put 208 landed
-bv_board_put 209 post-merge
+# and LABEL_READY leaves that site passing under the shipped name by
+# coincidence, so it gets a board of its own.
+bv_box_conf 'LABEL_CLAIMED="wip"'
 # shellcheck disable=SC2016  # the snippet is eval'd by bv_drive, which is where it expands
 BV_PM="$(bv_drive '
-  rehearsal_mint_post_merge_fixture owner/repo t b >/dev/null
   rehearsal_attention_file_fixture owner/repo box-identity t b
-  rehearsal_post_merge_labels_intact owner/repo 208 landed && echo intact-208 || echo moved-208
-  rehearsal_post_merge_labels_intact owner/repo 209 post-merge && echo intact-209 || echo moved-209
 ')"
-t drill-board-vocab-moved-post-merge-mint 1 "$(bv_minted landed)"
 t drill-board-vocab-moved-claimed-mint 1 "$(bv_minted wip,attention)"
-t drill-board-vocab-moved-post-merge-intact 1 "$(grep -cx intact-208 <<<"$BV_PM" || true)"
-t drill-board-vocab-moved-post-merge-shipped-name-reds 1 "$(grep -cx moved-209 <<<"$BV_PM" || true)"
 
 # (c) THE RESOLVED QUEUE SET CARRIES THE MOVED `ready`, and the stray assertion
 # grades against it: an issue ruled into `queued` has left the unlabelled
 # queue, and one carrying the shipped `ready` on this board has not.
 t drill-board-vocab-queue-labels-resolve-six 1 \
-  "$(grep -c '^ok triage: installed queue-label set resolves six names$' <<<"$BV_PRED" || true)"
+  "$(grep -c '^ok triage: installed queue-label set resolves five names$' <<<"$BV_PRED" || true)"
 t drill-board-vocab-queue-set-carries-moved-ready 1 \
-  "$(grep -cxF 'QUEUESET=blocked,claimed,epic,needs-triage,post-merge,queued' <<<"$BV_PRED" || true)"
+  "$(grep -cxF 'QUEUESET=blocked,claimed,epic,needs-triage,queued' <<<"$BV_PRED" || true)"
 t drill-board-vocab-stray-ruled-into-moved-queue 1 "$(grep -cx ruled-205 <<<"$BV_PRED" || true)"
 t drill-board-vocab-stray-shipped-name-is-still-stray 1 "$(grep -cx stray-206 <<<"$BV_PRED" || true)"
 
@@ -2309,7 +2293,7 @@ t drill-board-vocab-stray-shipped-name-is-still-stray 1 "$(grep -cx stray-206 <<
 bv_box_conf 'LABEL_READY="blocked"'
 BV_COLLIDED="$(bv_drive 'rehearsal_load_installed_queue_labels')"
 t drill-board-vocab-collided-queue-set-reds 1 \
-  "$(grep -c '^FAIL triage: installed queue-label set resolves six names$' <<<"$BV_COLLIDED" || true)"
+  "$(grep -c '^FAIL triage: installed queue-label set resolves five names$' <<<"$BV_COLLIDED" || true)"
 
 # (d) A BOX WITH NO fleet.conf MINTS AND MATCHES THE SHIPPED NAMES, exactly as
 # today. This is the configuration the defect is invisible under — every round
@@ -2318,9 +2302,9 @@ t drill-board-vocab-collided-queue-set-reds 1 \
 bv_box_conf
 bv_drive "$BV_PHASE2" >/dev/null   # driven for its trace, like the moved board
 t drill-board-vocab-shipped-mint-names 1 \
-  "$(grep -c '^attention:d93f0b needs-triage:fbca04 ready:0e8a16 claimed:1d76db blocked:b60205 post-merge:006b75 epic:5319e7$' <<<"$(bv_vocab)" || true)"
+  "$(grep -c '^attention:d93f0b needs-triage:fbca04 ready:0e8a16 claimed:1d76db blocked:b60205 epic:5319e7$' <<<"$(bv_vocab)" || true)"
 t drill-board-vocab-shipped-fixture-labels 1 \
-  "$(grep -c '^attention post-merge ready claimed,attention attention,blocked$' <<<"$(bv_mints)" || true)"
+  "$(grep -c '^attention ready claimed,attention attention,blocked$' <<<"$(bv_mints)" || true)"
 t drill-board-vocab-shipped-cleanup-deletes 1 \
   "$(grep -c '^attention$' <<<"$(bv_deletes)" || true)"
 bv_board_put 300 ready
@@ -2332,7 +2316,7 @@ BV_SHIPPED_PRED="$(bv_drive '
 ')"
 t drill-board-vocab-shipped-queue-holds 1 "$(grep -cx on-300 <<<"$BV_SHIPPED_PRED" || true)"
 t drill-board-vocab-shipped-queue-set 1 \
-  "$(grep -cxF 'QUEUESET=blocked,claimed,epic,needs-triage,post-merge,ready' <<<"$BV_SHIPPED_PRED" || true)"
+  "$(grep -cxF 'QUEUESET=blocked,claimed,epic,needs-triage,ready' <<<"$BV_SHIPPED_PRED" || true)"
 
 # ...and a box whose configuration resolves no usable name REFUSES, like the
 # census's own read and for the same reason: a vocabulary half-minted under
@@ -2374,9 +2358,9 @@ BV_HOME="$TMP/bv-box"
 bv_box_conf 'LABEL_READY="ready.v2"' "LABEL_ATTENTION='needs\"human'" "LABEL_CLAIMED='claimed+1'"
 bv_drive "$BV_PHASE2" >/dev/null
 t drill-board-vocab-meta-mint-names 1 \
-  "$(grep -cxF 'needs"human:d93f0b needs-triage:fbca04 ready.v2:0e8a16 claimed+1:1d76db blocked:b60205 post-merge:006b75 epic:5319e7' <<<"$(bv_vocab)" || true)"
+  "$(grep -cxF 'needs"human:d93f0b needs-triage:fbca04 ready.v2:0e8a16 claimed+1:1d76db blocked:b60205 epic:5319e7' <<<"$(bv_vocab)" || true)"
 t drill-board-vocab-meta-fixture-labels 1 \
-  "$(grep -cxF 'needs"human post-merge ready.v2 claimed+1,needs"human needs"human,blocked' <<<"$(bv_mints)" || true)"
+  "$(grep -cxF 'needs"human ready.v2 claimed+1,needs"human needs"human,blocked' <<<"$(bv_mints)" || true)"
 bv_board_put 400 readyXv2        # the near-match the ERE wildcard used to accept
 bv_board_put 401 ready.v2        # ...and the name the box actually resolved
 bv_board_put 402 'needs"human'   # flagged, under a name that is not a jq string
@@ -2393,7 +2377,7 @@ BV_META="$(bv_drive '
   rehearsal_builder_left_the_queue owner/repo 401 && echo off-401 || echo on-401
 ')"
 t drill-board-vocab-meta-queue-set-carries-the-dotted-ready 1 \
-  "$(grep -cxF 'QUEUESET=blocked,claimed+1,epic,needs-triage,post-merge,ready.v2' <<<"$BV_META" || true)"
+  "$(grep -cxF 'QUEUESET=blocked,claimed+1,epic,needs-triage,ready.v2' <<<"$BV_META" || true)"
 # THE ROW THE WILDCARD FAILS: `readyXv2` is not a label this board has, so the
 # issue carrying it has not left the unlabelled queue. Joined into an ERE, it
 # did.
@@ -2426,7 +2410,7 @@ BV_META_ALT="$(bv_drive '
 ')"
 # Six names still resolve: a `|` inside one of them is one name, not two.
 t drill-board-vocab-meta-alternation-resolves-six 1 \
-  "$(grep -c '^ok triage: installed queue-label set resolves six names$' <<<"$BV_META_ALT" || true)"
+  "$(grep -c '^ok triage: installed queue-label set resolves five names$' <<<"$BV_META_ALT" || true)"
 t drill-board-vocab-meta-alternation-fragment-is-stray 1 \
   "$(grep -cx stray-410 <<<"$BV_META_ALT" || true)"
 t drill-board-vocab-meta-alternation-whole-name-is-ruled 1 \
@@ -2494,14 +2478,14 @@ t drill-board-vocab-unresolved-swap-names-the-gap 1 \
 # (e5a) THE SILENT ONE. `-alert` parses as the bundle `-a -l -e`, and `-e` takes
 # the REST of the operand — newlines and all — as its pattern argument, so the
 # patterns actually compared are `rt`, `blocked`, `claimed`, `epic`,
-# `needs-triage`, `post-merge`. The exact name reads STRAY and the fragment `rt`
+# `needs-triage`. The exact name reads STRAY and the fragment `rt`
 # reads RULED, on a board that carries neither.
 bv_box_conf 'LABEL_READY="-alert"'
 bv_drive "$BV_PHASE2" >/dev/null
 t drill-board-vocab-dash-mint-names 1 \
-  "$(grep -cxF 'attention:d93f0b needs-triage:fbca04 -alert:0e8a16 claimed:1d76db blocked:b60205 post-merge:006b75 epic:5319e7' <<<"$(bv_vocab)" || true)"
+  "$(grep -cxF 'attention:d93f0b needs-triage:fbca04 -alert:0e8a16 claimed:1d76db blocked:b60205 epic:5319e7' <<<"$(bv_vocab)" || true)"
 t drill-board-vocab-dash-fixture-labels 1 \
-  "$(grep -cxF 'attention post-merge -alert claimed,attention attention,blocked' <<<"$(bv_mints)" || true)"
+  "$(grep -cxF 'attention -alert claimed,attention attention,blocked' <<<"$(bv_mints)" || true)"
 bv_board_put 430 '-alert'  # the exact name the box resolved
 bv_board_put 431 rt        # the `-e` argument fragment, which is no name at all
 bv_board_put 432 alert     # the dash-less near-miss
@@ -2520,7 +2504,7 @@ BV_DASH="$(bv_drive '
 ')"
 t drill-board-vocab-dash-name-sorts-first 1 "$(grep -c '^FIRST=-' <<<"$BV_DASH" || true)"
 t drill-board-vocab-dash-queue-set-carries-the-hyphen 1 \
-  "$(grep -cxF 'QUEUESET=-alert,blocked,claimed,epic,needs-triage,post-merge' <<<"$BV_DASH" || true)"
+  "$(grep -cxF 'QUEUESET=-alert,blocked,claimed,epic,needs-triage' <<<"$BV_DASH" || true)"
 # THE TWO ROWS THE OPTION BUNDLE FAILS.
 t drill-board-vocab-dash-exact-name-is-ruled 1 "$(grep -cx ruled-430 <<<"$BV_DASH" || true)"
 t drill-board-vocab-dash-fragment-is-stray 1 "$(grep -cx stray-431 <<<"$BV_DASH" || true)"
@@ -2568,18 +2552,18 @@ BV_CRLF=1
 bv_box_conf 'LABEL_ATTENTION="needs-human"' 'LABEL_READY="queued"'
 bv_drive "$BV_PHASE2" >/dev/null
 t drill-board-vocab-crlf-box-mints-the-moved-names 1 \
-  "$(grep -cxF 'needs-human:d93f0b needs-triage:fbca04 queued:0e8a16 claimed:1d76db blocked:b60205 post-merge:006b75 epic:5319e7' <<<"$(bv_vocab)" || true)"
+  "$(grep -cxF 'needs-human:d93f0b needs-triage:fbca04 queued:0e8a16 claimed:1d76db blocked:b60205 epic:5319e7' <<<"$(bv_vocab)" || true)"
 # The queue set too, which had no strip at all before this round: it was only
-# counted, and six names each ending in CR count as six.
+# counted, and five names each ending in CR count as five.
 # shellcheck disable=SC2016  # the snippet is eval'd by bv_drive, which is where it expands
 BV_CRLF_SET="$(bv_drive '
   rehearsal_load_installed_queue_labels
   echo "QUEUESET=$(paste -sd, - <<<"$REHEARSAL_QUEUE_LABELS")"
 ')"
 t drill-board-vocab-crlf-queue-set-resolves-six 1 \
-  "$(grep -c '^ok triage: installed queue-label set resolves six names$' <<<"$BV_CRLF_SET" || true)"
+  "$(grep -c '^ok triage: installed queue-label set resolves five names$' <<<"$BV_CRLF_SET" || true)"
 t drill-board-vocab-crlf-queue-set-carries-no-carriage-return 1 \
-  "$(grep -cxF 'QUEUESET=blocked,claimed,epic,needs-triage,post-merge,queued' <<<"$BV_CRLF_SET" || true)"
+  "$(grep -cxF 'QUEUESET=blocked,claimed,epic,needs-triage,queued' <<<"$BV_CRLF_SET" || true)"
 # ...and the other side of the line: an INTERIOR CR is the operator's, survives
 # the strip, and is refused as whitespace like any other. A literal CR inside
 # the quoted value, because that is how one gets into a sourced string.

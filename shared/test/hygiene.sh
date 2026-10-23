@@ -302,7 +302,7 @@ t hygiene-comma-bearing-assignee-change-sweeps 1 \
 
 # D2. The floor is what keeps the gate a saving rather than a hole: without it
 # a board that never changes is never swept again, and the 48h reclaim and the
-# 7-day post-merge nudge go with it. Ages are set on the committed row, so no
+# ageing go with it. Ages are set on the committed row, so no
 # clock is mocked; the margins are wide enough that a slow box cannot flip one.
 hyg_age_ledger() {  # hyg_age_ledger <seconds ago>
   local digest now

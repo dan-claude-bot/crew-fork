@@ -459,20 +459,18 @@ _triage_repo() {
 
   # (b) queue-unlabeled strays: the board invariant, quoted from LABELS.md, is
   # that every open issue "is either needs-triage, epic, or carries exactly one
-  # of ready / claimed / blocked / post-merge" — SIX labels. This enumeration
-  # said five until #358, dropping post-merge, and the paraphrase is what made
-  # that survivable-looking: the moment triage did its job and moved a merged
-  # issue post-merge, it converted that issue into a permanent violation of the
-  # engine's own invariant, which no session could ever clear because
-  # post-merge is the correct terminal state. The detector asks exactly one
+  # of ready / claimed / blocked" — FIVE labels, read from the conf so the set
+  # here and LABELS.md's sentence are asserted equal by the suite. It was six
+  # with `post-merge` from #358 until ceremony 0.7.11 retired that row: after-
+  # close work is now a successor issue minted at the split, so a merged issue
+  # closes and needs no terminal queue state. The detector asks exactly one
   # question — does this issue carry a queue label — and the composition rules
-  # (post-merge never composes with blocked or attention, an assigned
-  # post-merge issue is flagged) are the sweep's, not this signal's.
+  # are the sweep's, not this signal's.
   if ! stray_items="$(printf '%s' "$issue_json" \
       | jq -r --arg repo "$R" --arg r "$LABEL_READY" --arg c "$LABEL_CLAIMED" --arg b "$LABEL_BLOCKED" \
-           --arg p "$LABEL_POST_MERGE" --arg e "$LABEL_EPIC" --arg n "$LABEL_NEEDS_TRIAGE" \
+           --arg e "$LABEL_EPIC" --arg n "$LABEL_NEEDS_TRIAGE" \
         '.[] | select( ([.labels[].name]
-            | map(. == $r or . == $c or . == $b or . == $p or . == $e or . == $n) | any) | not )
+            | map(. == $r or . == $c or . == $b or . == $e or . == $n) | any) | not )
           | "\($repo)#\(.number) \(.updatedAt)"' 2>/dev/null)"; then
     warn "$R: stray parse failed"
     stray_items=""
@@ -637,10 +635,10 @@ _triage_repo() {
       fi
       if ! post_stray="$(printf '%s' "$post_board_json" \
           | jq -r --arg repo "$R" --arg r "$LABEL_READY" --arg c "$LABEL_CLAIMED" \
-              --arg b "$LABEL_BLOCKED" --arg p "$LABEL_POST_MERGE" \
+              --arg b "$LABEL_BLOCKED" \
               --arg e "$LABEL_EPIC" --arg n "$LABEL_NEEDS_TRIAGE" \
             '.[] | select( ([.labels[].name]
-                | map(. == $r or . == $c or . == $b or . == $p or . == $e or . == $n) | any) | not )
+                | map(. == $r or . == $c or . == $b or . == $e or . == $n) | any) | not )
               | "\($repo)#\(.number) \(.updatedAt)"' 2>/dev/null)"; then
         warn "$R: post-session stray parse failed"
         post_stray=""

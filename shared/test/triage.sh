@@ -743,8 +743,9 @@ tr358_board() {  # tr358_board <label|-> ... — one open issue per argument
                        updatedAt: $s})'
 }
 
-# Direction one — an issue whose only queue label is post-merge is not a stray.
-tr_fix '[]' '[]' '[]' '[]' '[]' '[]' "$(tr358_board post-merge)"
+# Direction one — an issue whose only queue label is blocked is not a stray
+# (it was post-merge until ceremony 0.7.11 retired that row).
+tr_fix '[]' '[]' '[]' '[]' '[]' '[]' "$(tr358_board blocked)"
 tr_run 0
 t triage358-post-merge-spends-no-session 0 "$(trc '^SESSION')"
 if grep -q 'queue-unlabeled' "$TR_LOG"; then r1="$(cat "$TR_LOG")"; else r1=silent; fi
@@ -789,7 +790,7 @@ tr358_doctrine_set="$(printf '%s' "$tr358_doctrine" | grep -o '`[a-z][a-z-]*`' \
 # parse that silently stops matching compares an empty set to an empty set and
 # passes. It asserts cardinality, never membership — the comparison below is
 # what asserts which labels, and it is derived on both sides.
-t triage358-doctrine-set-nonvacuous 6 "$(printf '%s' "$tr358_doctrine_set" | wc -w | tr -d ' ')"
+t triage358-doctrine-set-nonvacuous 5 "$(printf '%s' "$tr358_doctrine_set" | wc -w | tr -d ' ')"
 
 # The engine's set, taken from signal (b)'s own --arg list and resolved through
 # the shipped conf. A label added to LABELS.md and not to the engine fails
@@ -816,11 +817,11 @@ TR358PAIRS
 # shellcheck disable=SC2086  # deliberate word-splitting: these are set members
 tr358_engine_set="$(printf '%s\n' $tr358_engine_set | sort -u | tr '\n' ' ')"
 t triage358-engine-set-is-the-doctrine-set "$tr358_doctrine_set" "$tr358_engine_set"
-# Named separately so the conf's own omission — the whole defect — reads as
-# itself rather than as a set diff.
-if grep -q '^LABEL_POST_MERGE="post-merge"$' "$SHARED/conf/fleet.defaults.conf"; then
-  r1=defined; else r1=MISSING; fi
-t triage358-conf-defines-post-merge defined "$r1"
+# Named separately so the conf's own state — the row ceremony 0.7.11 retired —
+# reads as itself rather than as a set diff.
+if grep -q '^LABEL_POST_MERGE=' "$SHARED/conf/fleet.defaults.conf"; then
+  r1=STILL-DEFINED; else r1=retired; fi
+t triage358-conf-retired-post-merge retired "$r1"
 
 # --- #461: operator ownership composes with ready, but is not build duty ----
 # Signal (b) stays a six-queue-label question. The builder consumes the same

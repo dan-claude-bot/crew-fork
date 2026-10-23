@@ -2604,7 +2604,7 @@ else
   r1=MISSING
 fi
 t attention-audit-helper-sourced-in-triage-block wired "$r1"
-AUD_PM_LINE="$(grep -nF 'triage: post-merge-only tick launched no session' \
+AUD_PM_LINE="$(grep -nF 'triage: quiet-board tick launched no session' \
   "$ROOT/drill/rehearsal.sh" | head -1 | cut -d: -f1)"
 # shellcheck disable=SC2016  # match the literal call site in rehearsal.sh
 AUD_LEG_LINE="$(grep -nF 'rehearsal_attention_audit_drill "$SANDBOX"' \
@@ -4503,7 +4503,6 @@ printf '%s\n' \
   'LABEL_READY=ready' \
   'LABEL_CLAIMED=claimed' \
   'LABEL_BLOCKED=blocked' \
-  'LABEL_POST_MERGE=post-merge' \
   'LABEL_EPIC=epic' \
   'LABEL_NEEDS_TRIAGE=needs-triage' \
   >"$QUEUE_LABEL_SIX_HOME/duty/conf/fleet.defaults.conf"
@@ -4511,7 +4510,6 @@ printf '%s\n' \
   'LABEL_READY=ready' \
   'LABEL_CLAIMED=claimed' \
   'LABEL_BLOCKED=blocked' \
-  'LABEL_EPIC=epic' \
   'LABEL_NEEDS_TRIAGE=needs-triage' \
   >"$QUEUE_LABEL_FIVE_HOME/duty/conf/fleet.defaults.conf"
 printf '%s\n' 'MARK_ANSWERED="fixture answered at head"' \
@@ -4529,7 +4527,7 @@ else
 fi
 t rehearsal-queue-label-six-rc 0 "$queue_label_six_rc"
 t rehearsal-queue-label-six-records-ok 1 \
-  "$(grep -cFx 'ok   triage: installed queue-label set resolves six names' \
+  "$(grep -cFx 'ok   triage: installed queue-label set resolves five names' \
     <<<"$queue_label_six_out")"
 
 QUEUE_LABEL_FIXTURE_HOME="$QUEUE_LABEL_FIVE_HOME"
@@ -4540,9 +4538,9 @@ else
 fi
 t rehearsal-queue-label-five-rc 1 "$queue_label_five_rc"
 t rehearsal-queue-label-five-records-fail 1 \
-  "$(grep -cFx 'FAIL triage: installed queue-label set resolves six names' \
+  "$(grep -cFx 'FAIL triage: installed queue-label set resolves five names' \
     <<<"$queue_label_five_out")"
-t rehearsal-queue-label-five-names-values 'blocked claimed epic needs-triage ready' \
+t rehearsal-queue-label-five-names-values 'blocked claimed needs-triage ready' \
   "$(sed -n 's/^  //p' <<<"$queue_label_five_out" | paste -sd' ' -)"
 QUEUE_LABEL_FIXTURE_HOME="$ANSWER_MARK_HOME"
 if rehearsal_load_installed_answer_mark >/dev/null; then

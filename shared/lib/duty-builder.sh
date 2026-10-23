@@ -2474,9 +2474,10 @@ _builder_repo() {
   open_heads="$(gh pr list -R "$R" --state open --author "$ME" \
     --json headRefName --jq '.[].headRefName' 2>/dev/null || echo err)"
   # A merged build/* branch is NOT interrupted work: its PR landed, and the
-  # claim lingers only until triage moves the issue to its post-merge state
-  # (heavy-duty/ceremony#172 — the PR carried Refs #N, not Closes, because the
-  # remaining ACs are post-merge and triage-owned). Treating it as an orphan
+  # claim lingers only until GitHub closes the issue on the merge (a same-repo
+  # PR always carries Closes #N since ceremony 0.7.11; after-close work is a
+  # successor issue minted at the split, never residue on this one — the
+  # `post-merge` queue row it used to wait in is retired). Treating it as an orphan
   # phantom-rebuilds merged code every tick and holds the build slot against
   # ready work (incubator#55/#64). Gather merged heads and exclude them below,
   # so every box gets this in the shared engine instead of re-deriving it by
@@ -2542,8 +2543,8 @@ _builder_repo() {
         | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' ')"
     fi
     near_miss_desc="$(_near_miss_dispatch_desc "$near_miss_rows" "$stranded_nums")"
-    # Post-merge wait, not an orphan: a merged branch never resumes. Re-entry
-    # for residue is a fresh branch from main after triage re-readies it (#172).
+    # A merged branch never resumes and is not an orphan: it waits for GitHub's
+    # close. Re-entry for residue is a successor issue and a fresh branch.
     orphan_nums="$(_orphan_claim_nums "$name" "$claimed_nums" "$merged_heads" "$open_heads")"
     # THE DOABLE-WORK GATE (#314). Every other wake in this engine is
     # ledger-filtered; resume was the one that was not, and a park is invisible
