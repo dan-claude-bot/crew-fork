@@ -11074,9 +11074,10 @@ t duty-consumes-the-wake-reason 1 "$(grep -c '^rm -f "$DUTY_DIR/.wake-reason"$' 
 t duty-exports-the-reason-to-sessions 1 "$(grep -c '^export WAKE_REASON$' "$W759_DUTY")"
 t duty-publishes-the-identity 1 "$(grep -c 'printf .%s.n. "$ME" >"$DUTY_DIR/.identity"' "$W759_DUTY")"
 # The idle counter is written on every exit path: as many accountings as
-# `duty run end` lines, and each immediately before one.
+# `duty run end` lines, and each immediately after one (the reaper's own
+# adjacency pin reads the line before the end).
 t duty-idle-accounts-on-every-exit "$(grep -cE '^[[:space:]]*log "duty run end"$' "$W759_DUTY")" \
-  "$(grep -B1 -E '^[[:space:]]*log "duty run end"$' "$W759_DUTY" | grep -cE '^[[:space:]]*idle_ticks_account$')"
+  "$(grep -A1 -E '^[[:space:]]*log "duty run end"$' "$W759_DUTY" | grep -cE '^[[:space:]]*idle_ticks_account$')"
 W759_HOME="$TMP/idle-home"; mkdir -p "$W759_HOME"
 eval "$(sed -n '/^idle_ticks_account() {/,/^}/p' "$W759_DUTY")"
 ( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; idle_ticks_account; idle_ticks_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"

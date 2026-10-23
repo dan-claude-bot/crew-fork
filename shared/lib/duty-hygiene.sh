@@ -22,7 +22,7 @@
 # tick rather than degrade — the wrong direction for a value whose only job is
 # to make the sweep MORE frequent. Kept equal to shared/conf/roles/triage.conf,
 # and `hygiene-floor-default-matches-conf` fails if the two ever drift.
-HYGIENE_FLOOR_DEFAULT=43200
+HYGIENE_FLOOR_DEFAULT=86400
 
 # The cap on the bounded listing. Reaching it means the board is larger than the
 # digest can see, so a change past the cap would be invisible — that is a hole,

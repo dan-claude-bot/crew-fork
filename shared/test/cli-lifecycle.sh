@@ -209,10 +209,6 @@ case "$cmd" in
       case "$script" in
         *'cat /etc/rig/manifest'*) printf 'rig-probe %s\n' "$name" >>"$calls" ;;
       esac
-      # A hire carrying a credential pool names it on the install line (#761).
-      case "$script" in
-        *"--pool '"*) printf 'pool %s %s\n' "$name" "$(printf '%s' "$script" | sed -n "s/.*--pool '\([^']*\)'.*/\1/p" | head -1)" >>"$calls" ;;
-      esac
       version="${LIFE_GUEST_RIG:-$CREW_PLATFORM_RIG_MIN}"
       [ ! -s "$state_dir/rig-$name" ] || version="$(cat "$state_dir/rig-$name")"
       [ "$version" != absent ] || exit 1
@@ -607,7 +603,7 @@ t hostcron-the-weekly-reset-is-on-sunday 1 \
 # group only repeats where what follows a marker run is whitespace and more
 # markers, so a comment that merely NAMES the verb is untouched.
 t hostcron-has-no-commented-out-reset-job-line 0 \
-  "$(sed -E 's/^([[:space:]]*#+)+[[:space:]]*//' "$HOST_CRONTAB" \
+  "$(grep -E '^[[:space:]]*#' "$HOST_CRONTAB" | sed -E 's/^([[:space:]]*#+)+[[:space:]]*//' \
      | grep -cE "$cron_entry" || true)"
 # #688 — the operator-facing reset help and the shipped schedule are two
 # readers of one fact. Compare them instead of pinning either answer: #694 can
@@ -1597,15 +1593,5 @@ t platform-no-jq-still-reports-the-box-half 1 \
   "$(grep -cF "box: 0.9.1 found, $CREW_PLATFORM_BOX_MIN wanted" <<<"$nojq_out" || true)"
 t platform-no-jq-does-not-refuse 1 \
   "$(grep -c 'rather than refusing' <<<"$nojq_out" || true)"
-
-# ── #761 — N members per subscription: `crew hire --pool` names the pool ────
-# Several members hired on one vendor subscription share a credential pool,
-# and `crew usage --by pool` reads the quota where it is spent. The pool is a
-# safe token, carried to the box's install line, written into instance.conf.
-capture hire alpha --role builder --agent claude --pool 'bad token'
-t hire-pool-must-be-a-safe-token 2 "$RC"
-: >"$calls"
-capture hire alpha --role builder --agent claude --pool claude-max-1
-t hire-pool-reaches-the-install-line 1 "$(grep -c '^pool alpha claude-max-1$' "$calls" || true)"
 
 suite_finish

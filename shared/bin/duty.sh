@@ -163,8 +163,8 @@ check_vendor_credential
 [ -z "$ME" ] || printf '%s\n' "$ME" >"$DUTY_DIR/.identity"
 if [ -z "$ME" ]; then
   warn "cannot resolve own login (gh auth dead?) — nothing to do this tick"
-  idle_ticks_account
-log "duty run end"
+  log "duty run end"
+idle_ticks_account
   exit 0
 fi
 
@@ -187,8 +187,8 @@ if ! converge_git_identity "$ME"; then
   case "${GIT_IDENTITY_FAILURE_KIND:-identity}" in
     credential)
       note_auth_failure gh "$GIT_IDENTITY_FAILURE_EVIDENCE"
-      idle_ticks_account
-log "duty run end"
+      log "duty run end"
+idle_ticks_account
       exit 0
       ;;
   esac
@@ -199,8 +199,8 @@ log "duty run end"
     alert "🪪 $(hostname): $identity_failure — refusing to run sessions that would commit as somebody else"
     echo "$boot_id" >"$DUTY_DIR/.identity-alerted"
   fi
-  idle_ticks_account
-log "duty run end"
+  log "duty run end"
+idle_ticks_account
   exit 0
 fi
 
@@ -260,5 +260,5 @@ if [ $((reaper_now - reaper_last)) -ge "$REAPER_INTERVAL_SECONDS" ]; then
   duty_reaper && echo "$reaper_now" >"$DUTY_DIR/.reaper-last"
 fi
 
-idle_ticks_account
 log "duty run end"
+idle_ticks_account

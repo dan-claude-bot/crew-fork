@@ -1607,7 +1607,8 @@ t near-miss-request-issues-no-review-request 0 \
 # harness being inert.
 NM_REAL_ONLY="$(mk_rp "$H" '[]' '[]' \
   "$(jq -cn --arg b "$RP_MARK $H" '[{author:{login:"me-bot"},body:$b}]')")"
-t near-miss-control-real-signal-does-request 3 \
+# Four since #761: the sizing read of the head's files is one more gh call.
+t near-miss-control-real-signal-does-request 4 \
   "$(nm_request "$NM_REAL_ONLY" "$TMP/near-miss-gh-calls-control")"
 
 # The detection over a listing. Fixtures, never a live box (#319's test plan).
@@ -6469,8 +6470,9 @@ p761_risk() {  # p761_risk <files-json-lines|FAIL> — tier|why
   (
     PANEL_RISK_PATHS='^(shared/lib|shared/bin|cli|\.github/workflows)/'
     PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80
-    if [ "$1" = FAIL ]; then gh() { return 1; }; else gh() { printf '%s\n' "$1"; }; fi
-    tier="$(_panel_risk o/r 7)"; printf '%s|%s' "$tier" "$_PANEL_RISK_WHY"
+    fx="$1"
+    if [ "$fx" = FAIL ]; then gh() { return 1; }; else gh() { printf '%s\n' "$fx"; }; fi
+    _panel_risk o/r 7; printf '%s|%s' "$_PANEL_RISK_TIER" "$_PANEL_RISK_WHY"
   )
 }
 t panel-risk-a-small-safe-change-is-low "low|2 file(s), 30 lines, no risky path" "$(p761_risk $'docs/a.md 20\nshared/test/x.sh 10')"
@@ -6487,7 +6489,7 @@ t panel-sized-a-panel-no-larger-than-the-size-is-whole "rev-a" "$(PANEL_LOW_RISK
 t panel-sized-a-bad-size-is-one "rev-b" "$(PANEL_LOW_RISK_SIZE=x _panel_sized low 7 "$p761_panel")"
 t panel-knobs-ship "PANEL_LOW_RISK_SIZE=1 PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80" \
   "$(grep -hE '^PANEL_(LOW_RISK_SIZE|RISK_MAX_FILES|RISK_MAX_LINES)=' "$SHARED/conf/fleet.defaults.conf" | sort | paste -sd' ' -)"
-t panel-request-posts-the-sizing-mark 1 "$(grep -c '"$MARK_PANEL_SIZED $risk_tier at $gql_head:' "$SHARED/lib/duty-builder.sh")"
+t panel-request-posts-the-sizing-mark 1 "$(grep -c '"${MARK_PANEL_SIZED:-🧭 panel sized} $risk_tier at $gql_head:' "$SHARED/lib/duty-builder.sh")"
 t panel-request-requests-the-sized-set 1 "$(grep -c '^  to_request="$sized"$' "$SHARED/lib/duty-builder.sh")"
 unset -f p761_risk
 

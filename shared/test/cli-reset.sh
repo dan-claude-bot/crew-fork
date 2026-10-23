@@ -185,6 +185,19 @@ case "$cmd" in
       esac
       env HOME="$guest_home" PATH="$RST_PROBE_BIN" RST_FLOCK_RC="$probe_rc" RST_NOW=10000 \
         /bin/bash -c "$script"
+    elif [[ "$script" == *'echo "::logstart"'* ]]; then
+      # The drain's full probe (#761): a reset drains the box to the store
+      # before the disk goes back. RST_DRAIN_FAIL names a box whose drain
+      # answers nothing, which the store refuses as a truncated record.
+      # First in the chain: probe.sh carries most of the strings the arms
+      # below key on, so behind them it would never be reached.
+      printf 'drain %s\n' "$name" >>"$calls"
+      [ "$name" != "${RST_DRAIN_FAIL:-}" ] || exit 0
+      printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
+      printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
+      printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
+      printf '::statefiles .seen-build\n::filestart .seen-build\no/r#1 2026-10-23T00:00:00Z\n::fileend\n'
+      printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
     elif [[ "$script" == *'gh auth status'* ]]; then
       printf 'login-probe %s\n' "$name" >>"$calls"
       case " ${RST_LOGGED_IN:-} " in *" $name "*) exit 0 ;; *) exit 1 ;; esac
@@ -241,17 +254,6 @@ case "$cmd" in
     elif [[ "$script" == *'df -Pk'* ]]; then
       printf 'free-probe %s\n' "$name" >>"$calls"
       printf '1200\n'
-    elif [[ "$script" == *'echo "::logstart"'* ]]; then
-      # The drain's full probe (#761): a reset drains the box to the store
-      # before the disk goes back. RST_DRAIN_FAIL names a box whose drain
-      # answers nothing, which the store refuses as a truncated record.
-      printf 'drain %s\n' "$name" >>"$calls"
-      [ "$name" != "${RST_DRAIN_FAIL:-}" ] || exit 0
-      printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
-      printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
-      printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
-      printf '::statefiles .seen-build\n::filestart .seen-build\no/r#1 2026-10-23T00:00:00Z\n::fileend\n'
-      printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
     elif [[ "$script" == *'base64 -d > ~/duty/'* ]]; then
       printf 'memory %s %s\n' "$name" "$(printf '%s' "$script" | sed -n "s|.*base64 -d > ~/duty/'\([^']*\)'.*|\1|p")" >>"$calls"
       cat >/dev/null
@@ -271,6 +273,10 @@ case "$cmd" in
       # `install.sh` — that appears in stage_engine's `test -f` too, and
       # counting both made a single install look like two.
       case "$script" in *'retired obsolete box-side engine source'*) printf 'install %s\n' "$name" >>"$calls" ;; esac
+      # A hire carrying a credential pool names it on the install line (#761).
+      case "$script" in
+        *"--pool '"*) printf 'pool %s %s\n' "$name" "$(printf '%s' "$script" | sed -n "s/.*--pool '\([^']*\)'.*/\1/p" | head -1)" >>"$calls" ;;
+      esac
       printf 'exec %s\n' "$name" >>"$calls"
       if [ "$name" = "${RST_INSTALL_FAIL:-}" ]; then exit 1; fi
     fi
@@ -1493,5 +1499,19 @@ case "$(cat "$HOSTLOG" 2>/dev/null || true)" in
   *) r1="$(cat "$HOSTLOG" 2>/dev/null || true)" ;;
 esac
 t reset-weekly-after-recut-logs-a-clean-boundary logged "$r1"
+
+# ── #761 — N members per subscription: `crew hire --pool` names the pool ────
+# Several members hired on one vendor subscription share a credential pool,
+# and `crew usage --by pool` reads the quota where it is spent. The pool is a
+# safe token, carried to the box's install line, written into instance.conf.
+# Here and not in cli-lifecycle because this shim is the one that carries a
+# hire through to its install exec.
+reset_case
+capture hire alpha --pool 'bad token'
+t hire-pool-must-be-a-safe-token 2 "$RC"
+reset_case
+capture hire alpha --pool claude-max-1
+t hire-pool-hires 0 "$RC"
+t hire-pool-reaches-the-install-line 1 "$(grep -c '^pool alpha claude-max-1$' "$STATE/calls" || true)"
 
 suite_finish

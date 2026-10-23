@@ -3715,8 +3715,9 @@ restore_box() { # NAME
     # Its memory goes to the store before the disk goes back to the checkpoint
     # (#761): the ledgers, the breaker, duty.log — everything a restore wipes
     # — are what the box gets back below, and what the floor shows meanwhile.
-    if ! cmd_drain "$name" >/dev/null 2>&1; then
-      echo "  $name: REFUSED — drain failed; a box whose evidence the store does not hold is not reset"
+    local drain_out
+    if ! drain_out="$(cmd_drain "$name" 2>&1)"; then
+      echo "  $name: REFUSED — drain failed ($(printf '%s' "$drain_out" | tail -1)); a box whose evidence the store does not hold is not reset"
       return 1
     fi
     if ! box down "$name" </dev/null; then

@@ -746,18 +746,20 @@ _at_round_cap() {
 # best-effort and gates nothing — the same rule as _handoff_finalize.
 # --- Risk-sized panels (#761) -------------------------------------------------
 #
-# _panel_risk REPO NUM — `low` or `high`, with the reason in _PANEL_RISK_WHY.
+# _panel_risk REPO NUM — sets _PANEL_RISK_TIER (`low` or `high`) and
+# _PANEL_RISK_WHY; prints nothing, so a caller reads both without a subshell.
 # Read off the head's files: any path matching PANEL_RISK_PATHS, more than
 # PANEL_RISK_MAX_FILES files, or more than PANEL_RISK_MAX_LINES lines changed
 # is high. A read that fails is high — a panel that cannot see the change
 # reviews it whole, never smaller.
 _PANEL_RISK_WHY=""
+_PANEL_RISK_TIER=high
 _panel_risk() {
   local repo="$1" num="$2" files paths n lines risky
-  _PANEL_RISK_WHY=""
+  _PANEL_RISK_WHY=""; _PANEL_RISK_TIER=high
   if ! files="$(gh pr view "$num" -R "$repo" --json files \
       --jq '.files[] | "\(.path) \(.additions + .deletions)"' 2>/dev/null)"; then
-    _PANEL_RISK_WHY="files unreadable"; printf 'high\n'; return 0
+    _PANEL_RISK_WHY="files unreadable"; return 0
   fi
   n="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')"
   lines="$(printf '%s\n' "$files" | awk 'NF {s += $2} END {print s + 0}')"
@@ -765,16 +767,16 @@ _panel_risk() {
   risky="$(printf '%s\n' "$paths" | grep -E -c "${PANEL_RISK_PATHS:-^$}" || true)"
   if [ "$risky" -gt 0 ]; then
     _PANEL_RISK_WHY="$risky risky path(s): $(printf '%s\n' "$paths" | grep -E "${PANEL_RISK_PATHS:-^$}" | head -3 | paste -sd, -)"
-    printf 'high\n'; return 0
+    return 0
   fi
   if [ "$n" -gt "${PANEL_RISK_MAX_FILES:-3}" ]; then
-    _PANEL_RISK_WHY="$n files (bound ${PANEL_RISK_MAX_FILES:-3})"; printf 'high\n'; return 0
+    _PANEL_RISK_WHY="$n files (bound ${PANEL_RISK_MAX_FILES:-3})"; return 0
   fi
   if [ "$lines" -gt "${PANEL_RISK_MAX_LINES:-80}" ]; then
-    _PANEL_RISK_WHY="$lines lines (bound ${PANEL_RISK_MAX_LINES:-80})"; printf 'high\n'; return 0
+    _PANEL_RISK_WHY="$lines lines (bound ${PANEL_RISK_MAX_LINES:-80})"; return 0
   fi
   _PANEL_RISK_WHY="$n file(s), $lines lines, no risky path"
-  printf 'low\n'
+  _PANEL_RISK_TIER=low
 }
 
 # _panel_sized TIER NUM TO_REQUEST — the reviewers to request: all of them
@@ -868,13 +870,13 @@ _request_panel() {
   # from PANEL_LOW_RISK_SIZE of the panel, rotated by number; the tier and
   # what decided it are posted on the pull request, once per head.
   local risk_tier risk_why sized
-  risk_tier="$(_panel_risk "$repo" "$num")"; risk_why="$_PANEL_RISK_WHY"
+  _panel_risk "$repo" "$num"; risk_tier="$_PANEL_RISK_TIER"; risk_why="$_PANEL_RISK_WHY"
   sized="$(_panel_sized "$risk_tier" "$num" "$to_request")"
   if [ "$sized" != "$to_request" ]; then
     log "$repo#$num: panel sized $risk_tier ($risk_why): requesting $(printf '%s' "$sized" | tr '\n' ' ')of $(printf '%s' "$to_request" | tr '\n' ' ')"
   fi
   "$BIN_DIR/post-once.sh" "$repo" "$num" \
-    "$MARK_PANEL_SIZED $risk_tier at $gql_head: $(printf '%s' "$sized" | tr '\n' ' ' | sed 's/ $//') — $risk_why" >/dev/null 2>&1 \
+    "${MARK_PANEL_SIZED:-🧭 panel sized} $risk_tier at $gql_head: $(printf '%s' "$sized" | tr '\n' ' ' | sed 's/ $//') — $risk_why" >/dev/null 2>&1 \
     || warn "$repo#$num: the panel-sized comment did not post (best-effort)"
   to_request="$sized"
   # One reviewer per call, not a batched reviewers[] array: a single 422 (an

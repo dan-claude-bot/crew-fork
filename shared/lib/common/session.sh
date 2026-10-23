@@ -182,8 +182,8 @@ _session_sid_suffix() {
 # tick (duty.sh reads it into WAKE_REASON) or `cron` when the box's own cron
 # fired with nothing written. Sanitised to one token: a reason is a list of
 # `kind#item` words joined by commas, never free text. Sits past the pool
-# `oom=` token, ahead of the usage and pool suffixes and of `sid=`, which
-# #538 keeps last.
+# usage suffix and ahead of the pool suffix and of `sid=`, which #538 keeps
+# last.
 _session_why_suffix() {
   local why="${WAKE_REASON:-cron}"
   why="${why//[^A-Za-z0-9._:#,\/-]/_}"
@@ -1059,7 +1059,7 @@ $prompt"
   # Unconditional, unlike the two suffixes ahead of it — a session with no id
   # emits `sid=unknown`, because D3 asks for the token on EVERY record and
   # `unknown` is the answer `_session_mint_sid` already gives.
-  log "SESSION END kind=$kind key=$key rc=$rc dur=${dur}s outcome=$verdict acted=$acted reply_tail=$reply_tail log=$log_bytes left=$survivor_count tier=$_SESSION_TIER${peak_rss:+ peak_rss=$peak_rss} oom=$oom_delta$why_suffix$usage_suffix$pool_suffix$sid_suffix"
+  log "SESSION END kind=$kind key=$key rc=$rc dur=${dur}s outcome=$verdict acted=$acted reply_tail=$reply_tail log=$log_bytes left=$survivor_count tier=$_SESSION_TIER${peak_rss:+ peak_rss=$peak_rss} oom=$oom_delta$usage_suffix$why_suffix$pool_suffix$sid_suffix"
   # Written after the line that reports the session and before the counters
   # that bill it, reading the two figures that line just published: this stub
   # and that record can never disagree about what the session left behind.
