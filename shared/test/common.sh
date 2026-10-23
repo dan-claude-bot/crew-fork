@@ -801,6 +801,7 @@ breaker_hooked_out="$({
   fail() { FAILS+=("$1"); }
   skip() { :; }
   check() { printf 'check %s\n' "$1"; return 0; }
+  # shellcheck disable=SC2317  # invoked indirectly by the code under test
   wait_for() { return 0; }
   breaker_rc=0
   rehearsal_breaker_drill owner/repo 1 reviewer || breaker_rc=$?
@@ -6866,7 +6867,7 @@ t survival-borrowed-box-unchanged-log-now-reds red "$r1"
 t survival-borrowed-box-unchanged-log-names-tick tick "$(survival_surfaces)"
 t survival-borrowed-box-unchanged-log-waits-the-budget 390 "$SURVIVAL_CLOCK"
 case "$INSTALL_SURVIVAL_DETAIL" in
-  *"2026-08-03T15:14:01Z duty run end"*"box arrived with"*) r1=names-arrival-tick ;; *) r1=OPAQUE ;;
+  *"2026-08-03T15:14:01Z duty run end"*"box arrived with"*) r1="names-arrival-tick" ;; *) r1=OPAQUE ;;
 esac
 t survival-borrowed-box-failure-retains-pre-removal-tick names-arrival-tick "$r1"
 
@@ -6953,7 +6954,7 @@ t survival-cron-removed-says-what-it-read says-what-it-read "$r1"
 t survival-borrowed-box-cron-removed-does-not-wait 0 "$SURVIVAL_CLOCK"
 case "$INSTALL_SURVIVAL_DETAIL" in *"tick: not waited for"*) r1=says-no-wait ;; *) r1=OPAQUE ;; esac
 t survival-borrowed-box-cron-removed-says-no-wait says-no-wait "$r1"
-case "$INSTALL_SURVIVAL_DETAIL" in *"2026-08-03T15:14:01Z duty run end"*) r1=names-arrival-tick ;; *) r1=OPAQUE ;; esac
+case "$INSTALL_SURVIVAL_DETAIL" in *"2026-08-03T15:14:01Z duty run end"*) r1="names-arrival-tick" ;; *) r1=OPAQUE ;; esac
 t survival-borrowed-box-cron-removed-retains-pre-removal-tick names-arrival-tick "$r1"
 
 # The same removal on a fresh box: no boundary can strike, so the wait is not
@@ -7363,6 +7364,7 @@ t blockers-quoted-clause-in-quotes-is-not-declared '[]' \
   "$(bjq_set '*"Blocked by #5"* is how #9 reads its gate.')"
 # A live declaration beside a quoted one keeps exactly its own members.
 t blockers-live-clause-beside-quote '["5"]' \
+  # shellcheck disable=SC2016  # the backticks are the fixture body's own prose
   "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"
 # A struck-through or emphasised marker still declares: markup around the
 # marker is not quotation.
@@ -11069,9 +11071,12 @@ t claim-regression-suite 0 "$r1"
 
 # ── #759 — duty.sh consumes the wake reason, publishes the identity, counts idle ticks ──
 W759_DUTY="$SHARED/bin/duty.sh"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t duty-reads-the-wake-reason 1 "$(grep -c 'WAKE_REASON="$(head -c 200 "$DUTY_DIR/.wake-reason"' "$W759_DUTY")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t duty-consumes-the-wake-reason 1 "$(grep -c '^rm -f "$DUTY_DIR/.wake-reason"$' "$W759_DUTY")"
 t duty-exports-the-reason-to-sessions 1 "$(grep -c '^export WAKE_REASON$' "$W759_DUTY")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t duty-publishes-the-identity 1 "$(grep -c 'printf .%s.n. "$ME" >"$DUTY_DIR/.identity"' "$W759_DUTY")"
 # The idle counter is written on every exit path: as many accountings as
 # `duty run end` lines, and each immediately after one (the reaper's own
