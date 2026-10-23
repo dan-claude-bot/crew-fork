@@ -7280,6 +7280,96 @@ t blockers-none "" "$(jq -r --argjson S "$S" -f "$BJQ" <<<"$b6")"
 b7='[{"number":28,"body":"Blocked by #5."},{"number":29,"body":"Blocked by #7."}]'
 t blockers-mixed "28" "$(jq -r --argjson S "$S" -f "$BJQ" <<<"$b7")"
 
+# --- #632: a cross-repo blocker is a member keyed by its whole token ------
+# The member set itself, read through the file's own `def blockers` (the same
+# extraction the (e)/(f) byte-identity assertion makes), so each grammar rule
+# below is pinned on what reaches $b rather than only on the verdict.
+BJQ_DEF="$(sed -n '/^def blockers:/,/;$/p' "$BJQ")"
+bjq_set() { jq -nc --arg b "$1" "$BJQ_DEF"' ($b | blockers)'; }
+
+# heavy-duty/landing-site#40's declaration verbatim: the locals landed and the
+# cross-repo gate still standing. Its bare number is ABSENT from $S, which is
+# the live shape — $S is built from this repository's board. Under the grammar
+# as shipped the qualified reference was dropped before the state test, `all`
+# ran over the two survivors and emitted 40: the false lead that fired twice.
+S632='{"38":"CLOSED","39":"CLOSED"}'
+LS40='Blocked by #38, #39, heavy-duty/incubator#421.'
+b8="$(jq -nc --arg b "$LS40" '[{number:40,body:$b}]')"
+t blockers-crossrepo-mixed-holds "" "$(jq -r --argjson S "$S632" -f "$BJQ" <<<"$b8")"
+t blockers-crossrepo-member-is-whole-token \
+  '["38","39","heavy-duty/incubator#421"]' "$(bjq_set "$LS40")"
+
+# The wrong-repo collision: the cross-repo number PRESENT in $S as CLOSED —
+# this repository's own #421. A naive bare-#N widening resolves
+# incubator#421 against it and emits 40 by the same false lead; keyed by the
+# whole token the member can never resolve, reads OPEN, and holds.
+S632C='{"38":"CLOSED","39":"CLOSED","421":"CLOSED"}'
+t blockers-crossrepo-collision-holds "" "$(jq -r --argjson S "$S632C" -f "$BJQ" <<<"$b8")"
+
+# The unowned form `repo#N` (TRIAGE.md's other spelling) is a member too, and
+# holds the same way against a CLOSED local of the same number.
+b9='[{"number":41,"body":"Blocked by box#236."}]'
+t blockers-unowned-crossrepo-holds "" "$(jq -r --argjson S '{"236":"CLOSED"}' -f "$BJQ" <<<"$b9")"
+t blockers-unowned-member-is-whole-token '["box#236","7"]' "$(bjq_set 'Blocked by box#236 and #7.')"
+
+# A closed same-repo blocker beside the cross-repo one is still NOT what holds
+# the issue: drop the cross-repo member and the same locals release it. This
+# is the control that the hold above is the reference's and not the locals'.
+b10='[{"number":42,"body":"Blocked by #38, #39."}]'
+t blockers-crossrepo-control-locals-release "42" "$(jq -r --argjson S "$S632" -f "$BJQ" <<<"$b10")"
+
+# The alternation is ordered so a bare #N is keyed by its NUMBER, never
+# captured with its "#": an all-optional owner prefix also matches a bare
+# reference, after which $S misses and every local blocker silently reads
+# OPEN — blockers-landed and blockers-mixed red the moment that happens, and
+# this pins the member itself.
+t blockers-bare-member-is-bare-number '["5"]' "$(bjq_set 'Blocked by #5.')"
+
+# --- #632: the clause ends at a sentence boundary, not the first literal "."
+# A qualified token carries no "." of its own, so the stop that closes the
+# sentence after it ends the clause and the token stays whole.
+t blockers-clause-ends-after-qualified-token \
+  '["heavy-duty/la-familia-site#5"]' "$(bjq_set 'Blocked by heavy-duty/la-familia-site#5. Part of #9.')"
+# A "." followed by a letter or digit is inside a token, not a terminator, so
+# a parenthesised aside naming a version no longer truncates the declaration
+# at its dot — under the literal-"." span this read ["5"] and dropped #6.
+t blockers-dot-inside-token-keeps-clause '["5","6"]' \
+  "$(bjq_set 'Blocked by #5 (see v1.2 notes), #6. Blocks #7.')"
+# ";" terminates too, as ceremony's reconciler reads it.
+t blockers-semicolon-ends-clause '["5"]' "$(bjq_set 'Blocked by #5; #6 is only prose.')"
+# A soft-wrapped declaration continues across its newline (ceremony's own
+# fixture shape): a newline is not a sentence end.
+t blockers-soft-wrap-continues '["12","7"]' \
+  "$(bjq_set $'Blocked by #12 (first),\n#7 (soft-wrapped second). Blocks #44.')"
+
+# --- #632: a quoted marker is a quotation, not a declaration -------------
+# crew#642's shape: a body quoting ANOTHER issue's hold clause in prose, in a
+# code span, followed by a sentence listing stranded numbers before the first
+# "." — this parsed to a six-member phantom set and was repaired by hand with
+# a hyphen. The issue's own Dependencies line declares nothing.
+B642=$'> [#589](https://github.com/o/r/issues/589) declares `Blocked by #588` and is open and `blocked`, so the blocker parse over every open `blocked` body finds this number: *"an issue that strands nothing is `post-merge` working as intended"* — this one stranded #589, and #590, #607, #624 and #632 behind it.\n\n**Blocked by: nothing.** No file is touched.'
+t blockers-quoted-clause-in-prose-is-not-declared '[]' "$(bjq_set "$B642")"
+# ...and with every number of that phantom set CLOSED, the issue is not a
+# lead: no member, no nomination.
+b11="$(jq -nc --arg b "$B642" '[{number:642,body:$b}]')"
+S642='{"588":"CLOSED","589":"CLOSED","590":"CLOSED","607":"CLOSED","624":"CLOSED","632":"CLOSED"}'
+t blockers-quoted-clause-no-phantom-lead "" "$(jq -r --argjson S "$S642" -f "$BJQ" <<<"$b11")"
+# crew#602's shape: the two-word phrase in backticks ending a paragraph, a
+# table of issue links right after it. The span used to run through the
+# table into [#240].
+t blockers-quoted-phrase-before-table-is-not-declared '[]' \
+  "$(bjq_set $'The paragraph ends on `Blocked by`\n\n| issue | why |\n|---|---|\n| [#240](https://github.com/o/r/issues/240) | prose |')"
+# A quotation in double quotes is a quotation too.
+t blockers-quoted-clause-in-quotes-is-not-declared '[]' \
+  "$(bjq_set '*"Blocked by #5"* is how #9 reads its gate.')"
+# A live declaration beside a quoted one keeps exactly its own members.
+t blockers-live-clause-beside-quote '["5"]' \
+  "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"
+# A struck-through or emphasised marker still declares: markup around the
+# marker is not quotation.
+t blockers-struck-and-bold-markers-still-declare '["5","6"]' \
+  "$(bjq_set '~~Blocked by #5.~~ **Blocked by #6.** Collision, measured per file.')"
+
 # --- converged.jq: handoff predicate ------------------------------------
 CJQ="$SHARED/lib/jq/converged.jq"
 PANEL='["rev-a","rev-b"]'
