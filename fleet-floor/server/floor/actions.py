@@ -90,7 +90,10 @@ def _host_shell_block(name):
     with open(path, encoding="utf-8") as f:
         text = f.read()
     start = text.index("# ---%s---\n" % name) + len("# ---%s---\n" % name)
-    return text[start:text.index("# ---END---", start)]
+    # A leading newline, as the embedded strings had: the stub box logs the
+    # script after `bash -lc `, and the floor suite's needle reads the first
+    # line of RESUME_SH right after that newline.
+    return "\n" + text[start:text.index("# ---END---", start)]
 
 PAUSE_SH = _host_shell_block("PAUSE_SH")
 RESUME_SH = _host_shell_block("RESUME_SH")
