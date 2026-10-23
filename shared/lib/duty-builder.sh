@@ -524,36 +524,43 @@ _handoff_comment() {
 # no clone (#91). Every step is idempotent and NONE gates the next: the label
 # is what notify.sh polls, and making it contingent on a comment or a request
 # that can fail is the invisible-escalation class the notifier exists to
-# prevent. Order is chosen for crash-safety, not priority — state:needs-human
-# is written LAST because it is the convergence refire guard (converged.jq's
-# $not_handed): a box that dies before it refires next tick, and every write
-# above is a no-op on the retry (post-once dedup, an already-requested
-# reviewer, an already-present round marker). Requesting the human does not
-# suppress the refire on its own — converged.jq's $no_panel_reqs counts only
-# PANEL requests, and the human is off-panel.
+# prevent. Order is chosen for crash-safety, not priority — the MARK_HANDOFF
+# comment is written LAST because it is the convergence refire guard
+# (converged.jq's $handed_at_head, #535): a box that dies before it refires
+# next tick, and every write above is a no-op on the retry (an already-
+# requested reviewer, an already-present label, an already-present round
+# marker; the comment itself is post-once's exact-body dedup). A comment that
+# does not post leaves the guard unarmed on purpose — the next tick retries the
+# whole handoff, loudly, until the fact is on the record. Requesting the human
+# does not suppress the refire on its own — converged.jq's $no_panel_reqs
+# counts only PANEL requests, and the human is off-panel — and neither does
+# the label: it is the reconciler's to clear, and reading it as the guard is
+# the flood #535 measured.
 #
 # What the human's request DOES spend is round_owed's second clause (#452): the
 # builder wake for a human CHANGES_REQUESTED is "blocking at the head and not
 # currently requested", so this line is where a wake that was answered stops
-# firing — the mirror of the panel clause's outstanding-request guard. The
-# label is still the refire guard, and converged.jq's own human disqualifier is
-# what stops the reconciler taking that label back off and bouncing the PR
-# between the two.
+# firing — the mirror of the panel clause's outstanding-request guard.
+# converged.jq's own human disqualifier is what keeps a blocked head from
+# handing off while the ball is the builder's.
 _handoff_finalize() {
   local repo="$1" num="$2" comment
   _mirror_rounds "$repo" "$num" true   # finalize the live round: the PR is converging
-  comment="$(_handoff_comment "$repo" "$num")"
-  if [ -n "$comment" ]; then
-    "$BIN_DIR/post-once.sh" "$repo" "$num" "$comment" \
-      || warn "$repo#$num: handoff comment did not post (best-effort; label still set)"
-  else
-    warn "$repo#$num: could not render the handoff comment this tick (best-effort)"
-  fi
   gh api "repos/$repo/pulls/$num/requested_reviewers" \
     -f "reviewers[]=$FLEET_HUMAN" >/dev/null 2>&1 \
     || warn "$repo#$num: review request for @$FLEET_HUMAN failed (already requested?)"
   gh issue edit "$num" -R "$repo" --add-label "$LABEL_NEEDS_HUMAN" >/dev/null 2>&1 \
     || warn "$repo#$num: could not set $LABEL_NEEDS_HUMAN"
+  # LAST: the refire guard. Posted after the label so a crash between the two
+  # retries the handoff rather than stranding a handed-off head without its
+  # label.
+  comment="$(_handoff_comment "$repo" "$num")"
+  if [ -n "$comment" ]; then
+    "$BIN_DIR/post-once.sh" "$repo" "$num" "$comment" \
+      || warn "$repo#$num: handoff comment did not post (label set; the handoff retries next tick until it does)"
+  else
+    warn "$repo#$num: could not render the handoff comment this tick (label set; the handoff retries next tick)"
+  fi
 }
 
 _report_unsignalled_hold() {
@@ -2913,21 +2920,32 @@ _builder_repo() {
   # --- HANDOFF: a converged round of mine that owes the human. Convergence
   # computed directly: every panelist's latest opinionated review APPROVES
   # the CURRENT head, no panel request outstanding, PR mergeable RIGHT NOW,
-  # state:needs-human not already set (the human is off-panel — without the
-  # refire guard this wake fires forever after a successful handoff), and no
-  # standing unanswered CHANGES_REQUESTED from the human at that head (#452).
+  # no standing unanswered CHANGES_REQUESTED from the human at that head
+  # (#452), and THIS HEAD NOT ALREADY HANDED OFF — the refire guard, read off
+  # my own MARK_HANDOFF comment at this head (#535). The human is off-panel,
+  # so without that guard this wake fires forever after a successful handoff.
   #
-  # THAT LAST TERM IS WHY THE LABEL WAS NOT ENOUGH. The refire guard reads a
-  # label the RECONCILER owns, and the reconciler takes it off the moment the
-  # human blocks — correctly, the ball is the builder's. Convergence then read
-  # true again on the next tick (the panel still approves the head; a verdict
-  # does not move mergeable), the handoff re-requested the human and re-set the
-  # label, and the reconciler's "an explicit human request outranks the
-  # remaining bot outcomes" clause made it stick. The change request never
-  # reached the builder and the PR parked back on the human with a fresh nag —
-  # the withdrawn-then-re-nagged pair notify.sh shows. The disqualifier is
-  # spent by the builder's signal at that head, so an argued answer still
-  # converges and still reaches the human.
+  # THE GUARD READS A FACT THE ENGINE OWNS, NEVER A LABEL (#535). It used to
+  # read state:needs-human, which the RECONCILER owns and takes off for reasons
+  # of its own, each of them correct under its rule: a human CHANGES_REQUESTED
+  # (#452 — the ball is the builder's), or blocker:ci-red moving the PR to
+  # state:addressing (#535). Every removal re-armed the wake at an unchanged
+  # head: the panel still approved, a label does not move mergeable, so the
+  # handoff re-requested the human and re-set the label, and the reconciler
+  # took it off again — at tick cadence, 135 label events in 6h19m on crew#516,
+  # over a red that was main's own and no push by the builder could clear.
+  # #452 fixed one trigger with the $human_block disqualifier (kept exactly as
+  # it was: a human block at the head is the builder's work, not a handoff to
+  # suppress, and the builder's signal at that head spends it so an argued
+  # answer still converges and still reaches the human). The guard itself was
+  # the defect, and no writer had to yield to fix it: the handoff at a head is
+  # the builder's own durable fact, already posted as `MARK_HANDOFF <head>` by
+  # _handoff_finalize, so converged.jq reads that line and nothing else. A
+  # handed-off head stays handed off until the head MOVES — a push, a rebase or
+  # a force-push re-arms the wake; a label removal, a check flipping colour or
+  # a reconciler state change does not. The suppressed refire is logged, by
+  # PR and head (D5), so the guard is never mistaken for a guard that is not
+  # there.
   #
   # HANDOFF IS DELIBERATELY NOT GATED ON A GREEN HEAD, and the obvious
   # improvement is the bug (grok, #64). Adding `&& check_state == "green"`
@@ -2940,7 +2958,7 @@ _builder_repo() {
   # is the incident #17 was filed from. A converged PR reaching the human with
   # a red check is a human's call to make; a converged PR reaching nobody is
   # the failure this module exists to end. ---
-  local my_open converged handoff_signal handoff_prs="" _pr_at_cap=false
+  local my_open converged handoff_signal handoff_head handoff_prs="" _pr_at_cap=false
   if [ "$mine_json" = "err" ]; then
     warn "$R: handoff detection failed; skipping"
   else
@@ -3027,12 +3045,21 @@ _builder_repo() {
             -f "$DUTY_DIR/lib/jq/answered-head.jq" 2>/dev/null)"
       [ -n "$handoff_signal" ] || handoff_signal='{"sha":"","createdAt":""}'
       converged="$(printf '%s' "$pr_payload" \
-        | jq -r --argjson panel "$panel_json" --arg needs_human "$LABEL_NEEDS_HUMAN" \
+        | jq -r --argjson panel "$panel_json" --arg me "$ME" --arg mark_handoff "$MARK_HANDOFF" \
             --arg human "${FLEET_HUMAN:-}" --argjson signal "$handoff_signal" \
             -f "$DUTY_DIR/lib/jq/converged.jq" 2>/dev/null || echo err)"
       case "$converged" in
         true)  handoff_prs="$handoff_prs $N" ;;
         false) : ;;
+        # The refire guard held (#535 D5): the wake would have fired and the
+        # head already carries my MARK_HANDOFF line. Said out loud, naming the
+        # PR and the head, because a guard that silently does nothing is
+        # indistinguishable from a guard that is not there (#501's dead
+        # detector). One line per tick per suppressed PR, nothing written.
+        handed-off)
+          handoff_head="$(printf '%s' "$pr_payload" \
+            | jq -r '.data.repository.pullRequest.headRefOid // ""' 2>/dev/null)"
+          log "$R#$N: converged at head ${handoff_head:-?} — already handed off at this head; refire suppressed (#535)" ;;
         # UNKNOWN mergeability is GitHub's post-merge recompute flap; the
         # next tick sees the real value. Logged distinctly so a converged-
         # but-deferred PR is never mistaken for an unconverged round.
