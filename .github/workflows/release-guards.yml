@@ -24,7 +24,7 @@ jobs:
   guards:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # changelog-monotonic and changelog-assembled compare HEAD against
           # the merge base; a checkout that cannot resolve it is a hard failure
@@ -51,6 +51,10 @@ jobs:
       # docs-sync: the .ceremony/ doctrine mirror is byte-identical to the pin
       # read from release.yml — a hand edit or a half-done pin bump goes red.
       - uses: heavy-duty/ceremony/actions/docs-sync@0.7.11
+      # The seventh guard (#581): every third-party action and reusable workflow
+      # is pinned to a full commit SHA with a version comment; first-party
+      # (heavy-duty) references stay release-tagged so one ceremony pin governs.
+      - uses: heavy-duty/ceremony/actions/sha-pinned@0.7.11
       # stamps-only: crew's own gate on the rc ladder — a final release tree
       # differs from its last candidate by stamps only (#506). Repo-owned
       # script and not an action, for drills/README.md's reason: what it
