@@ -270,13 +270,71 @@ rehearsal_mint_attention_demand() {
 # an unresolved name would report this demand CLEARED on every board, green on
 # every correct engine. Unreachable in the shipped tree — the board read refuses
 # above the first mint and every caller is below it — and guarded anyway, where
-# its sibling is. Silently, because both are polled by `wait_for`.
+# its sibling is. Loudly since #749: the reason goes to stderr, and `wait_for`
+# prints it with the row it refuses.
 rehearsal_attention_flag_cleared() {
-  local repo="$1" num="$2" issue_json
-  [ -n "$REHEARSAL_LABEL_ATTENTION" ] || return 2
-  issue_json="$(gh api "repos/$repo/issues/$num")" || return 1
-  jq -e --arg label "$REHEARSAL_LABEL_ATTENTION" \
-    '([.labels[].name] | index($label)) == null' >/dev/null <<<"$issue_json"
+  rehearsal_issue_lacks_label "$1" "$2" "$REHEARSAL_LABEL_ATTENTION"
+}
+
+# rehearsal_issue_lacks_label REPO NUM LABEL — the one predicate behind both
+# label-removal rows, speaking wait_for's state protocol (#749):
+#   0  the label is absent — the row is satisfied
+#   1  the label is still present — not yet
+#   2  cannot grade — the name is empty, for the reason the callers state
+#   3  could not read — the API refused or answered something jq cannot parse
+# "I found nothing" and "I could not look" are different answers, and the old
+# `|| return 1` flattened the second into the first, so a round failed two rows
+# against a correct engine. What was read goes to stderr either way: the label
+# set on a successful read, the reason on a failed one — wait_for prints the
+# last of it with a failing row, so the FAIL names what the predicate saw.
+rehearsal_issue_lacks_label() {
+  local repo="$1" num="$2" label="$3" issue_json names
+  if [ -z "$label" ]; then
+    echo "cannot grade: the label name is empty" >&2
+    return 2
+  fi
+  if ! issue_json="$(gh api "repos/$repo/issues/$num")"; then
+    echo "could not read repos/$repo/issues/$num" >&2
+    return 3
+  fi
+  if ! names="$(jq -r '[.labels[].name] | join(" ")' <<<"$issue_json" 2>/dev/null)"; then
+    echo "could not read: repos/$repo/issues/$num answered something that is not an issue" >&2
+    return 3
+  fi
+  echo "labels on $repo#$num: [$names]" >&2
+  if jq -e --arg label "$label" \
+    '([.labels[].name] | index($label)) == null' >/dev/null <<<"$issue_json"; then
+    return 0
+  fi
+  return 1
+}
+
+# rehearsal_lane_budget KIND — the session ceiling the box installed for a
+# lane, TIMEOUT_<KIND>, read through the layering the engine's own load_conf
+# applies (shared/lib/common/conf.sh): defaults, fleet.conf over them,
+# instance.conf, the agent profile, then one role profile per role. Printed
+# as a bare integer. Fails, printing nothing, when the box does not answer or
+# answers something that is not a positive integer — so a row graded on it
+# refuses rather than grading on a budget the drill invented (#750).
+rehearsal_lane_budget() {
+  local kind="$1" read_conf value
+  case "$kind" in
+    *[!A-Z_]*|'') return 1 ;;
+  esac
+  # shellcheck disable=SC2016  # every $ below expands inside the box
+  read_conf='set -a
+             . ~/duty/conf/fleet.defaults.conf
+             [ ! -f ~/duty/conf/fleet.conf ] || . ~/duty/conf/fleet.conf
+             . ~/duty/conf/instance.conf
+             . ~/duty/conf/agents/"$BOT_AGENT".conf
+             for role in $BOT_ROLES; do . ~/duty/conf/roles/"$role".conf; done
+             printf "%s\n" "$TIMEOUT_'"$kind"'"'
+  value="$(bx "$read_conf" 2>/dev/null)" || return 1
+  value="$(printf '%s\n' "$value" | tr -d '\r' | tail -n 1)"
+  case "$value" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  printf '%s\n' "$value"
 }
 
 rehearsal_mint_post_merge_fixture() {
@@ -305,11 +363,7 @@ rehearsal_mint_builder_ready_fixture() {
 # source, and rc 2 rather than grading a claim release against a name nothing on
 # the board carries.
 rehearsal_builder_left_the_queue() {
-  local repo="$1" num="$2" issue_json
-  [ -n "$REHEARSAL_LABEL_READY" ] || return 2
-  issue_json="$(gh api "repos/$repo/issues/$num")" || return 1
-  jq -e --arg label "$REHEARSAL_LABEL_READY" \
-    '([.labels[].name] | index($label)) == null' >/dev/null <<<"$issue_json"
+  rehearsal_issue_lacks_label "$1" "$2" "$REHEARSAL_LABEL_READY"
 }
 
 rehearsal_builder_slot_prs_from_json() {
