@@ -4744,8 +4744,8 @@ t rehearsal-builder-fork-gate-precedes-first-tick 1 "$builder_fork_gate_precedes
 t rehearsal-common-attention-fixture-is-recorded 1 \
   "$(grep -A3 'inum=.*rehearsal_mint_attention_demand' "$ROOT/drill/rehearsal.sh" | grep -c 'rehearsal_fixture_record_issue' | tr -d ' ')"
 # shellcheck disable=SC2016  # matching literal rehearsal variable references
-t rehearsal-triage-fixtures-are-recorded 2 \
-  "$(grep -Ec 'rehearsal_fixture_record_issue "\$SANDBOX" "\$(t|p)num"' "$ROOT/drill/rehearsal.sh")"
+t rehearsal-triage-fixtures-are-recorded 1 \
+  "$(grep -Ec 'rehearsal_fixture_record_issue "\$SANDBOX" "\$tnum"' "$ROOT/drill/rehearsal.sh")"
 # shellcheck disable=SC2016  # matching literal rehearsal variable references
 t rehearsal-builder-fixtures-are-recorded 2 \
   "$(( $(grep -c 'rehearsal_fixture_record_builder_issue "\$SANDBOX" "\$ME2" "\$bnum"' "$ROOT/drill/rehearsal.sh") + $(grep -c 'rehearsal_fixture_record_pr "\$SANDBOX" "\$bpr"' "$ROOT/drill/rehearsal.sh") ))"
@@ -7397,8 +7397,10 @@ CJ_T_SIG_NEW="2026-08-11T11:00:00Z"
 # never declared a round answered on this PR, and the default here because most
 # of these fixtures are indifferent to it.
 CJ_NO_SIG='{"sha":"","createdAt":""}'
+CJ_ME="builder-me"
+CJ_MARK="🤝 handed off at head"   # MARK_HANDOFF, the wire string (fleet.defaults.conf)
 cj() {  # cj [signal-json] [panel-json] [human]
-  jq -r --argjson panel "${2:-$PANEL}" --arg needs_human state:needs-human \
+  jq -r --argjson panel "${2:-$PANEL}" --arg me "$CJ_ME" --arg mark_handoff "$CJ_MARK" \
     --arg human "${3-$CJ_HUMAN}" --argjson signal "${1:-$CJ_NO_SIG}" -f "$CJQ"
 }
 
@@ -7410,7 +7412,13 @@ t converged-offpanel-req-ignored true \
   "$(mk_pr "$H" MERGEABLE '[]' '["danmt"]' "$REVS_OK" | cj)"
 t converged-stale-approval false \
   "$(mk_pr "$H" MERGEABLE '[]' '[]' "$REVS_STALE" | cj)"
-t converged-already-handed false \
+# The refire guard is the engine's own mark since #535, never the label: a
+# head carrying my `MARK_HANDOFF <head>` comment is handed-off, and the label
+# alone changes nothing in either direction.
+t converged-already-handed handed-off \
+  "$(mk_pr "$H" MERGEABLE '[]' '[]' "$REVS_OK" \
+     | jq --arg me "$CJ_ME" --arg body "$CJ_MARK $H" '.data.repository.pullRequest.comments = {nodes:[{author:{login:$me},body:$body}]}' | cj)"
+t converged-label-alone-is-not-handed true \
   "$(mk_pr "$H" MERGEABLE '["state:needs-human"]' '[]' "$REVS_OK" | cj)"
 t converged-unknown-mergeable defer-unknown \
   "$(mk_pr "$H" UNKNOWN '[]' '[]' "$REVS_OK" | cj)"
@@ -10293,9 +10301,14 @@ ci_paths_line() {
 # to ci-shell so edits to that workflow run the assertions below; it is the one
 # intentional overlap. Explicitly naming .ceremony/** prevents two
 # mutually-agreeing filters from dropping the path that caught #363.
+# Since #756 the shell side also routes its own planner and map (.github/ci/**),
+# and the floor side's push filter is the floor's own paths: the browser walk
+# runs when the floor moves, weekly, and by hand on a candidate — not on every
+# engine merge. The union a pull request sees is unchanged.
 CI_EXPECTED="$(printf '%s\n' \
-  '.ceremony/**' '.github/workflows/ci-floor.yml' '.github/workflows/ci-shell.yml' \
+  '.ceremony/**' '.github/ci/**' '.github/workflows/ci-floor.yml' '.github/workflows/ci-shell.yml' \
   'cli/**' 'dist/**' 'drill/**' 'examples/**' 'fleet-floor/**' 'install.sh' 'shared/**' | sort)"
+CI_FLOOR_PUSH_EXPECTED="$(printf '%s\n' '.github/workflows/ci-floor.yml' 'fleet-floor/**' | sort)"
 CI_SHELL_PR_PATHS="$(ci_paths pull_request "$CI_SHELL")"
 CI_FLOOR_PR_PATHS="$(ci_paths pull_request "$CI_FLOOR")"
 CI_SHELL_PR_PATH_LINE="$(ci_paths_line pull_request "$CI_SHELL")"
@@ -10324,7 +10337,10 @@ case "$CI_FLOOR_PR_PATHS" in *'fleet-floor/**'*) r1=floor ;; *) r1=MISSING ;; es
 t ci-fleet-floor-routes-to-floor floor "$r1"
 case "$CI_SHELL_PR_PATHS" in *'fleet-floor/**'*) r1=whole-tree ;; *) r1=MISSING ;; esac
 t ci-fleet-floor-whole-tree-routes-to-shell whole-tree "$r1"
-if grep -q 'fleet-floor/test/run.sh --no-browser' "$CI_SHELL"; then r1=covered; else r1=DROPPED; fi
+# The headless floor suite is a matrix leg since #756: the planner names it
+# and the runner executes it.
+if grep -q 'fleet-floor/test/run.sh" --no-browser' "$ROOT/.github/ci/run-suite.sh" \
+   && grep -q 'floor-no-browser' <<<"$("$ROOT/.github/ci/plan.sh" --all)"; then r1=covered; else r1=DROPPED; fi
 t ci-shell-runs-floor-cli-fixtures covered "$r1"
 if grep -Eq 'paths-filter|filter-changes|changes:' "$CI_SHELL" "$CI_FLOOR"; then r1=BILLED; else r1=native; fi
 t ci-routing-uses-native-paths native "$r1"
@@ -10338,7 +10354,9 @@ for ci_yml in "$CI_SHELL" "$CI_FLOOR"; do
     case "$ci_types" in *",$ev,"*) r1=present ;; *) r1=MISSING ;; esac
     t "$ci_name-trigger-fires-on[$ev]" present "$r1"
   done
-  ci_if="$(awk '/^  check:/{p=1} p && /^    if:/{print; exit}' "$ci_yml")"
+  # The draft gate sits on the first job of each workflow — `plan` on the
+  # shell side since #756, `check` on the floor's.
+  ci_if="$(awk '/^  [a-z-]+:$/{p=1} p && /^    if:/{print; exit}' "$ci_yml")"
   case "$ci_if" in *github.event.pull_request.draft*) r1=payload ;; *) r1=MISSING ;; esac
   t "$ci_name-gates-on-draft-payload" payload "$r1"
   case "$ci_if" in *state:*|*label*) r1=LABEL ;; *) r1="payload-only" ;; esac
@@ -10346,7 +10364,11 @@ for ci_yml in "$CI_SHELL" "$CI_FLOOR"; do
   case "$ci_if" in *github.event_name*) r1=explicit ;; *) r1=COERCION ;; esac
   t "$ci_name-push-exemption-is-explicit" explicit "$r1"
   t "$ci_name-pushes-run-on-main" 1 "$(grep -c '^    branches: \[main\]$' "$ci_yml")"
-  t "$ci_name-push-preserves-union-filter" "$CI_EXPECTED" "$(ci_paths push "$ci_yml")"
+  if [ "$ci_name" = ci-shell ]; then
+    t "$ci_name-push-preserves-union-filter" "$CI_EXPECTED" "$(ci_paths push "$ci_yml")"
+  else
+    t "$ci_name-push-is-the-floors-own-paths" "$CI_FLOOR_PUSH_EXPECTED" "$(ci_paths push "$ci_yml")"
+  fi
   ci_group="$(sed -n 's/^  group: *//p' "$ci_yml")"
   # shellcheck disable=SC2016  # Match the literal GitHub expression in YAML.
   case "$ci_group" in *'${{ github.ref }}'*) r1=per-ref ;; *) r1=TOO-COARSE ;; esac
@@ -10355,13 +10377,21 @@ for ci_yml in "$CI_SHELL" "$CI_FLOOR"; do
 done
 
 # Every old step is routed. The expensive browser invocation exists only on
-# the floor side; the cheap side still executes the headless floor/CLI suite.
+# the floor side; the cheap side runs every suite as a matrix leg (#756): the
+# planner's full plan names each one, and the runner maps the id to its file.
 t ci-check-names-are-distinct 2 \
   "$(sed -n 's/^    name: \(ci-.*\)$/\1/p' "$CI_SHELL" "$CI_FLOOR" | sort -u | wc -l | tr -d ' ')"
-for command in 'shared/test/run.sh' 'shared/test/install-lifecycle.sh' \
-  'shared/test/artifact.sh' 'shared/test/install-drill.sh'; do
-  t "ci-shell-keeps[$command]" 1 "$(grep -Fc "run: $command" "$CI_SHELL")"
+CI_PLAN_ALL="$("$ROOT/.github/ci/plan.sh" --all | sed -n 's/^suites=//p' | jq -r '.[]')"
+for suite_id in install-lifecycle artifact install-drill drill-teardown floor-no-browser; do
+  t "ci-shell-keeps[$suite_id]" 1 "$(grep -cx "$suite_id" <<<"$CI_PLAN_ALL")"
 done
+# ...and every engine suite run.sh loops is a leg too, so the split loses none.
+ci_suites_missing=""
+while IFS= read -r suite_id; do
+  grep -qx "$suite_id" <<<"$CI_PLAN_ALL" || ci_suites_missing="$ci_suites_missing $suite_id"
+done < <(sed -n '/^SUITES=(/,/)/p' "$ROOT/shared/test/lib.sh" | tr -d '()' | sed 's/^SUITES=//' | tr -s ' \n' '\n' | sed '/^$/d')
+t ci-shell-matrix-covers-every-run-sh-suite "" "$ci_suites_missing"
+t ci-shell-runs-the-matrix-through-the-runner 1 "$(grep -Fc 'run: .github/ci/run-suite.sh' "$CI_SHELL")"
 t ci-floor-keeps-python-syntax 1 "$(grep -Fc 'python3 -m py_compile fleet-floor/server/floor.py' "$CI_FLOOR")"
 t ci-floor-keeps-browser-gate 1 "$(grep -Fc 'FLOOR_TEST_REQUIRE_BROWSER=1 fleet-floor/test/run.sh' "$CI_FLOOR")"
 t ci-floor-keeps-built-page-check 1 "$(grep -Fc 'git diff --exit-code -- fleet-floor/index.html' "$CI_FLOOR")"

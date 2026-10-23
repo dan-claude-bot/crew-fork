@@ -1705,7 +1705,7 @@ fi
 printf 'heavy-duty/box\n' >"$CL_CONFIG/repos.d/cli-hired.txt"
 crew_off hire cli-hired --role builder --agent claude --allow-offroster
 if [ "$CL_RC" -eq 0 ] && grep -q 'allow-offroster' "$CL_TMP/crew-out" \
-   && grep 'allow-offroster' "$CL_TMP/crew-out" | grep -q 'heavy-duty/box'; then
+   && grep -q 'heavy-duty/box' <<<"$(grep 'allow-offroster' "$CL_TMP/crew-out")"; then
   ok "crew hire: ...and --allow-offroster arms the subset, naming what it shares"
 else
   fail "crew hire: ...and --allow-offroster arms the subset, naming what it shares" \
