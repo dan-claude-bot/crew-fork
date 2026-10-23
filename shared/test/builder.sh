@@ -998,6 +998,33 @@ CHK_SUPERSEDED_CANCEL_AND_FAILURE='[
 CHK_FAILURE_THEN_RUNNING='[
   {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-07-29T10:58:47Z","completedAt":"2026-07-29T10:59:22Z"},
   {"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":null,"startedAt":"2026-07-29T11:02:00Z","completedAt":null}]'
+# THE STATUS AND THE CONCLUSION DISAGREE (#634). Every literal above is
+# terminal-or-null: a non-terminal status always sits beside a null conclusion,
+# which is why a status-only `is_pending` shipped. GitHub can leave a finished
+# run at `status: IN_PROGRESS` with its `conclusion` set (ceremony#593's
+# `labels / scope`, verbatim shape); the run never revises itself, so the head
+# graded pending for as long as it existed. The sibling literals keep the
+# genuinely running shapes — `null`, and `gh`'s real `""` + zero-time
+# `completedAt` — so the guard is proved narrow, not merely present.
+CHK_FINISHED_LEFT_IN_PROGRESS='[
+  {"__typename":"CheckRun","name":"labels / scope","status":"IN_PROGRESS","conclusion":"SUCCESS"},
+  {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]'
+CHK_RUNNING_BESIDE_GREEN='[
+  {"__typename":"CheckRun","name":"labels / scope","status":"IN_PROGRESS","conclusion":null},
+  {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]'
+CHK_RUNNING_BESIDE_FAILURE='[
+  {"__typename":"CheckRun","name":"labels / scope","status":"IN_PROGRESS","conclusion":null},
+  {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE"}]'
+CHK_GH_RUNNING_SHAPE='[
+  {"__typename":"CheckRun","name":"labels / scope","status":"IN_PROGRESS","conclusion":"","completedAt":"0001-01-01T00:00:00Z"}]'
+CHK_RUNNING_AND_FINISHED_LEFT_IN_PROGRESS='[
+  {"__typename":"CheckRun","name":"labels / scope","status":"IN_PROGRESS","conclusion":null},
+  {"__typename":"CheckRun","name":"test","status":"IN_PROGRESS","conclusion":"SUCCESS"}]'
+CHK_FAILED_LEFT_IN_PROGRESS='[
+  {"__typename":"CheckRun","name":"labels / scope","status":"IN_PROGRESS","conclusion":"FAILURE"},
+  {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]'
+SC_PENDING='[{"__typename":"StatusContext","context":"ci/legacy","state":"PENDING"}]'
+SC_OK='[{"__typename":"StatusContext","context":"ci/legacy","state":"SUCCESS"}]'
 # The StatusContext shape. THIS is the fixture that matters: crew's own CI is a
 # single CheckRun, so an implementation that discriminates on __typename and
 # reads only .conclusion passes every other test in this file and reports a
@@ -1062,6 +1089,73 @@ t head-unrelated-failure-is-named "test (FAILURE)" \
 # A rerun in progress is the latest word and therefore pending, not the stale
 # failure from the earlier run.
 t head-running-rerun-supersedes-failure pending "$(state_of "$CHK_FAILURE_THEN_RUNNING")"
+# A finished run GitHub left at IN_PROGRESS is the shape ceremony#593 sat on
+# for 10h17m (#634): the shipped grader read it pending and green at once, and
+# `check_state` tests pending first, so the head graded pending forever and the
+# panel was never requested. The guard lives on `is_pending` and is NARROW —
+# the three running shapes beside it still hold the request, and a FAILURE
+# anywhere is still red: pending never masks red.
+t head-finished-left-in-progress-is-green green "$(state_of "$CHK_FINISHED_LEFT_IN_PROGRESS")"
+t head-running-beside-green-is-pending pending "$(state_of "$CHK_RUNNING_BESIDE_GREEN")"
+t head-gh-running-shape-is-pending pending "$(state_of "$CHK_GH_RUNNING_SHAPE")"
+t head-running-and-finished-left-in-progress-is-pending pending \
+  "$(state_of "$CHK_RUNNING_AND_FINISHED_LEFT_IN_PROGRESS")"
+t head-running-beside-failure-is-red red "$(state_of "$CHK_RUNNING_BESIDE_FAILURE")"
+# ...and a FAILED run left at IN_PROGRESS is red, not pending: the conclusion
+# is the verdict whatever the status says, and a guard that read only
+# `is_green` would hold the request (and blind #17's wake) on a failed head.
+t head-failed-left-in-progress-is-red red "$(state_of "$CHK_FAILED_LEFT_IN_PROGRESS")"
+t head-failed-left-in-progress-is-named "labels / scope (FAILURE)" \
+  "$(hc '[]' "$(mk_prc "$CHK_FAILED_LEFT_IN_PROGRESS")" | cut -f6)"
+# The StatusContext axis is untouched by the guard: a status has no conclusion.
+t head-status-context-pending-is-pending pending "$(state_of "$SC_PENDING")"
+t head-status-context-success-is-green green "$(state_of "$SC_OK")"
+# THE PREDICATES, ASSERTED DIRECTLY RATHER THAN INFERRED FROM `check_state`.
+# `is_blocking` is `(is_green or is_pending) | not` and must not move under the
+# guard on any payload above (#634 D3); `check_state` would hide a move behind
+# its own ordering. `HC_DEFS` is the file's definitions — everything before its
+# `.[]` main expression — so this reads the shipped predicates, not a restated
+# copy of them.
+HC_DEFS="$(sed '/^\.\[\]$/,$d' "$HC")"
+t head-predicates-sliced-from-the-module 1 "$(grep -c '^def is_blocking' <<<"$HC_DEFS")"
+pred_of() {  # pred_of <predicate> <rollup> -> the predicate per row, rollup order
+  printf '%s' "$2" | jq -r "$HC_DEFS map($1) | map(tostring) | join(\" \")"
+}
+t head-finished-left-in-progress-rows-not-pending "false false" \
+  "$(pred_of is_pending "$CHK_FINISHED_LEFT_IN_PROGRESS")"
+t head-finished-left-in-progress-rows-green "true true" \
+  "$(pred_of is_green "$CHK_FINISHED_LEFT_IN_PROGRESS")"
+t head-finished-left-in-progress-rows-not-blocking "false false" \
+  "$(pred_of is_blocking "$CHK_FINISHED_LEFT_IN_PROGRESS")"
+t head-running-beside-green-rows-pending "true false" \
+  "$(pred_of is_pending "$CHK_RUNNING_BESIDE_GREEN")"
+t head-running-beside-green-rows-not-blocking "false false" \
+  "$(pred_of is_blocking "$CHK_RUNNING_BESIDE_GREEN")"
+t head-running-beside-failure-rows-pending "true false" \
+  "$(pred_of is_pending "$CHK_RUNNING_BESIDE_FAILURE")"
+t head-running-beside-failure-rows-blocking "false true" \
+  "$(pred_of is_blocking "$CHK_RUNNING_BESIDE_FAILURE")"
+t head-gh-running-shape-row-pending true "$(pred_of is_pending "$CHK_GH_RUNNING_SHAPE")"
+t head-gh-running-shape-row-not-blocking false "$(pred_of is_blocking "$CHK_GH_RUNNING_SHAPE")"
+t head-running-and-finished-rows-pending "true false" \
+  "$(pred_of is_pending "$CHK_RUNNING_AND_FINISHED_LEFT_IN_PROGRESS")"
+t head-running-and-finished-rows-not-blocking "false false" \
+  "$(pred_of is_blocking "$CHK_RUNNING_AND_FINISHED_LEFT_IN_PROGRESS")"
+t head-failed-left-in-progress-rows-not-pending "false false" \
+  "$(pred_of is_pending "$CHK_FAILED_LEFT_IN_PROGRESS")"
+t head-failed-left-in-progress-rows-blocking "true false" \
+  "$(pred_of is_blocking "$CHK_FAILED_LEFT_IN_PROGRESS")"
+t head-status-context-pending-row-pending true "$(pred_of is_pending "$SC_PENDING")"
+t head-status-context-pending-row-not-blocking false "$(pred_of is_blocking "$SC_PENDING")"
+t head-status-context-success-row-green true "$(pred_of is_green "$SC_OK")"
+t head-status-context-success-row-not-blocking false "$(pred_of is_blocking "$SC_OK")"
+# MUST FAIL — `check_state` testing green before pending (#634 D2). That is the
+# plausible wrong fix: it also grades a head green while a second check is
+# genuinely still running, which is #45's gate defeated. Pinned by source text
+# (red, then pending, then green, and no green test among the branches) and by
+# behaviour (`head-running-beside-green-is-pending` above).
+hc_order="$(sed -n '/^def check_state/,/end;/p' "$HC" | grep -o 'map(is_[a-z]*)' | tr '\n' ' ')"
+t head-check-state-tests-red-then-pending "map(is_blocking) map(is_pending) " "$hc_order"
 # The genuinely-not-a-failure conclusions stay green, or every skipped matrix
 # leg would wake a builder.
 t head-neutral-is-green       green   "$(state_of "$CHK_NEUTRAL")"
@@ -2200,7 +2294,7 @@ P384_HEAD=d4b8035d4b8035d4b8035d4b8035d4b8035d4b80
 P384_OLD=aa11bb22aa11bb22aa11bb22aa11bb22aa11bb22
 P384_START=2026-08-06T07:41:19Z
 P384_DONE=2026-08-06T07:52:18Z
-p384_run() {  # p384_run CONCLUSION [COMPLETED] — one CheckRun in a rollup
+p384_run() {  # p384_run CONCLUSION [COMPLETED] [STATUS] — one CheckRun in a rollup
   # The jq arg is `fin`, not `done`: shellcheck reads a bare `done` after --arg
   # as the loop keyword and warns (SC1010), and ci-shell runs it without a
   # severity floor, so a warning is a red job.
@@ -2213,9 +2307,15 @@ p384_run() {  # p384_run CONCLUSION [COMPLETED] — one CheckRun in a rollup
   # The first cut of this fixture omitted both, which is the only reason a
   # `completedAt != ""` test for "has concluded" passed here while fabricating a
   # stamp on every real running check (#391 round 2, claude).
-  jq -cn --arg c "$1" --arg fin "${2:-}" --arg started "$P384_START" \
+  #
+  # STATUS, when given, overrides the derivation from CONCLUSION (#634). The
+  # derivation assumes the two fields agree, and on a finished run GitHub can
+  # leave `status: IN_PROGRESS` beside a set conclusion — a shape that was
+  # unrepresentable here, not merely untested. An empty or absent STATUS is
+  # today's derivation exactly, so every existing caller is byte-identical.
+  jq -cn --arg c "$1" --arg fin "${2:-}" --arg st "${3:-}" --arg started "$P384_START" \
     '[{__typename:"CheckRun", name:"ci-floor", workflowName:"ci-floor",
-       status:(if $c == "" then "IN_PROGRESS" else "COMPLETED" end),
+       status:(if $st != "" then $st elif $c == "" then "IN_PROGRESS" else "COMPLETED" end),
        conclusion:$c, startedAt:$started,
        completedAt:(if $fin == "" then "0001-01-01T00:00:00Z" else $fin end)}]'
 }
@@ -2360,6 +2460,27 @@ t p384-no-fixture-fabricates-status-createdAt 0 \
 t p384-state-green "$(printf '381\tgreen')" "$(_resume_check_states o/r "$P384_ONE")"
 t p384-state-pending "$(printf '381\tpending')" "$(_resume_check_states o/r "$P384_RUNNING")"
 t p384-state-red "$(printf '381\tred')" "$(_resume_check_states o/r "$P384_FAILED")"
+# A finished run left at IN_PROGRESS beside its SUCCESS (#634) grades green
+# through the same path the engine takes, and the override is what makes the
+# shape representable in this family at all.
+P384_LEFT_IN_PROGRESS="$(p384_run SUCCESS "$P384_DONE" IN_PROGRESS)"
+t p384-status-override-lands 1 "$(grep -c '"status":"IN_PROGRESS","conclusion":"SUCCESS"' <<<"$P384_LEFT_IN_PROGRESS")"
+P384_FINISHED_LEFT_IN_PROGRESS="$(jq -cn --argjson pr "$(p384_pr 381 true "$P384_LEFT_IN_PROGRESS" '')" '[$pr]')"
+t p384-state-finished-left-in-progress-is-green "$(printf '381\tgreen')" \
+  "$(_resume_check_states o/r "$P384_FINISHED_LEFT_IN_PROGRESS")"
+# MUST FAIL — today's argument list producing anything but today's output. The
+# default is pinned to the literal, not to a re-derivation, and an explicit
+# empty STATUS is the two-argument call.
+t p384-run-default-green-is-byte-identical \
+  '[{"__typename":"CheckRun","name":"ci-floor","workflowName":"ci-floor","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-06T07:41:19Z","completedAt":"2026-08-06T07:52:18Z"}]' \
+  "$P384_GREEN"
+t p384-run-default-pending-is-byte-identical \
+  '[{"__typename":"CheckRun","name":"ci-floor","workflowName":"ci-floor","status":"IN_PROGRESS","conclusion":"","startedAt":"2026-08-06T07:41:19Z","completedAt":"0001-01-01T00:00:00Z"}]' \
+  "$P384_PENDING"
+t p384-run-default-red-is-byte-identical \
+  '[{"__typename":"CheckRun","name":"ci-floor","workflowName":"ci-floor","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-08-06T07:41:19Z","completedAt":"2026-08-06T07:52:18Z"}]' \
+  "$P384_RED"
+t p384-run-empty-status-is-the-default "$P384_GREEN" "$(p384_run SUCCESS "$P384_DONE" "")"
 # Drafts are graded too, which head-checks.jq alone will not do — the flip-owed
 # predicate's whole subject is a draft.
 t p384-state-grades-drafts 1 "$(_resume_check_states o/r "$P384_ONE" | grep -c green)"
