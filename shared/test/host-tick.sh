@@ -286,6 +286,12 @@ HT_PR_VIEW='' capture tick
 t tick-a-concluded-park-starts-the-member 1 "$(grep -c 'alpha: starting why=wait#o/r#7' <<<"$OUT")"
 t tick-the-wake-names-the-park "wake alpha wait#o/r#7" "$(grep '^wake alpha' "$STATE/calls" | head -1)"
 
+# (8) the store gives a member's memory back as files, and names the peaks
+HT_EXPORT="$TMP/export"; rm -rf "$HT_EXPORT"
+t store-export-writes-the-members-files 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" export --box alpha --dir "$HT_EXPORT" >/dev/null; [ -f "$HT_EXPORT/.identity" ] && [ -f "$HT_EXPORT/.wait-o_r-7" ] && echo 1 || echo 0)"
+t store-export-identity-round-trips dan-claude-bot "$(cat "$HT_EXPORT/.identity")"
+t store-peaks-without-sessions-is-1 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" peaks --box alpha >/dev/null 2>&1; echo $?)"
+
 # --- wiring pins ----------------------------------------------------------------
 t crontab-example-runs-the-host-tick 1 "$(grep -c 'crew tick' "$ROOT/shared/host-crontab.example")"
 t the-floor-reads-the-one-pause-shell 1 "$(grep -c '_host_shell_block("PAUSE_SH")' "$ROOT/fleet-floor/server/floor/actions.py")"

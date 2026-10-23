@@ -241,6 +241,20 @@ case "$cmd" in
     elif [[ "$script" == *'df -Pk'* ]]; then
       printf 'free-probe %s\n' "$name" >>"$calls"
       printf '1200\n'
+    elif [[ "$script" == *'echo "::logstart"'* ]]; then
+      # The drain's full probe (#761): a reset drains the box to the store
+      # before the disk goes back. RST_DRAIN_FAIL names a box whose drain
+      # answers nothing, which the store refuses as a truncated record.
+      printf 'drain %s\n' "$name" >>"$calls"
+      [ "$name" != "${RST_DRAIN_FAIL:-}" ] || exit 0
+      printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
+      printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
+      printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
+      printf '::statefiles .seen-build\n::filestart .seen-build\no/r#1 2026-10-23T00:00:00Z\n::fileend\n'
+      printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
+    elif [[ "$script" == *'base64 -d > ~/duty/'* ]]; then
+      printf 'memory %s %s\n' "$name" "$(printf '%s' "$script" | sed -n "s|.*base64 -d > ~/duty/'\([^']*\)'.*|\1|p")" >>"$calls"
+      cat >/dev/null
     elif [[ "$script" == *'crontab -l'* ]]; then
       exit 1
     else
@@ -611,6 +625,14 @@ capture reset alpha
 t reset-restores-and-starts 0 "$RC"
 t reset-stops-before-restoring $'down alpha\nrestore alpha armed --force\nstart alpha' \
   "$(grep -E '^(down|restore|start) alpha' "$STATE/calls")"
+# The store half (#761): drained before the disk goes back, memory written
+# back onto the restored disk before the first tick.
+t reset-drains-before-stopping "drain alpha|down alpha" \
+  "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+t reset-writes-the-memory-back-after-the-start 1 \
+  "$(awk '/^start alpha/{s=NR} /^memory alpha .seen-build/{m=NR} END{print (s && m && m>s) ? 1 : 0}' "$STATE/calls")"
+case "$OUT" in *"alpha: memory restored from the store"*) r1=reported ;; *) r1="$OUT" ;; esac
+t reset-memory-restore-is-reported reported "$r1"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-restore-is-reported reported "$r1"
 

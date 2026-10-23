@@ -978,6 +978,61 @@ def main(argv=None):
         for name, content in rows:
             print("%s\t%s" % (name, (content or "").split("\n")[0]))
         return 0 if rows else 1
+    if verb == "export":
+        # The member's memory, as files (#761): every state file and every
+        # ledger the store holds for the box, written under --dir with the
+        # names the engine reads them by, so a reset box gets them back.
+        box, out = _arg(argv, "--box"), _arg(argv, "--dir")
+        if not box or not out:
+            raise SystemExit("store.py export: --box and --dir are required")
+        os.makedirs(out, exist_ok=True)
+        conn = connect()
+        try:
+            files = conn.execute("SELECT name, content FROM state_files WHERE box=?", (box,)).fetchall()
+            ledgers = conn.execute("SELECT name, id, ts FROM ledger WHERE box=? ORDER BY name, id",
+                                   (box,)).fetchall()
+        finally:
+            conn.close()
+        written = 0
+        for name, content in files:
+            if "/" in name or name in (".", ".."):
+                continue
+            with open(os.path.join(out, name), "w", encoding="utf-8") as f:
+                f.write(content or "")
+            written += 1
+        by_name = {}
+        for name, rid, ts in ledgers:
+            by_name.setdefault(name, []).append("%s %s" % (rid, ts))
+        for name, lines in by_name.items():
+            if "/" in name:
+                continue
+            with open(os.path.join(out, name), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            written += 1
+        print("%s: %d file(s) exported to %s" % (box, written, out))
+        return 0
+    if verb == "peaks":
+        # Observed peak memory per box (#761): the largest peak_rss the
+        # kernel recorded for any session in the window, and how many
+        # sessions reported one — the figure a role's BOX_MEMORY is sized by.
+        since = _arg(argv, "--since", "7d")
+        box = _arg(argv, "--box")
+        conn = connect()
+        try:
+            cutoff = _since_iso(since)
+            if box:
+                rows = conn.execute("SELECT box, MAX(peak_rss_kib), COUNT(peak_rss_kib) FROM sessions "
+                                    "WHERE box=? AND ts_end>=? GROUP BY box", (box, cutoff)).fetchall()
+            else:
+                rows = conn.execute("SELECT box, MAX(peak_rss_kib), COUNT(peak_rss_kib) FROM sessions "
+                                    "WHERE ts_end>=? GROUP BY box ORDER BY box", (cutoff,)).fetchall()
+        except ValueError as e:
+            raise SystemExit("store.py peaks: %s" % e)
+        finally:
+            conn.close()
+        for b, peak, n in rows:
+            print("%s %s %d" % (b, "-" if peak is None else int(peak), n))
+        return 0 if rows else 1
     if verb == "ledger":
         box, name = _arg(argv, "--box"), _arg(argv, "--name")
         if not box:
@@ -1018,7 +1073,7 @@ def main(argv=None):
     raise SystemExit("usage: store.py init | ingest --box NAME | fail --box NAME | "
                      "status --box NAME [--brief] | usage [--since W] [--by G] | path | "
                      "state --box NAME --name FILE | states --box NAME [--prefix P] | ledger --box NAME [--name FILE] | "
-                     "sessions-count --box NAME [--kind K] [--since W]")
+                     "sessions-count --box NAME [--kind K] [--since W] | export --box NAME --dir DIR | peaks [--box NAME] [--since W]")
 
 
 if __name__ == "__main__":

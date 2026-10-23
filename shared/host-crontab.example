@@ -82,3 +82,8 @@
 # minutes, the engine's own cadence; the box's cron keeps ticking while it is
 # up, and this line is what brings a stopped box back.
 */5 * * * * $HOME/.local/bin/crew tick
+# The weekly reset returns (#761): every roster box back to its `armed`
+# checkpoint, Sunday 05:10, its memory drained to the store first and written
+# back onto the restored disk before its first tick. What #678 deferred it for
+# — duty.log and the ledgers lost with the disk — the store now holds.
+10 5 * * 0 $HOME/.local/bin/crew reset --all

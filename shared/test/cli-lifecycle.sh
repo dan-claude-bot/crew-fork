@@ -209,6 +209,10 @@ case "$cmd" in
       case "$script" in
         *'cat /etc/rig/manifest'*) printf 'rig-probe %s\n' "$name" >>"$calls" ;;
       esac
+      # A hire carrying a credential pool names it on the install line (#761).
+      case "$script" in
+        *"--pool '"*) printf 'pool %s %s\n' "$name" "$(printf '%s' "$script" | sed -n "s/.*--pool '\([^']*\)'.*/\1/p" | head -1)" >>"$calls" ;;
+      esac
       version="${LIFE_GUEST_RIG:-$CREW_PLATFORM_RIG_MIN}"
       [ ! -s "$state_dir/rig-$name" ] || version="$(cat "$state_dir/rig-$name")"
       [ "$version" != absent ] || exit 1
@@ -507,8 +511,13 @@ unset LIFE_DOWN_FAIL
 HOST_CRONTAB="$ROOT/shared/host-crontab.example"
 host_cron_lines="$(grep -vE '^[[:space:]]*(#|$)' "$HOST_CRONTAB" || true)"
 t hostcron-example-exists yes "$([ -f "$HOST_CRONTAB" ] && echo yes || echo no)"
-t hostcron-schedules-the-daily-restart-alone 1 \
+# Three job lines since 0.1.4: the daily restart, the host tick (#759) and
+# the weekly reset (#761), which #678 deferred until the store could hold
+# what a restore wipes.
+t hostcron-schedules-three-job-lines 3 \
   "$(printf '%s\n' "$host_cron_lines" | grep -c '[^[:space:]]' || true)"
+t hostcron-ticks-every-five-minutes 1 \
+  "$(printf '%s\n' "$host_cron_lines" | grep -cE '^\*/5 \* \* \* \* .*crew tick$' || true)"
 t hostcron-no-flock-in-any-line 0 \
   "$(printf '%s\n' "$host_cron_lines" | grep -c 'flock' || true)"
 t hostcron-no-redirect-in-any-line 0 \
@@ -575,8 +584,10 @@ cron_entry="^[[:blank:]]*(${cron_five}|${cron_at}[[:blank:]]+).*crew[[:blank:]]+
 # an `^[0-9]+ [0-9]+` pattern let it through while the assertion's NAME claimed
 # otherwise (@claude-bot-andresmgsl, #683). The count above would have caught
 # it; a guard that leans on a neighbour is one edit from catching nothing.
-t hostcron-schedules-no-reset-job-line 0 \
+t hostcron-schedules-the-weekly-reset 1 \
   "$(printf '%s\n' "$host_cron_lines" | grep -cE "$cron_entry" || true)"
+t hostcron-the-weekly-reset-is-on-sunday 1 \
+  "$(printf '%s\n' "$host_cron_lines" | grep -cE '^[0-9]+ [0-9]+ \* \* 0 .*crew reset --all$' || true)"
 # AND IT MUST NOT BE REINSTATABLE BY UNCOMMENTING. This is the one assertion
 # here that reads the whole file rather than the job lines, because a
 # commented-out job line is invisible to every assertion above it and a
@@ -1586,5 +1597,15 @@ t platform-no-jq-still-reports-the-box-half 1 \
   "$(grep -cF "box: 0.9.1 found, $CREW_PLATFORM_BOX_MIN wanted" <<<"$nojq_out" || true)"
 t platform-no-jq-does-not-refuse 1 \
   "$(grep -c 'rather than refusing' <<<"$nojq_out" || true)"
+
+# ── #761 — N members per subscription: `crew hire --pool` names the pool ────
+# Several members hired on one vendor subscription share a credential pool,
+# and `crew usage --by pool` reads the quota where it is spent. The pool is a
+# safe token, carried to the box's install line, written into instance.conf.
+capture hire alpha --role builder --agent claude --pool 'bad token'
+t hire-pool-must-be-a-safe-token 2 "$RC"
+: >"$calls"
+capture hire alpha --role builder --agent claude --pool claude-max-1
+t hire-pool-reaches-the-install-line 1 "$(grep -c '^pool alpha claude-max-1$' "$calls" || true)"
 
 suite_finish

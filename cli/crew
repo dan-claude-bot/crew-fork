@@ -471,7 +471,7 @@ version() { echo "crew $(crew_version 2>/dev/null || echo unknown) ($CREW_ROOT)"
 CMDS=(
   "new^<roster-name> | --role <r> --agent <a> [--name <n>] [--from <box>[/<snap>]]^Create one box — infrastructure only; it does nothing until hired^cmd_new"
   "create-all^^Create every roster box that does not exist yet^cmd_create_all"
-  "hire^<box> [--role <r> --agent <a>] [--ref <version-or-git-ref>] [--force] [--allow-offroster]^Put a box on duty: engine installed, cron armed. Idempotent^cmd_hire"
+  "hire^<box> [--role <r> --agent <a>] [--ref <version-or-git-ref>] [--pool <p>] [--force] [--allow-offroster]^Put a box on duty: engine installed, cron armed. Idempotent^cmd_hire"
   "hire-all^[--ref <version-or-git-ref>]^Hire every created roster box; skips those already at this version^cmd_hire_all"
   "up^[--dry-run]^Converge the fleet: create missing, start stopped, hire, report^cmd_up"
   "restart^<box>... | --all [--force-after <hours>]^Drain and cycle selected boxes; busy boxes are skipped^cmd_restart"
@@ -794,9 +794,12 @@ cut is skipped on a held lock however old, because the on-demand reaper takes
 that same lock and a checkpoint of a box that could not be reclaimed becomes
 the floor every later reset returns to.
 
-SCHEDULED AND ON-DEMAND USE. The host schedule fires 'crew restart' daily.
-'crew reset' is run on demand. Both verbs carry what a caller with no terminal
-and nobody watching needs.
+SCHEDULED AND ON-DEMAND USE. The host schedule fires 'crew restart' daily,
+'crew tick' every five minutes, and 'crew reset --all' every Sunday at 05:10 —
+the weekly reset returned with the store (#761): a reset drains the box to the
+store first and writes its memory back after. Every verb can also be run on
+demand. Both verbs carry what a caller with no terminal and nobody watching
+needs.
 
 They take one HOST MAINTENANCE LOCK between them, non-blocking, on every
 invocation, so the two verbs can never overlap. The later one names the holder,
@@ -2392,7 +2395,7 @@ convergence_guard() {
 hire_box() {
   local name="$1" agent="$2" role="$3" ref="$4" force="$5" allow="${6:-0}"
   local want have have_version identity_args registry_arg
-  identity_args="$(install_identity_args "$name" "$agent" "$role")"
+  identity_args="$(install_identity_args "$name" "$agent" "$role")${pool:+ --pool '$pool'}"
   registry_arg="$(registry_install_arg)"
   # The engine is resolved ONCE by the calling verb, at parse time, not here
   # per box. Resolving inside this loop meant a malformed --ref was validated
@@ -2560,7 +2563,7 @@ cmd_hire() {
   need_box
   local name="${1:-}"; shift || true
   case "$name" in ""|--*) usage_error "usage: $(synopsis_of hire)" ;; esac
-  local role="" agent="" ref="HEAD" force=0 allow=0 explicit_profile=0 line=""
+  local role="" agent="" ref="HEAD" force=0 allow=0 explicit_profile=0 line="" pool=""
   local roster_agent="" roster_role=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2572,9 +2575,11 @@ cmd_hire() {
       # and overloading it would let a routine re-bake wave the registry check
       # through as a side effect (#51).
       --allow-offroster) allow=1; shift ;;
+      --pool)  need_value "$@"; pool="$2"; shift 2 ;;
       *) usage_error "unknown argument '$1'" ;;
     esac
   done
+  case "$pool" in *[!A-Za-z0-9._:-]*) usage_error "--pool must be a safe token (letters, digits, . _ : -)" ;; esac
   resolve_engine "$ref"
   require_operator_config "crew hire"
   box_exists "$name" || die "no box named '$name' — crew new $name first"
@@ -2932,7 +2937,7 @@ cycle_box() {
 }
 
 # --- the host maintenance job (#590) ----------------------------------------
-# `crew restart` is host-scheduled and `crew reset` is run on demand; everything
+# `crew restart`, `crew tick` and `crew reset --all` are host-scheduled; everything
 # below is what a caller with no terminal and nobody watching needs.
 #
 # THE EVIDENCE CONTRACT IS tick.sh's, ADOPTED RATHER THAN REINVENTED. That file
@@ -3707,6 +3712,13 @@ restore_box() { # NAME
   fi
   state="$(box_state "$name")"
   if [ "$state" != stopped ]; then
+    # Its memory goes to the store before the disk goes back to the checkpoint
+    # (#761): the ledgers, the breaker, duty.log — everything a restore wipes
+    # — are what the box gets back below, and what the floor shows meanwhile.
+    if ! cmd_drain "$name" >/dev/null 2>&1; then
+      echo "  $name: REFUSED — drain failed; a box whose evidence the store does not hold is not reset"
+      return 1
+    fi
     if ! box down "$name" </dev/null; then
       echo "  $name: FAILED — stop command failed; nothing restored"
       return 1
@@ -3731,7 +3743,39 @@ restore_box() { # NAME
     echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name"
     return 1
   fi
+  reset_restore_memory "$name"
   echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started"
+}
+
+# reset_restore_memory NAME — the member's memory back onto the restored
+# disk (#761): every state file and ledger the store holds for the box,
+# written under ~/duty before its first tick, so the box makes no refusal it
+# had already made and the weekly reset costs the fleet nothing it knows.
+# box_memory_of NAME — the BOX_MEMORY the box's role conf declares, for the
+# status line that sets it beside the observed peak.
+box_memory_of() {
+  local _agent role _rest
+  read -r _agent role _rest <<<"$(roster_line "$1")"
+  [ -n "$role" ] || { printf 'unknown'; return 0; }
+  sed -n 's/^BOX_MEMORY="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$CREW_ROOT/shared/conf/roles/${role%%,*}.conf" 2>/dev/null | head -1 | grep . || printf 'unknown'
+}
+
+reset_restore_memory() {
+  local name="$1" dir f base count=0
+  dir="$(mktemp -d)"
+  if ! store_py export --box "$name" --dir "$dir" >/dev/null 2>&1; then
+    echo "  $name: no memory in the store to restore (first reset, or never drained)"
+    rm -rf "$dir"; return 0
+  fi
+  for f in "$dir"/.* "$dir"/*; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"
+    case "$base" in duty.log|.duty.lock*|.identity|.idle-ticks) continue ;; esac
+    base64 -w0 "$f" | box exec "$name" -- bash -lc "mkdir -p ~/duty && base64 -d > ~/duty/'$base'" 2>/dev/null \
+      && count=$((count + 1))
+  done
+  rm -rf "$dir"
+  echo "  $name: memory restored from the store — $count file(s)"
 }
 
 cmd_reset() {
@@ -4202,6 +4246,14 @@ cmd_status() {
       '')     echo "engine: unknown — the box did not answer" ;;
       *)      echo "engine: $engine" ;;
     esac
+    # Observed peak memory (#761): the figure a role's BOX_MEMORY is sized by,
+    # from the store's sessions, beside what the box was minted with.
+    local peak_row
+    if peak_row="$(store_py peaks --box "$b" --since 7d 2>/dev/null | head -1)" && [ -n "$peak_row" ]; then
+      read -r _ peak_kib peak_n <<<"$peak_row"
+      case "$peak_kib" in -|'') echo "peak memory: no session reported one in 7d" ;;
+        *) echo "peak memory: $((peak_kib / 1024)) MiB over $peak_n session(s) in 7d (store) — minted with $(box_memory_of "$b")" ;; esac
+    fi
     case "$state" in
       current)
         echo "integrity: current — every engine file is what ${recorded:-this install} shipped" ;;

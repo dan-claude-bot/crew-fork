@@ -11076,15 +11076,27 @@ t duty-publishes-the-identity 1 "$(grep -c 'printf .%s.n. "$ME" >"$DUTY_DIR/.ide
 # The idle counter is written on every exit path: as many accountings as
 # `duty run end` lines, and each immediately before one.
 t duty-idle-accounts-on-every-exit "$(grep -cE '^[[:space:]]*log "duty run end"$' "$W759_DUTY")" \
-  "$(grep -B1 -E '^[[:space:]]*log "duty run end"$' "$W759_DUTY" | grep -cE '^[[:space:]]*duty_idle_account$')"
+  "$(grep -B1 -E '^[[:space:]]*log "duty run end"$' "$W759_DUTY" | grep -cE '^[[:space:]]*idle_ticks_account$')"
 W759_HOME="$TMP/idle-home"; mkdir -p "$W759_HOME"
-eval "$(sed -n '/^duty_idle_account() {/,/^}/p' "$W759_DUTY")"
-( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; duty_idle_account; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
+eval "$(sed -n '/^idle_ticks_account() {/,/^}/p' "$W759_DUTY")"
+( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; idle_ticks_account; idle_ticks_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
 t duty-idle-ticks-count-up 2 "$(cat "$TMP/idle-out")"
-( DUTY_DIR="$W759_HOME"; : >"$DUTY_DIR/.tick-acted"; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
+( DUTY_DIR="$W759_HOME"; : >"$DUTY_DIR/.tick-acted"; idle_ticks_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
 t duty-a-session-resets-the-count 0 "$(cat "$TMP/idle-out")"
-( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; printf 'junk\n' >"$DUTY_DIR/.idle-ticks"; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
+( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; printf 'junk\n' >"$DUTY_DIR/.idle-ticks"; idle_ticks_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
 t duty-a-corrupt-count-restarts-at-one 1 "$(cat "$TMP/idle-out")"
-unset -f duty_idle_account
+unset -f idle_ticks_account
+
+# ── #761 — the box-side installer records the member's pool ───────────────
+P761_HOME="$TMP/pool-home"; mkdir -p "$P761_HOME"
+env HOME="$P761_HOME" DUTY_DIR="$P761_HOME/duty" PATH="$ISHIM" CRON_STATE="$CRON_STATE" \
+  /bin/bash "$SHARED/install.sh" --agent claude --role reviewer --pool claude-max-1 >/dev/null 2>&1
+t install-pool-is-written-to-instance-conf 1 "$(grep -c '^SESSION_CREDENTIAL_POOL="claude-max-1"$' "$P761_HOME/duty/conf/instance.conf")"
+env HOME="$P761_HOME" DUTY_DIR="$P761_HOME/duty" PATH="$ISHIM" CRON_STATE="$CRON_STATE" \
+  /bin/bash "$SHARED/install.sh" --agent claude --role reviewer >/dev/null 2>&1
+t install-a-re-install-keeps-the-pool 1 "$(grep -c '^SESSION_CREDENTIAL_POOL="claude-max-1"$' "$P761_HOME/duty/conf/instance.conf")"
+env HOME="$P761_HOME" DUTY_DIR="$P761_HOME/duty" PATH="$ISHIM" CRON_STATE="$CRON_STATE" \
+  /bin/bash "$SHARED/install.sh" --agent claude --role reviewer --pool claude-max-2 >/dev/null 2>&1
+t install-a-new-pool-replaces-the-old 1 "$(grep -c '^SESSION_CREDENTIAL_POOL="claude-max-2"$' "$P761_HOME/duty/conf/instance.conf")"
 
 suite_finish

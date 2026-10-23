@@ -6464,4 +6464,31 @@ t engine-passes-the-wait-reason-into-the-resume-session 1 "$(grep -c 'WAKE_REASO
 t engine-checkpoints-the-note-after-a-complete-session 1 "$(grep -c -- '-ne 0 \] || _handoff_block "$R"' "$SHARED/lib/duty-builder.sh")"
 rm -rf "$H760" "$h760_gh"; unset -f h760_run
 
+# ── #761 — the panel follows the head's risk ──────────────────────────────
+p761_risk() {  # p761_risk <files-json-lines|FAIL> — tier|why
+  (
+    PANEL_RISK_PATHS='^(shared/lib|shared/bin|cli|\.github/workflows)/'
+    PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80
+    if [ "$1" = FAIL ]; then gh() { return 1; }; else gh() { printf '%s\n' "$1"; }; fi
+    tier="$(_panel_risk o/r 7)"; printf '%s|%s' "$tier" "$_PANEL_RISK_WHY"
+  )
+}
+t panel-risk-a-small-safe-change-is-low "low|2 file(s), 30 lines, no risky path" "$(p761_risk $'docs/a.md 20\nshared/test/x.sh 10')"
+t panel-risk-a-risky-path-is-high "high|1 risky path(s): shared/lib/duty-builder.sh" "$(p761_risk $'shared/lib/duty-builder.sh 2')"
+t panel-risk-too-many-files-is-high "high|4 files (bound 3)" "$(p761_risk $'a 1\nb 1\nc 1\nd 1')"
+t panel-risk-too-many-lines-is-high "high|81 lines (bound 80)" "$(p761_risk $'docs/a.md 81')"
+t panel-risk-an-unreadable-head-is-high "high|files unreadable" "$(p761_risk FAIL)"
+p761_panel=$'rev-a\nrev-b\nrev-c'
+t panel-sized-high-is-the-whole-panel "rev-a rev-b rev-c" "$(_panel_sized high 7 "$p761_panel" | paste -sd' ' -)"
+t panel-sized-low-is-one-reviewer-rotated-by-number "rev-b" "$(PANEL_LOW_RISK_SIZE=1 _panel_sized low 7 "$p761_panel")"
+t panel-sized-low-rotates "rev-c" "$(PANEL_LOW_RISK_SIZE=1 _panel_sized low 8 "$p761_panel")"
+t panel-sized-low-can-take-two "rev-b rev-c" "$(PANEL_LOW_RISK_SIZE=2 _panel_sized low 7 "$p761_panel" | paste -sd' ' -)"
+t panel-sized-a-panel-no-larger-than-the-size-is-whole "rev-a" "$(PANEL_LOW_RISK_SIZE=1 _panel_sized low 7 "rev-a")"
+t panel-sized-a-bad-size-is-one "rev-b" "$(PANEL_LOW_RISK_SIZE=x _panel_sized low 7 "$p761_panel")"
+t panel-knobs-ship "PANEL_LOW_RISK_SIZE=1 PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80" \
+  "$(grep -hE '^PANEL_(LOW_RISK_SIZE|RISK_MAX_FILES|RISK_MAX_LINES)=' "$SHARED/conf/fleet.defaults.conf" | sort | paste -sd' ' -)"
+t panel-request-posts-the-sizing-mark 1 "$(grep -c '"$MARK_PANEL_SIZED $risk_tier at $gql_head:' "$SHARED/lib/duty-builder.sh")"
+t panel-request-requests-the-sized-set 1 "$(grep -c '^  to_request="$sized"$' "$SHARED/lib/duty-builder.sh")"
+unset -f p761_risk
+
 suite_finish

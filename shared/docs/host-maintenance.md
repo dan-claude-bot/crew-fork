@@ -27,11 +27,17 @@ The daily cycle is also the fleet's only routine liveness signal.
 `grok-reviewer` ran no session at all between `2026-08-19` and `2026-08-28`,
 and nothing on the board or the floor reported it.
 
-## What is not scheduled, and why — the weekly reset
+## The weekly reset — scheduled again since `0.1.4` (#761)
 
-`crew reset --all` was a second line here, weekly on Sunday at 05:10. It is
-**deferred to `0.1.4`** (@danmt, `2026-09-04`, #678). The verb is unchanged and
-`crew reset` remains available **on demand**; only the schedule changed.
+`crew reset --all` is the second line, weekly on Sunday at 05:10. #678 had
+deferred it to this window because a restore wiped two things nothing could
+rebuild — `duty.log` and the engine's ledgers. The store (#758) now holds both:
+a reset **drains the box to the store first** (and refuses a box whose drain
+fails), restores the disk, starts the box, and **writes the member's memory
+back** — every state file and ledger the store holds for it — before the first
+tick, so the box makes no refusal it had already made. The paragraphs below
+record what the deferral measured and remain true of the disk; the store is
+what answers them.
 
 The reset restores each roster box to its `armed` checkpoint, which is a
 whole-VM snapshot restore with **no carve-out for `$DUTY_DIR`**. Most of what
