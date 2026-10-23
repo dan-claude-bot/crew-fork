@@ -3921,7 +3921,7 @@ git -C "$AGG/source" config user.name fixture
 git -C "$AGG/source" config user.email fixture@example.invalid
 git -C "$AGG/source" commit -qm fixture --allow-empty
 cp "$ROOT/drill/rehearsal-all.sh" "$ROOT/drill/rehearsal-notify.sh" \
-  "$ROOT/drill/rehearsal-verdict.sh" \
+  "$ROOT/drill/rehearsal-verdict.sh" "$ROOT/drill/fleet-lifecycle.sh" \
   "$ROOT/drill/rehearsal-hygiene.sh" "$ROOT/drill/rehearsal-breaker.sh" "$AGG/"
 # These aggregation cases stub the role drill and grade only summary folding.
 # Give that copied orchestrator a local tree so the real phase-0 resolver does
@@ -3969,7 +3969,7 @@ agg_run() {  # $1 roles, then extra flags
   # own case below, with the hygiene leg deliberately left on.
   AGG_DIR="$AGG" bash "$AGG/rehearsal-all.sh" --roles "$roles" \
     --no-app --no-config-drill --no-install-drill --no-resume-drill \
-    --no-attention-drill --no-attention-audit-drill \
+    --no-attention-drill --no-attention-audit-drill --no-fleet-drill \
     --no-hygiene-drill --no-breaker-drill ${1+"$@"} 2>&1
 }
 
@@ -3979,7 +3979,7 @@ agg_run() {  # $1 roles, then extra flags
 agg_breaker_run() {
   AGG_DIR="$AGG" bash "$AGG/rehearsal-all.sh" --roles '' \
     --no-app --no-config-drill --no-install-drill --no-resume-drill \
-    --no-attention-drill --no-attention-audit-drill \
+    --no-attention-drill --no-attention-audit-drill --no-fleet-drill \
     --no-hygiene-drill --no-notify-drill ${1+"$@"} 2>&1
 }
 if agg_out="$(agg_breaker_run)"; then agg_rc=0; else agg_rc=$?; fi
@@ -3996,7 +3996,7 @@ printf 'claude profile missing bot_session_terminal\n' \
 if agg_out="$(AGG_DIR="$AGG" bash "$AGG/rehearsal-all.sh" \
     --roles reviewer --no-app --no-config-drill --no-install-drill \
     --no-resume-drill --no-attention-drill --no-attention-audit-drill \
-    --no-hygiene-drill --no-notify-drill 2>&1)"; then
+    --no-fleet-drill --no-hygiene-drill --no-notify-drill 2>&1)"; then
   agg_rc=0
 else
   agg_rc=$?
@@ -4083,7 +4083,7 @@ resume_agg_run() {  # $1 roles, then extra flags
   local roles="$1"; shift
   AGG_DIR="$AGG" bash "$AGG/rehearsal-all.sh" --roles "$roles" \
     --no-app --no-config-drill --no-install-drill --no-hygiene-drill \
-    --no-attention-drill --no-attention-audit-drill \
+    --no-attention-drill --no-attention-audit-drill --no-fleet-drill \
     --no-breaker-drill --no-notify-drill ${1+"$@"} 2>&1
 }
 
@@ -4141,7 +4141,8 @@ agg_hygiene_run() {  # $1 roles, $2 the hygiene result the role box records
   local roles="$1" hyg="$2"
   AGG_DIR="$AGG" AGG_HYGIENE="$hyg" bash "$AGG/rehearsal-all.sh" --roles "$roles" \
     --no-app --no-config-drill --no-install-drill --no-resume-drill \
-    --no-attention-drill --no-attention-audit-drill --no-breaker-drill 2>&1
+    --no-attention-drill --no-attention-audit-drill --no-breaker-drill \
+    --no-fleet-drill 2>&1
 }
 # The stub writes the hygiene result the way the live leg does — into the file
 # rehearsal-all.sh hands it, per role — on top of the notify verdict it already
