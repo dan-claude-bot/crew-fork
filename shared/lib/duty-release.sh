@@ -297,15 +297,15 @@ _release_settle_cut() {
 # per refusal, each a `no release duty:` line. Every refusal but the quiet
 # window's clears the track's wait, so a cut refused for another reason never
 # keeps waking the box for the window. Sets RELEASE_VERSION, RELEASE_LAST_TAG,
-# RELEASE_MAIN_HEAD, RELEASE_MAIN_TS, RELEASE_TRACK_ID, RELEASE_MERGES,
+# RELEASE_MAIN_HEAD, RELEASE_TRACK_ID, RELEASE_MERGES,
 # RELEASE_FRAGMENTS, RELEASE_PIN, RELEASE_TREE for the caller on success.
-RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_MAIN_TS=""; RELEASE_TRACK_ID=""
+RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_TRACK_ID=""
 RELEASE_MERGES=""; RELEASE_FRAGMENTS=""; RELEASE_PIN=""; RELEASE_TREE=""
 _release_gate() {
   local slug="$1" repo="$2" path="$3" prefix="$4" rule="$5" dir="$6"
   local name="$repo ${prefix:-<bare>}@$path" prs num author branch shape
   local head ci age now quiet fresh tried tried_n
-  RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_MAIN_TS=""; RELEASE_TRACK_ID=""
+  RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_TRACK_ID=""
   RELEASE_MERGES=""; RELEASE_FRAGMENTS=""; RELEASE_PIN=""; RELEASE_TREE=""
   _release_due_clear "$slug"
   if [ "$rule" = hold ]; then
@@ -341,7 +341,6 @@ _release_gate() {
   head="$(git -C "$dir" rev-parse origin/main 2>/dev/null)"
   [ -n "$head" ] || { warn "release: $name — origin/main unreadable in $dir"; return 1; }
   RELEASE_MAIN_HEAD="$head"
-  RELEASE_MAIN_TS="$(git -C "$dir" log -1 --format=%cI origin/main 2>/dev/null)"
   RELEASE_TRACK_ID="$(_release_track_id "$dir" "$path")"
   [ -n "$RELEASE_TRACK_ID" ] || { warn "release: $name — the track's tree is unreadable in $dir"; return 1; }
   fresh="$(printf '%s:%s#%s 0\n' "$repo" "$path" "$RELEASE_TRACK_ID" | ledger_filter "$DUTY_DIR/.seen-release")"

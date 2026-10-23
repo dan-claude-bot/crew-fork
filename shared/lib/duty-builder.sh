@@ -2780,7 +2780,7 @@ _builder_repo() {
     local handoff_block
     handoff_block="$(render_prompt fragment-handoff.txt \
       HANDOFF="$(_handoff_block "$R" "${draft_nums:-} ${stranded_nums:-}")")"
-    SESSION_TASK="$(printf '%s\n' ${draft_nums:-} ${stranded_nums:-} | awk 'NF' | sort -un | paste -sd, -)" \
+    SESSION_TASK="$(printf '%s\n' "${draft_nums:-}" "${stranded_nums:-}" | tr ' ' '\n' | awk 'NF' | sort -un | paste -sd, -)" \
     WAKE_REASON="${WAKE_REASON:-cron}${wait_why:+,$wait_why}" \
     run_session resume "$R" "$dir" "$TIMEOUT_RESUME" \
       "$(render_prompt resume.txt ME="$ME" REPO="$R" NAME="$name" \

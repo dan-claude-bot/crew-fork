@@ -124,7 +124,7 @@ t tracks-unknown-rule-warns 1 "$(RELEASE_TRACKS='e/f:p:q:weird' _release_tracks 
 t tracks-empty-is-no-tracks "" "$(RELEASE_TRACKS='' _release_tracks)"
 # The round trip the review found broken: `o/r:.::hold` is prefix EMPTY and
 # rule HOLD, read back through `read` exactly so.
-rt="$(RELEASE_TRACKS='o/r:.::hold' _release_tracks | { read -r a b c d; printf '%s|%s|%s|%s' "$a" "$b" "$(_release_prefix "$c")" "$d"; })"
+rt="$(RELEASE_TRACKS='o/r:.::hold' _release_tracks | { read -r rt_repo rt_path rt_prefix rt_rule; printf '%s|%s|%s|%s' "$rt_repo" "$rt_path" "$(_release_prefix "$rt_prefix")" "$rt_rule"; })"
 t tracks-a-bare-prefix-round-trips-with-its-rule "o/r|.||hold" "$rt"
 t tracks-a-bare-prefix-slug-is-the-repo "o_r" "$(_release_slug o/r "")"
 t tracks-a-prefixed-slug-carries-the-prefix "o_r-site-" "$(_release_slug o/r site-)"
