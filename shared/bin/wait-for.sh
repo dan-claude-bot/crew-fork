@@ -20,7 +20,7 @@ case "$what" in
   checks)
     repo="${1:-}"; num="${2:-}"; shift 2 || { echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>]" >&2; exit 2; }
     [ "${1:-}" != --timeout ] || { timeout_s="${2:-1800}"; shift 2 || true; }
-    [ -n "$repo" ] && [ -n "$num" ] || { echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>]" >&2; exit 2; }
+    { [ -n "$repo" ] && [ -n "$num" ]; } || { echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>]" >&2; exit 2; }
     waited=0
     while [ "$waited" -lt "$timeout_s" ]; do
       pending="$(gh pr view "$num" -R "$repo" --json statusCheckRollup \

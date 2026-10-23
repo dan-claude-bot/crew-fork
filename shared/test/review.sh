@@ -1175,6 +1175,7 @@ gh_identity() { printf 'fixture-bot\n'; }
 check_vendor_credential() { :; }
 converge_git_identity() { return 0; }
 has_role() { [ "$1" = reviewer ]; }
+idle_ticks_account() { :; }
 RWCOMMON
 cat >"$RW_TICK_DUTY/lib/duty-review.sh" <<'RWREVIEW'
 reclaim_detached_review_worktrees() { printf 'RECLAIM\n' >>"$RW_TICK_CALLS"; }
