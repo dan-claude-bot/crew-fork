@@ -7363,6 +7363,17 @@ t blockers-quoted-phrase-before-table-is-not-declared '[]' \
 t blockers-quoted-clause-in-quotes-is-not-declared '[]' \
   "$(bjq_set '*"Blocked by #5"* is how #9 reads its gate.')"
 # A live declaration beside a quoted one keeps exactly its own members.
+# A `.` or `;` INSIDE PARENTHESES never ends the clause (#763 review): the
+# parenthetical is prose about a member, and the members after it are still
+# declared. Outside parentheses the `; ` terminator stands.
+t blockers-a-semicolon-inside-parentheses-does-not-end-the-clause '["5","7"]' \
+  "$(bjq_set 'Blocked by #5 (the step; see logs) and #7.')"
+t blockers-a-dot-inside-parentheses-does-not-end-the-clause '["5","7"]' \
+  "$(bjq_set 'Blocked by #5 (see the log. it is long) and #7.')"
+t blockers-a-semicolon-outside-parentheses-still-ends-it '["5"]' \
+  "$(bjq_set 'Blocked by #5; #7 is unrelated.')"
+t blockers-a-dotted-repository-inside-parentheses-survives '["foo.js/bar#3","9"]' \
+  "$(bjq_set 'Blocked by foo.js/bar#3 (upstream) and #9.')"
 # shellcheck disable=SC2016  # the backticks are the fixture body's own prose
 t blockers-live-clause-beside-quote '["5"]' \
   "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"

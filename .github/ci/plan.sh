@@ -100,7 +100,9 @@ case "${1:-}" in
   --pr)
     repo="${2:-}"; num="${3:-}"
     if [ -z "$repo" ] || [ -z "$num" ]; then echo "plan.sh: --pr needs <owner/repo> <number>" >&2; exit 2; fi
-    if ! files="$(gh api "repos/$repo/pulls/$num/files?per_page=$API_FILE_LIMIT" --jq '.[].filename' 2>/dev/null)"; then
+    # Every page (the API caps one at 100), and a renamed file by BOTH its
+    # names: the old path's suites still own what moved out of it.
+    if ! files="$(gh api --paginate "repos/$repo/pulls/$num/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)"; then
       echo "plan.sh: could not read the PR's files; running everything" >&2
       mapfile -t ids < <(all_suites); emit 1 "${ids[@]}"; exit 0
     fi

@@ -6,7 +6,7 @@
 # refusal's reason on the record — whether main carries a release nobody has
 # cut: merges since the track's last tag that touch the track, fragments
 # waiting in its changelog.d, VERSION armed `-dev`, CI green at main's head,
-# no release PR open, main quiet for RELEASE_QUIET_S, the head not already
+# no release PR open, main quiet for RELEASE_QUIET_S, the track not already
 # cut. Only then does it buy a session, and the session does the half that
 # needs judgment and a toolchain: the assembled section through ceremony's
 # own `bin/changelog-assemble` at the consumer's pin, the drill record
@@ -15,30 +15,44 @@
 # maintainer's merge); the engine never merges, tags or dispatches.
 #
 # One cut at a time, and a cut is never re-pushed: a release PR the engine
-# opened is withdrawn when main moves past it (stale) and the next tick cuts
-# the new head; one a person closed unmerged (refused) stays refused for that
-# head — the ledger remembers the head, and only new merges make a new cut.
+# opened is withdrawn when main moves past it ON THE TRACK (stale) and the
+# next tick cuts the new head; one a person closed unmerged (refused) stays
+# refused for that track state — the ledger remembers the TRACK'S TREE, not
+# main's commit, so an off-track merge (the admin's, on the site's repository)
+# re-opens nothing, and only new merges on the track make a new cut.
 #
-# The cut's memory is three files beside the other ledgers, so the store
-# carries them across a reset and the host tick reads one of them:
-#   .seen-release            `repo#<main sha> <ts>` — heads the engine cut
-#                            or a person refused; never re-cut
-#   .release-cut-<slug>      `<pr> <branch> <main sha>` — the open cut
-#   .release-due-<slug>      `<repo> <epoch>` — a cut waiting for main to go
-#                            quiet; the host tick starts the box when due
+# Every piece of the cut's memory is PER TRACK (`<slug>` = repo and prefix),
+# so two tracks of one repository never share a cut, a wait or a refusal:
+#   .seen-release              `repo:path#<tree sha> 0` — track states the
+#                              engine cut or a person refused; never re-cut
+#   .release-cut-<slug>        `<pr> <branch> <main sha>` — the open cut
+#   .release-due-<slug>        `<repo> <epoch>` — a cut waiting for main to go
+#                              quiet; the host tick starts the box when due
+#   .release-tried-<slug>      `<tree sha> <n>` — sessions that ended without a
+#                              pull request; at RELEASE_MAX_TRIES the state is
+#                              refused rather than bought again every tick
+# All of them ride the probe to the store and come back across a reset.
 #
 # shellcheck shell=bash
 
 RELEASE_QUIET_S_DEFAULT=900
+RELEASE_MAX_TRIES_DEFAULT=2
 RELEASE_CEREMONY_REPO_DEFAULT="heavy-duty/ceremony"
 
-_release_slug() { printf '%s\n' "${1//\//_}"; }
+# _release_slug REPO PREFIX — the per-track file suffix.
+_release_slug() {
+  local s="${1//\//_}"
+  [ -z "${2:-}" ] || s="$s-${2//\//_}"
+  printf '%s\n' "$s"
+}
 
 # _release_tracks — RELEASE_TRACKS parsed, one `repo path prefix rule` line
 # per entry. Whitespace separates entries; colons separate fields; a missing
-# path is `.`, a missing rule is `auto`. An unknown rule reads as `hold`,
-# because a rule the operator wrote and the engine cannot read must not buy a
-# cut by accident.
+# path is `.`, a missing rule is `auto`. An EMPTY prefix is printed as `-`,
+# because the line is read back with `read` and an empty field would merge
+# with the next; readers map `-` to the empty prefix. An unknown rule reads
+# as `hold`, because a rule the operator wrote and the engine cannot read
+# must not buy a cut by accident.
 _release_tracks() {
   local entry repo path prefix rule
   # shellcheck disable=SC2086  # word-splitting the entries is the format
@@ -46,6 +60,7 @@ _release_tracks() {
     IFS=: read -r repo path prefix rule <<<"$entry"
     [ -n "$repo" ] || continue
     [ -n "$path" ] || path=.
+    [ -n "$prefix" ] || prefix=-
     rule="${rule:-auto}"
     case "$rule" in
       auto|hold) ;;
@@ -54,6 +69,7 @@ _release_tracks() {
     printf '%s %s %s %s\n' "$repo" "$path" "$prefix" "$rule"
   done
 }
+_release_prefix() { [ "$1" = - ] && printf '' || printf '%s' "$1"; }
 
 # _release_pin DIR — the ceremony pin the repository's release caller names on
 # origin/main, or nothing. The pin is the consumer's, read from its tree and
@@ -82,14 +98,18 @@ _release_ceremony_tree() {
   printf '%s\n' "$dir"
 }
 
-# _release_last_tag DIR PREFIX — the track's newest release tag by creation
-# date, bare `X.Y.Z` or `X.Y.Z-rcN` under the prefix. A bare-prefix track
-# sees no other track's prefixed tags: the regex anchors on the digits.
+# _release_last_tag DIR PREFIX [final] — the track's newest release tag by
+# creation date under the prefix: any `X.Y.Z` or `X.Y.Z-rcN` for a candidate,
+# and FINAL ONLY when the version being cut is final — the release after an
+# rc ladder ships everything since the last final, candidates included, so a
+# candidate tag is not where its "since" starts. A bare-prefix track sees no
+# other track's prefixed tags: the regex anchors on the digits.
 _release_last_tag() {
-  local dir="$1" prefix="$2" re
+  local dir="$1" prefix="$2" shape="${3:-any}" re rc
   re="$(printf '%s' "$prefix" | sed 's/[.[\*^$/]/\\&/g')"
+  rc='(-rc[0-9]+)?'; [ "$shape" != final ] || rc=''
   git -C "$dir" tag --sort=-creatordate -l "${prefix}*" 2>/dev/null \
-    | grep -E "^${re}[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$" | head -1
+    | grep -E "^${re}[0-9]+\.[0-9]+\.[0-9]+${rc}$" | head -1
 }
 
 # _release_version DIR PATH — the version main is armed for, from the track's
@@ -122,10 +142,14 @@ _release_merges() {
   git -C "$dir" log --no-merges --format='%h %s' "$from..origin/main" "${_RELEASE_PATHSPEC[@]}" 2>/dev/null
 }
 
-# _release_head_ts DIR REF — the committer date of REF, ISO-8601: the one
-# timestamp a head has, so the seen-ledger row for a head is the same bytes
-# every time the head is read, and a lexical compare suppresses it.
-_release_head_ts() { git -C "$1" log -1 --format=%cI "$2" 2>/dev/null; }
+# _release_track_id DIR PATH — the sha of the TRACK'S TREE at origin/main:
+# the identity a cut or a refusal is remembered by. An off-track merge leaves
+# it unchanged; any merge on the track changes it.
+_release_track_id() {
+  local dir="$1" path="$2"
+  if [ "$path" = . ]; then git -C "$dir" rev-parse 'origin/main^{tree}' 2>/dev/null
+  else git -C "$dir" rev-parse "origin/main:${path%/}" 2>/dev/null; fi
+}
 
 # _release_fragments DIR PATH — the fragments waiting in the track's
 # changelog.d on main, one name per line, the directory's own README and the
@@ -137,18 +161,40 @@ _release_fragments() {
     | grep -vx 'README.md' | grep -vx 'shape'
 }
 
-# _release_ci REPO SHA — green | pending | red | unknown, from the check runs
-# at SHA. No runs at all is green: a repository without CI has no red to
-# read. Unknown (the API did not answer) refuses like red — a cut is bought
-# on evidence, never on its absence.
+# _release_ci REPO SHA DIR — green | pending | red | unknown, from EVERY
+# check run at SHA (paginated) and the commit's combined status. A run not
+# yet completed is pending; failure, timed out, cancelled, action required
+# and STALE are red (a stale run says nothing about this tree, so it is not
+# green). No run and no status at all is green only on a repository with no
+# workflows on main — anywhere else it means the runs have not reported yet.
+# Unknown (an API that did not answer) refuses like red: a cut is bought on
+# evidence, never on its absence.
 _release_ci() {
-  local runs
-  runs="$(gh api "repos/$1/commits/$2/check-runs?per_page=100" \
-    --jq '[.check_runs[] | "\(.status) \(.conclusion // "")"]' 2>/dev/null)" || { echo unknown; return 0; }
-  jq -r 'if length == 0 then "green"
-         elif any(.[]; startswith("completed") | not) then "pending"
-         elif any(.[]; test(" (failure|timed_out|cancelled|action_required|startup_failure)$")) then "red"
-         else "green" end' <<<"$runs" 2>/dev/null || echo unknown
+  local repo="$1" sha="$2" dir="$3" runs statuses n_runs verdict
+  runs="$(gh api --paginate "repos/$repo/commits/$sha/check-runs?per_page=100" \
+    --jq '.check_runs[] | "\(.status) \(.conclusion // "")"' 2>/dev/null)" || { echo unknown; return 0; }
+  statuses="$(gh api "repos/$repo/commits/$sha/status" \
+    --jq '"\(.state) \(.total_count)"' 2>/dev/null)" || { echo unknown; return 0; }
+  n_runs="$(printf '%s\n' "$runs" | awk 'NF' | wc -l | tr -d ' ')"
+  verdict="$(printf '%s\n' "$runs" | awk 'NF' | jq -Rs '
+    split("\n") | map(select(length > 0))
+    | if any(.[]; startswith("completed") | not) then "pending"
+      elif any(.[]; test(" (failure|timed_out|cancelled|action_required|startup_failure|stale)$")) then "red"
+      else "green" end' -r 2>/dev/null)"
+  [ -n "$verdict" ] || verdict=unknown
+  case "$statuses" in
+    "failure "*|"error "*) echo red; return 0 ;;
+    "pending "*) case "${statuses#pending }" in 0) ;; *) [ "$verdict" = red ] && echo red || echo pending; return 0 ;; esac ;;
+  esac
+  if [ "$n_runs" -eq 0 ] && [ "${statuses#* }" = 0 ]; then
+    if [ -n "$(git -C "$dir" ls-tree --name-only origin/main:.github/workflows 2>/dev/null)" ]; then
+      echo pending
+    else
+      echo green
+    fi
+    return 0
+  fi
+  echo "$verdict"
 }
 
 # _release_open_prs REPO — `num author branch` lines of the open pull requests
@@ -168,6 +214,7 @@ _release_branch_is_other_track() {
   local branch="$1" repo="$2" prefix="$3" trepo tprefix
   while read -r trepo _ tprefix _; do
     [ "$trepo" = "$repo" ] || continue
+    tprefix="$(_release_prefix "$tprefix")"
     [ "$tprefix" != "$prefix" ] || continue
     [ -n "$tprefix" ] || continue
     case "$branch" in release/"$tprefix"[0-9]*) return 0 ;; esac
@@ -175,26 +222,46 @@ _release_branch_is_other_track() {
   return 1
 }
 
-_release_due_write() { # REPO DUE-EPOCH
+_release_due_write() { # SLUG REPO DUE-EPOCH
   local f
-  f="$DUTY_DIR/.release-due-$(_release_slug "$1")"
-  printf '%s %s\n' "$1" "$2" >"$f.tmp" && mv -f "$f.tmp" "$f"
+  f="$DUTY_DIR/.release-due-$1"
+  printf '%s %s\n' "$2" "$3" >"$f.tmp" && mv -f "$f.tmp" "$f"
 }
-_release_due_clear() { rm -f "$DUTY_DIR/.release-due-$(_release_slug "$1")"; }
+_release_due_clear() { rm -f "$DUTY_DIR/.release-due-$1"; }
 
-# _release_settle_cut REPO PATH DIR — what became of the cut the engine holds
-# open for REPO, if any. Merged: forgotten. Closed unmerged by a person:
-# refused — the head stays in the ledger so it is never re-cut. Still open
-# and main moved past it on this track: stale — withdrawn, and the next tick
-# cuts the new head. Still open and current: `open`, which holds the track.
-# Sets RELEASE_SETTLED to one of none|shipped|refused|withdrawn|open — a
-# variable and not stdout, because the function logs on the way and a caller
-# reading it through `$(...)` would read the log lines too.
+# _release_refuse DIR PATH REPO — the track's current tree, remembered as
+# cut-or-refused, so it is never bought again until the track moves.
+_release_refuse() {
+  local tree
+  tree="$(_release_track_id "$1" "$2")"
+  [ -n "$tree" ] || return 0
+  printf '%s:%s#%s 0\n' "$3" "$2" "$tree" | ledger_commit "$DUTY_DIR/.seen-release"
+}
+
+# _release_mine BRANCH REPO NUM — true when every commit on the engine's own
+# cut is the engine's: a branch somebody else pushed to is not withdrawn (its
+# branch is not deleted, its PR not closed) — it is held, and said.
+_release_mine() {
+  local authors
+  authors="$(gh pr view "$3" -R "$2" --json commits \
+    --jq '[.commits[].authors[]?.login // "unknown"] | unique | join(" ")' 2>/dev/null)" || return 1
+  [ -n "$authors" ] || return 1
+  [ "$authors" = "$ME" ]
+}
+
+# _release_settle_cut SLUG REPO PATH DIR — what became of the cut the engine
+# holds open for this track, if any. Merged: forgotten. Closed unmerged by a
+# person: refused — the track's tree stays in the ledger so it is never
+# re-cut. Still open and main moved past it on this track: stale — withdrawn
+# (when every commit on it is the engine's), and the next tick cuts the new
+# tree. Still open and current: `open`, which holds the track. Sets
+# RELEASE_SETTLED to one of none|shipped|refused|withdrawn|open — a variable
+# and not stdout, because the function logs on the way.
 RELEASE_SETTLED=none
 _release_settle_cut() {
-  local repo="$1" path="$2" dir="$3" f num branch head state ahead
+  local slug="$1" repo="$2" path="$3" dir="$4" f num branch head state ahead
   RELEASE_SETTLED=none
-  f="$DUTY_DIR/.release-cut-$(_release_slug "$repo")"
+  f="$DUTY_DIR/.release-cut-$slug"
   [ -f "$f" ] || return 0
   read -r num branch head <"$f" || return 0
   state="$(gh pr view "$num" -R "$repo" --json state,mergedAt \
@@ -203,13 +270,17 @@ _release_settle_cut() {
     MERGED*) rm -f "$f"; log "release: $repo#$num shipped ($branch) — the cut is forgotten"; RELEASE_SETTLED=shipped; return 0 ;;
     CLOSED*)
       rm -f "$f"
-      printf '%s#%s %s\n' "$repo" "$head" "$(_release_head_ts "$dir" "$head")" | ledger_commit "$DUTY_DIR/.seen-release"
-      log "release: $repo#$num was closed without merging ($branch) — refused; ${head:0:7} is not cut again"
+      _release_refuse "$dir" "$path" "$repo"
+      log "release: $repo#$num was closed without merging ($branch) — refused; the track at ${head:0:7} is not cut again until it moves"
       RELEASE_SETTLED=refused; return 0 ;;
   esac
   _release_pathspec "$path"
   ahead="$(git -C "$dir" rev-list --count "$head..origin/main" "${_RELEASE_PATHSPEC[@]}" 2>/dev/null || echo 0)"
   if [ "${ahead:-0}" -gt 0 ]; then
+    if ! _release_mine "$branch" "$repo" "$num"; then
+      warn "release: $repo#$num is stale (main moved past ${head:0:7}) but carries commits that are not $ME's — not withdrawn; it holds the track until a person settles it"
+      RELEASE_SETTLED=open; return 0
+    fi
     if gh pr close "$num" -R "$repo" --delete-branch \
         --comment "Withdrawn by $ME: main moved past this cut (${ahead} merge(s) on the track since ${head:0:7}). The next tick cuts the new head; nothing here is re-pushed." >/dev/null 2>&1; then
       rm -f "$f"
@@ -222,22 +293,25 @@ _release_settle_cut() {
   RELEASE_SETTLED=open
 }
 
-# _release_gate REPO PATH PREFIX RULE DIR — the decision table, one row per
-# refusal, each a `no release duty:` line. Sets RELEASE_VERSION,
-# RELEASE_LAST_TAG, RELEASE_MAIN_HEAD, RELEASE_MERGES, RELEASE_FRAGMENTS,
-# RELEASE_PIN, RELEASE_TREE for the caller on success.
-RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_MAIN_TS=""
+# _release_gate SLUG REPO PATH PREFIX RULE DIR — the decision table, one row
+# per refusal, each a `no release duty:` line. Every refusal but the quiet
+# window's clears the track's wait, so a cut refused for another reason never
+# keeps waking the box for the window. Sets RELEASE_VERSION, RELEASE_LAST_TAG,
+# RELEASE_MAIN_HEAD, RELEASE_MAIN_TS, RELEASE_TRACK_ID, RELEASE_MERGES,
+# RELEASE_FRAGMENTS, RELEASE_PIN, RELEASE_TREE for the caller on success.
+RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_MAIN_TS=""; RELEASE_TRACK_ID=""
 RELEASE_MERGES=""; RELEASE_FRAGMENTS=""; RELEASE_PIN=""; RELEASE_TREE=""
 _release_gate() {
-  local repo="$1" path="$2" prefix="$3" rule="$4" dir="$5"
-  local name="$repo ${prefix:-<bare>}@$path" prs num author branch
-  local head ci age now quiet fresh
-  RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_MAIN_TS=""
+  local slug="$1" repo="$2" path="$3" prefix="$4" rule="$5" dir="$6"
+  local name="$repo ${prefix:-<bare>}@$path" prs num author branch shape
+  local head ci age now quiet fresh tried tried_n
+  RELEASE_VERSION=""; RELEASE_LAST_TAG=""; RELEASE_MAIN_HEAD=""; RELEASE_MAIN_TS=""; RELEASE_TRACK_ID=""
   RELEASE_MERGES=""; RELEASE_FRAGMENTS=""; RELEASE_PIN=""; RELEASE_TREE=""
+  _release_due_clear "$slug"
   if [ "$rule" = hold ]; then
     log "no release duty: $name — held by RELEASE_TRACKS (rule hold); the operator cuts"; return 1
   fi
-  _release_settle_cut "$repo" "$path" "$dir"
+  _release_settle_cut "$slug" "$repo" "$path" "$dir"
   case "$RELEASE_SETTLED" in
     open) log "no release duty: $name — the engine's own release PR is open and current; the approval is a person's"; return 1 ;;
     withdrawn) return 1 ;;
@@ -251,41 +325,50 @@ _release_gate() {
   if ! RELEASE_VERSION="$(_release_version "$dir" "$path")"; then
     log "no release duty: $name — VERSION on main is not armed (no -dev suffix); nothing to stamp"; return 1
   fi
-  RELEASE_LAST_TAG="$(_release_last_tag "$dir" "$prefix")"
+  shape=final; case "$RELEASE_VERSION" in *-rc[0-9]*) shape=any ;; esac
+  RELEASE_LAST_TAG="$(_release_last_tag "$dir" "$prefix" "$shape")"
   if [ -z "$RELEASE_LAST_TAG" ]; then
     log "no release duty: $name — no release tag under the prefix yet; the first cut is the operator's (the known first-release edge)"; return 1
   fi
   RELEASE_MERGES="$(_release_merges "$dir" "$RELEASE_LAST_TAG" "$path")"
   if [ -z "$RELEASE_MERGES" ]; then
-    _release_due_clear "$repo"
     log "no release duty: $name — main carries nothing for the track since $RELEASE_LAST_TAG"; return 1
   fi
   RELEASE_FRAGMENTS="$(_release_fragments "$dir" "$path")"
-  case "$RELEASE_VERSION" in
-    *-rc[0-9]*) ;;  # a candidate is tag-only: fragments survive it (RELEASES.md)
-    *)
-      if [ -z "$RELEASE_FRAGMENTS" ]; then
-        log "no release duty: $name — $(printf '%s\n' "$RELEASE_MERGES" | awk 'NF' | wc -l | tr -d ' ') merge(s) since $RELEASE_LAST_TAG but no fragment in changelog.d; a release publishes prose"; return 1
-      fi ;;
-  esac
+  if [ "$shape" = final ] && [ -z "$RELEASE_FRAGMENTS" ]; then
+    log "no release duty: $name — $(printf '%s\n' "$RELEASE_MERGES" | awk 'NF' | wc -l | tr -d ' ') merge(s) since $RELEASE_LAST_TAG but no fragment in changelog.d; a release publishes prose"; return 1
+  fi
   head="$(git -C "$dir" rev-parse origin/main 2>/dev/null)"
   [ -n "$head" ] || { warn "release: $name — origin/main unreadable in $dir"; return 1; }
   RELEASE_MAIN_HEAD="$head"
-  RELEASE_MAIN_TS="$(_release_head_ts "$dir" "$head")"
-  fresh="$(printf '%s#%s %s\n' "$repo" "$head" "$RELEASE_MAIN_TS" | ledger_filter "$DUTY_DIR/.seen-release")"
+  RELEASE_MAIN_TS="$(git -C "$dir" log -1 --format=%cI origin/main 2>/dev/null)"
+  RELEASE_TRACK_ID="$(_release_track_id "$dir" "$path")"
+  [ -n "$RELEASE_TRACK_ID" ] || { warn "release: $name — the track's tree is unreadable in $dir"; return 1; }
+  fresh="$(printf '%s:%s#%s 0\n' "$repo" "$path" "$RELEASE_TRACK_ID" | ledger_filter "$DUTY_DIR/.seen-release")"
   if [ -z "$fresh" ]; then
-    log "no release duty: $name — ${head:0:7} was already cut or refused; only new merges make a new cut"; return 1
+    log "no release duty: $name — the track at ${head:0:7} was already cut or refused; only new merges on the track make a new cut"; return 1
+  fi
+  # Sessions that ended without a pull request, for this very track state:
+  # at the cap the state is refused and said, rather than bought every tick
+  # until the lane's budget runs out.
+  tried=""; tried_n=0
+  if [ -r "$DUTY_DIR/.release-tried-$slug" ]; then read -r tried tried_n <"$DUTY_DIR/.release-tried-$slug" || true; fi
+  [ "$tried" = "$RELEASE_TRACK_ID" ] || { rm -f "$DUTY_DIR/.release-tried-$slug"; tried_n=0; }
+  case "$tried_n" in ''|*[!0-9]*) tried_n=0 ;; esac
+  if [ "$tried_n" -ge "${RELEASE_MAX_TRIES:-$RELEASE_MAX_TRIES_DEFAULT}" ]; then
+    _release_refuse "$dir" "$path" "$repo"; rm -f "$DUTY_DIR/.release-tried-$slug"
+    warn "release: $name — $tried_n session(s) ended without a pull request for the track at ${head:0:7}; refused until the track moves (read the session logs: a missing '${LABEL_RELEASE:-release}' label, an assembler refusal, a leftover fork branch)"
+    return 1
   fi
   now="$(date +%s)"
   age=$((now - $(git -C "$dir" log -1 --format=%ct origin/main 2>/dev/null || echo "$now")))
   quiet="${RELEASE_QUIET_S:-$RELEASE_QUIET_S_DEFAULT}"
   case "$quiet" in ''|*[!0-9]*) quiet="$RELEASE_QUIET_S_DEFAULT" ;; esac
   if [ "$age" -lt "$quiet" ]; then
-    _release_due_write "$repo" $((now + quiet - age))
+    _release_due_write "$slug" "$repo" $((now + quiet - age))
     log "no release duty: $name — main moved ${age}s ago, under the ${quiet}s quiet window; due in $((quiet - age))s"; return 1
   fi
-  _release_due_clear "$repo"
-  ci="$(_release_ci "$repo" "$head")"
+  ci="$(_release_ci "$repo" "$head" "$dir")"
   case "$ci" in
     green) ;;
     pending) log "no release duty: $name — CI at ${head:0:7} is still running; a cut is bought on a green head"; return 1 ;;
@@ -301,41 +384,51 @@ _release_gate() {
   return 0
 }
 
-# _release_after REPO BRANCH HEAD TS — the session's product, verified on the
-# board: the ledger row is EARNED by the pull request existing, the rule every
-# seen-ledger follows, so a session that died before `gh pr create` leaves
-# the head uncut and the next tick cuts it again.
+# _release_after SLUG REPO PATH BRANCH HEAD TRACK_ID — the session's product,
+# verified on the board: the ledger row is EARNED by the pull request
+# existing, the rule every seen-ledger follows, so a session that died before
+# `gh pr create` leaves the track uncut; the try is counted, and the next
+# tick cuts it again until RELEASE_MAX_TRIES.
 _release_after() {
-  local repo="$1" branch="$2" head="$3" ts="$4" num
+  local slug="$1" repo="$2" path="$3" branch="$4" head="$5" track_id="$6" num tried tried_n=0
   num="$(gh pr list -R "$repo" --state open --label "${LABEL_RELEASE:-release}" --limit 20 \
     --json number,author,headRefName 2>/dev/null \
     | jq -r --arg b "$branch" --arg me "$ME" \
         '.[] | select(.headRefName == $b and .author.login == $me) | .number' 2>/dev/null | head -1)"
   if [ -z "$num" ]; then
-    warn "release: $repo — the session ended without opening $branch; ${head:0:7} is cut again next tick"
+    if [ -r "$DUTY_DIR/.release-tried-$slug" ]; then read -r tried tried_n <"$DUTY_DIR/.release-tried-$slug" || true; fi
+    [ "${tried:-}" = "$track_id" ] || tried_n=0
+    case "$tried_n" in ''|*[!0-9]*) tried_n=0 ;; esac
+    tried_n=$((tried_n + 1))
+    printf '%s %s\n' "$track_id" "$tried_n" >"$DUTY_DIR/.release-tried-$slug.tmp" \
+      && mv -f "$DUTY_DIR/.release-tried-$slug.tmp" "$DUTY_DIR/.release-tried-$slug"
+    warn "release: $repo — the session ended without opening $branch (try $tried_n of ${RELEASE_MAX_TRIES:-$RELEASE_MAX_TRIES_DEFAULT}); the track at ${head:0:7} is cut again next tick"
     return 1
   fi
-  printf '%s %s %s\n' "$num" "$branch" "$head" >"$DUTY_DIR/.release-cut-$(_release_slug "$repo").tmp" \
-    && mv -f "$DUTY_DIR/.release-cut-$(_release_slug "$repo").tmp" "$DUTY_DIR/.release-cut-$(_release_slug "$repo")"
-  printf '%s#%s %s\n' "$repo" "$head" "$ts" | ledger_commit "$DUTY_DIR/.seen-release"
+  rm -f "$DUTY_DIR/.release-tried-$slug"
+  printf '%s %s %s\n' "$num" "$branch" "$head" >"$DUTY_DIR/.release-cut-$slug.tmp" \
+    && mv -f "$DUTY_DIR/.release-cut-$slug.tmp" "$DUTY_DIR/.release-cut-$slug"
+  printf '%s:%s#%s 0\n' "$repo" "$path" "$track_id" | ledger_commit "$DUTY_DIR/.seen-release"
   log "release: $repo#$num opened ($branch at ${head:0:7}) — the approval is a person's; the engine stops here"
   return 0
 }
 
 duty_release() {
-  local repo path prefix rule dir slug name branch wt_rules merges fragments
+  local repo path prefix rule dir slug name tslug branch wt_rules merges fragments
   [ -n "${RELEASE_TRACKS:-}" ] || return 0
   while read -r repo path prefix rule; do
     [ -n "$repo" ] || continue
+    prefix="$(_release_prefix "$prefix")"
     if ! read_repo_list "$REPOS_FILE" | grep -Fx -- "$repo" >/dev/null; then
       warn "release: $repo is in RELEASE_TRACKS but not in this box's registry; skipped"
       continue
     fi
     slug="${repo//\//__}"; name="${repo##*/}"
+    tslug="$(_release_slug "$repo" "$prefix")"
     dir="$WORK_DIR/$slug"
     ensure_main_clone "$repo" "$dir" || { warn "release: $repo — main clone unavailable; the cut waits"; continue; }
     git -C "$dir" fetch -q --tags origin 2>/dev/null || warn "release: $repo — tag fetch failed; the last tag may be stale"
-    _release_gate "$repo" "$path" "$prefix" "$rule" "$dir" || continue
+    _release_gate "$tslug" "$repo" "$path" "$prefix" "$rule" "$dir" || continue
     branch="release/${prefix}${RELEASE_VERSION}"
     merges="$(printf '%s\n' "$RELEASE_MERGES" | awk 'NF' | paste -sd';' - | sed 's/;/; /g')"
     fragments="$(printf '%s\n' "$RELEASE_FRAGMENTS" | awk 'NF' | paste -sd' ' -)"
@@ -344,7 +437,7 @@ duty_release() {
     log "release: $repo — cutting ${prefix}${RELEASE_VERSION} from ${RELEASE_MAIN_HEAD:0:7} (since $RELEASE_LAST_TAG; ceremony@$RELEASE_PIN)"
     run_session release "$repo" "$dir" "${TIMEOUT_RELEASE:-2400}" \
       "$(render_prompt release.txt ME="$ME" REPO="$repo" NAME="$name" TRACK_PATH="$path" TAG_PREFIX="$prefix" VERSION="$RELEASE_VERSION" LAST_TAG="$RELEASE_LAST_TAG" MAIN_HEAD="$RELEASE_MAIN_HEAD" MERGES="$merges" FRAGMENTS="$fragments" CEREMONY_PIN="$RELEASE_PIN" CEREMONY_TREE="$RELEASE_TREE" BRANCH="$branch" LABEL_RELEASE="${LABEL_RELEASE:-release}" WT_RULES="$wt_rules")"
-    _release_after "$repo" "$branch" "$RELEASE_MAIN_HEAD" "$RELEASE_MAIN_TS" || true
+    _release_after "$tslug" "$repo" "$path" "$branch" "$RELEASE_MAIN_HEAD" "$RELEASE_TRACK_ID" || true
   done < <(_release_tracks)
   return 0
 }

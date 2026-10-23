@@ -1327,4 +1327,11 @@ tr_run 0
 t d8-issue-author-notification-stays-silent 0 "$(trc '^SESSION mention$')"
 unset -f d8_sel
 
+# The discussions query reads the NEWEST comments and replies (#763 review):
+# `first:` was the oldest fifty, so a human's reply on a long thread never
+# woke triage.
+t discussions-query-reads-the-newest-comments 1 "$(grep -c 'comments(last:50)' "$SHARED/lib/duty-triage.sh")"
+t discussions-query-reads-the-newest-replies 1 "$(grep -c 'replies(last:20)' "$SHARED/lib/duty-triage.sh")"
+t discussions-query-reads-no-oldest-first 0 "$(grep -cE 'comments\(first:|replies\(first:' "$SHARED/lib/duty-triage.sh" || true)"
+
 suite_finish

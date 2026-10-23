@@ -381,4 +381,7 @@ if [ "${PROBE_FULL:-0}" = 1 ]; then
        && [ "$(tail -c1 "$DUTY_DIR/duty.log" 2>/dev/null | wc -l)" -eq 0 ]; then echo; fi
   fi
   echo "::fileend"
+  # The rotated log, whole, on a full pull: the lines written between the
+  # last pull and the rotation live there, SESSION END rows included.
+  [ ! -r "$DUTY_DIR/duty.log.1" ] || probe_file duty.log.1 "$DUTY_DIR/duty.log.1"
 fi

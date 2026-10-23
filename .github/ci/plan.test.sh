@@ -56,6 +56,25 @@ t plan-all-is-full 1 "$("$PLAN" --all | grep '^full=' | cut -d= -f2)"
 stub="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 1\n' >"$stub/gh"; chmod +x "$stub/gh"
 out="$(PATH="$stub:$PATH" "$PLAN" --pr owner/repo 1 2>/dev/null)"; rm -rf "$stub"
 t plan-unreadable-pr-runs-everything 1 "$(full_of "$out")"
+# The files are read EVERY PAGE (the API caps one at 100): a PR of 300+ files
+# runs everything, and a renamed file is planned by its old name too.
+stub="$(mktemp -d)"
+cat >"$stub/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *--paginate*files*) i=0; while [ "$i" -lt "${STUB_FILES:-1}" ]; do echo "shared/docs/f$i.md"; i=$((i+1)); done; [ -z "${STUB_RENAMED_FROM:-}" ] || { echo "docs/moved.md"; echo "$STUB_RENAMED_FROM"; } ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$stub/gh"
+out="$(STUB_FILES=300 PATH="$stub:$PATH" "$PLAN" --pr owner/repo 1 2>/dev/null)"
+t plan-a-pr-of-300-files-runs-everything 1 "$(full_of "$out")"
+out="$(STUB_FILES=150 PATH="$stub:$PATH" "$PLAN" --pr owner/repo 1 2>/dev/null)"
+t plan-a-pr-past-one-page-is-still-planned-by-path 0 "$(full_of "$out")"
+t plan-reads-the-files-paginated 1 "$(STUB_FILES=1 PATH="$stub:$PATH" bash -c '"$0" --pr owner/repo 1 >/dev/null 2>&1; gh api --paginate x/files 2>/dev/null | wc -l' "$PLAN")"
+out="$(STUB_FILES=1 STUB_RENAMED_FROM=shared/lib/common/ledger.sh PATH="$stub:$PATH" "$PLAN" --pr owner/repo 1 2>/dev/null)"
+t plan-a-rename-is-planned-by-its-old-name-too 1 "$(suites_of "$out" | tr ',' '\n' | grep -cx 'common/ledger')"
+rm -rf "$stub"
 # $GITHUB_OUTPUT receives the same two lines.
 tmp="$(mktemp)"; GITHUB_OUTPUT="$tmp" "$PLAN" --all >/dev/null; t plan-writes-github-output 2 "$(grep -c -E '^(full|suites)=' "$tmp")"; rm -f "$tmp"
 # run-suite.sh refuses an id it does not know and names it.

@@ -56,15 +56,19 @@ reason on `duty.log`, unless every row holds:
 | the last `site-X.Y.Z` tag | `no release tag under the prefix yet; the first cut is the operator's` |
 | commits since the tag touching the track (the re-arm excluded) | `main carries nothing for the track since site-X.Y.Z` |
 | `<path>/changelog.d/` on main (final versions only) | `N merge(s) since site-X.Y.Z but no fragment in changelog.d; a release publishes prose` |
-| the seen-ledger `.seen-release` | `<sha> was already cut or refused; only new merges make a new cut` |
+| the seen-ledger `.seen-release`, keyed by the TRACK'S tree | `the track at <sha> was already cut or refused; only new merges on the track make a new cut` |
+| `.release-tried-<track>` | `N session(s) ended without a pull request for the track at <sha>; refused until the track moves` |
 | main's last commit age against `RELEASE_QUIET_S` | `main moved Ns ago, under the 900s quiet window; due in Ms` |
-| the check runs at main's head | `CI at <sha> is still running` / `is red` / `is unknown` |
+| every check run and the commit status at main's head | `CI at <sha> is still running` / `is red` / `is unknown` — a stale run is red; no run on a repository with workflows is still running |
 | the ceremony pin in `.github/workflows/release.yml` | `names no ceremony pin` |
 
-A cut that waits for the quiet window writes `~/duty/.release-due-<slug>`;
+A cut that waits for the quiet window writes `~/duty/.release-due-<track>`;
 the host tick reads it from the store (`wake_release_reasons`) and starts
 the box when it is due, so a wave of merges yields one cut, after the wave,
-even if the box had gone to sleep.
+even if the box had gone to sleep. Any other refusal clears that wait. Every
+piece of the cut's memory is per track — the site's and the admin's cuts,
+waits and refusals never share a file — and a refusal is remembered by the
+track's tree, so an off-track merge re-opens nothing.
 
 Only when every row holds does the engine buy a `release` session
 (`TIMEOUT_RELEASE`, `BUDGET_*_RELEASE`, top tier). The session is handed the
@@ -86,22 +90,27 @@ pin, the branch — and does the half that needs a toolchain and judgment:
 5. one pull request against `main`, labelled `release`, from the bot's fork;
 6. stop.
 
-What the session leaves on the box: `.release-cut-<slug>` (`<pr> <branch>
+What the session leaves on the box: `.release-cut-<track>` (`<pr> <branch>
 <main sha>`) and a row in `.seen-release`, both carried to the store and
 back across a reset (#761). The ledger row is earned by the pull request
 existing, read back from the board: a session that died before
-`gh pr create` leaves the head uncut and the next tick cuts it again.
+`gh pr create` leaves the track uncut and the next tick cuts it again, up
+to `RELEASE_MAX_TRIES` times; then the track state is refused and said, so
+a session that cannot open its pull request (a missing label, an assembler
+refusal, a leftover fork branch) never spends the lane's whole budget.
 
 ## When the cut is wrong
 
 - **Stale** — main moved past the cut on the track (another PR merged
   after it): the next tick withdraws it (`gh pr close --delete-branch`, with
-  a comment saying why) and cuts the new head on the tick after. Nothing is
-  force-pushed onto an open release PR, ever.
-- **Refused** — a person closed the PR without merging: the head stays in
-  `.seen-release` and is never cut again. Only new merges make a new cut.
-  To cut the same head anyway, the operator cuts by hand, or removes the
-  row from the ledger.
+  a comment saying why) and cuts the new head on the tick after — but only
+  when every commit on it is the engine's; a cut somebody pushed to is held
+  and said, never closed. Nothing is force-pushed onto an open release PR,
+  ever.
+- **Refused** — a person closed the PR without merging: the track's tree
+  stays in `.seen-release` and is never cut again. Only a new merge ON THE
+  TRACK makes a new cut; an off-track merge changes nothing. To cut the same
+  tree anyway, the operator cuts by hand, or removes the row from the ledger.
 - **Held** — `:hold` on the track keeps it declared (the admin's line on the
   site, whose releases a person cuts) and buys nothing.
 - **The pin moved** — the session assembles at whatever pin the consumer's

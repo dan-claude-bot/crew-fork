@@ -42,7 +42,7 @@ VITALS ts=2026-10-20T09:00:00Z mem_free_kib=512000 disk_free_pct=41
 2026-10-20T09:00:01Z SESSION START kind=build key=crew#1 timeout=7200s log=/h/duty/logs/a.log
 2026-10-20T09:05:00Z SESSION END kind=build key=crew#1 rc=0 dur=290s outcome=ok
 2026-10-20T09:05:01Z duty run end
-2026-10-20T09:10:00Z tick skipped: previous run still holds the lock (held 12s)
+2026-10-20T09:10:00Z duty tick skipped: previous run still holds the lock (held 12s)
 2026-10-20T09:15:00Z SESSION END kind=review key=box#2 rc=1 dur=30s outcome=TERMINAL acted=no reply_tail=cmVzZXRzIGF0IDE4OjAwIFVUQw==
 2026-10-20T09:16:00Z SESSION SKIP kind=review key=box#3 reason=terminal-breaker count=3
 2026-10-20T09:20:00Z SESSION END kind=triage key=board rc=0 dur=64s outcome=ok acted=yes reply_tail= log=1200 left=0 tier=default peak_rss=3588324 oom=0 input_tokens=1000 output_tokens=100 cache_creation_input_tokens=10 cache_read_input_tokens=20 session_id=abc model=fix-model pool=pool-a sid=s-3
@@ -65,7 +65,7 @@ st_record() {
   printf '::vitals VITALS ts=2026-10-20T09:00:00Z mem_free_kib=512000 disk_free_pct=41\n'
   echo '::logstart'; tail -n 600 "$log"; echo '::logend'
   printf '::statefiles .seen-build .suppressed-review .session-terminal.review .limit-events .review-owed\n'
-  printf '::filestart .seen-build\ncrew#1 2026-10-01T00:00:00Z\ncrew#2 2026-10-02T00:00:00Z\n::fileend\n'
+  printf '::filestart .seen-build\ncrew#1 2026-10-01T00:00:00Z\ncrew#2 2026-10-02T00:00:00Z digest-9 1700000000\n::fileend\n'
   printf '::filestart .suppressed-review\n::not-a-key 2026-10-03T00:00:00Z\n::fileend\n'
   printf '::filestart .session-terminal.review\n3\ttripped\t12\tno\t0\t0\n::fileend\n'
   printf '::filestart .limit-events\n1700000000-11-1\t2026-10-20T09:00:00Z\twarn\tgithub_connection_nodes\t90\t100\theavy-duty/crew#482\tsays ::logend\n::fileend\n'
@@ -83,7 +83,7 @@ st_py() {
 
 # --- the schema, once ---------------------------------------------------------
 ST_A="$ST_TMP/a.sqlite"
-t "store: created on first use, with a schema version row" "1 $ST_A" \
+t "store: created on first use, with a schema version row" "2 $ST_A" \
   "$(st_py "$ST_A" '
 import os
 from floor import store
@@ -495,3 +495,83 @@ print(c.execute("SELECT COUNT(*) FROM pulls WHERE box=\"st-idle\" AND ok=0").fet
 ')"
 kill "$SRV5" 2>/dev/null
 unset -f st_api st_unit st_uf st_py st_record
+
+# ── #763 review: the store is the box's memory, not more than it ───────────
+# A ledger row keeps its whole line; a full pull is the truth, so a row the
+# box dropped leaves the store; a reader never creates a store and never runs
+# the writer's schema; the rotated log lands by content.
+ST_M="$ST_TMP/mem.sqlite"
+st_py "$ST_M" 'from floor import store; store.init()' >/dev/null
+ST_REC="$ST_TMP/rec-full.txt" st_py "$ST_M" '
+import os
+from floor import store
+store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
+' >/dev/null
+t "ledger: a row keeps the whole line, not id and ts alone" "crew#2 2026-10-02T00:00:00Z digest-9 1700000000" \
+  "$(st_py "$ST_M" '
+from floor import store
+c = store.connect(readonly=True)
+r = c.execute("SELECT id, ts, rest FROM ledger WHERE box=\"alpha\" AND name=\".seen-build\" AND id=\"crew#2\"").fetchone()
+print(r["id"], r["ts"], r["rest"])
+')"
+ST_EXP="$ST_TMP/export-mem"; rm -rf "$ST_EXP"
+st_py "$ST_M" 'import sys; from floor import store; sys.argv=["store.py","export","--box","alpha","--dir","'"$ST_EXP"'"]; store.main(sys.argv[1:])' >/dev/null 2>&1 \
+  || CREW_FLOOR_STORE="$ST_M" CREW_MODEL_PRICES="$ST_TMP/prices.conf" PYTHONPATH="$ST_SERVER" python3 "$ST_SERVER/floor/store.py" export --box alpha --dir "$ST_EXP" >/dev/null
+t "export: the ledger file comes back with its whole lines" "crew#2 2026-10-02T00:00:00Z digest-9 1700000000" "$(grep '^crew#2 ' "$ST_EXP/.seen-build")"
+# The box drops crew#1 and empties .suppressed-review; a full pull says so.
+sed -e 's/^crew#1 2026-10-01T00:00:00Z$//' -e 's/^::not-a-key 2026-10-03T00:00:00Z$//' "$ST_TMP/rec-full.txt" >"$ST_TMP/rec-dropped.txt"
+ST_REC="$ST_TMP/rec-dropped.txt" st_py "$ST_M" '
+import os
+from floor import store
+store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
+' >/dev/null
+t "ledger: a full pull prunes the rows the box no longer has" "crew#2" \
+  "$(st_py "$ST_M" '
+from floor import store
+c = store.connect(readonly=True)
+print(",".join(r["id"] for r in c.execute("SELECT id FROM ledger WHERE box=\"alpha\" AND name=\".seen-build\" ORDER BY id")))
+')"
+t "ledger: an emptied ledger is empty in the store too" 0 \
+  "$(st_py "$ST_M" '
+from floor import store
+c = store.connect(readonly=True)
+print(c.execute("SELECT count(*) FROM ledger WHERE box=\"alpha\" AND name=\".suppressed-review\"").fetchone()[0])
+')"
+t "reader: a read-only open never creates a store" "no-store absent" \
+  "$(st_py "$ST_TMP/never.sqlite" '
+import os
+from floor import store
+try:
+    store.connect(readonly=True); print("opened")
+except SystemExit as e:
+    print("no-store", "present" if os.path.exists(os.environ["CREW_FLOOR_STORE"]) else "absent")
+')"
+t "reader: a read-only open runs no schema" "ro" \
+  "$(st_py "$ST_M" '
+from floor import store
+c = store.connect(readonly=True)
+try:
+    c.execute("CREATE TABLE zz(x)"); print("rw")
+except Exception:
+    print("ro")
+')"
+t "tick: the real skip line classifies as skipped" "skipped skipped" \
+  "$(st_py "$ST_M" '
+from floor import store
+print(store.classify_tick("duty tick skipped: previous run still holds the lock"), store.classify_tick("tick skipped: x"))
+')"
+# The rotated log: a full pull ships duty.log.1 whole and its rows land by content.
+{ cat "$ST_TMP/rec-full.txt"; printf '::filestart duty.log.1\n2026-10-19T23:59:00Z SESSION END kind=build key=crew#0 rc=0 dur=10s outcome=ok\n::fileend\n'; } >"$ST_TMP/rec-rotated.txt"
+ST_REC="$ST_TMP/rec-rotated.txt" st_py "$ST_M" '
+import os
+from floor import store
+store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
+store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
+' >/dev/null
+t "rotated: the rotated log'"'"'s session lands once" 1 \
+  "$(st_py "$ST_M" '
+from floor import store
+c = store.connect(readonly=True)
+print(c.execute("SELECT count(*) FROM sessions WHERE box=\"alpha\" AND key=\"crew#0\"").fetchone()[0])
+')"
+

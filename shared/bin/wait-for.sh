@@ -21,11 +21,22 @@ case "$what" in
     repo="${1:-}"; num="${2:-}"; shift 2 || { echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>]" >&2; exit 2; }
     [ "${1:-}" != --timeout ] || { timeout_s="${2:-1800}"; shift 2 || true; }
     { [ -n "$repo" ] && [ -n "$num" ]; } || { echo "usage: wait-for.sh checks <owner/repo> <pr> [--timeout <s>]" >&2; exit 2; }
-    waited=0
+    waited=0; empty_seen=0
     while [ "$waited" -lt "$timeout_s" ]; do
-      pending="$(gh pr view "$num" -R "$repo" --json statusCheckRollup \
-        --jq '[.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length' 2>/dev/null)"
-      case "$pending" in 0) echo "checks settled on $repo#$num"; exit 0 ;; ''|*[!0-9]*) : ;; esac
+      # `pending total`: a run not yet concluded — queued, in progress,
+      # pending, waiting, REQUESTED, EXPECTED — is pending; and an EMPTY
+      # rollup is "settled" only when it is still empty a minute later, since
+      # the first poll after a push can land before any run is reported.
+      read -r pending total <<<"$(gh pr view "$num" -R "$repo" --json statusCheckRollup \
+        --jq '([.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.status // "") == "REQUESTED" or (.status // "") == "EXPECTED" or (.state // "") == "PENDING" or (.state // "") == "EXPECTED"))] | length | tostring) + " " + ([.statusCheckRollup[]?] | length | tostring)' 2>/dev/null)"
+      case "$pending" in
+        0)
+          if [ "${total:-0}" -gt 0 ]; then echo "checks settled on $repo#$num"; exit 0; fi
+          if [ "$empty_seen" -eq 1 ]; then echo "no checks reported on $repo#$num (none configured, or none reached this head)"; exit 0; fi
+          empty_seen=1 ;;
+        ''|*[!0-9]*) : ;;
+        *) empty_seen=0 ;;
+      esac
       sleep 30; waited=$((waited + 30))
     done
     echo "checks on $repo#$num still pending after ${timeout_s}s" >&2; exit 1 ;;

@@ -40,8 +40,8 @@ _triage_discussion_items() {  # _triage_discussion_items REPO OWNER NAME
       repository(owner:$owner,name:$name){
         discussions(first:50,states:OPEN){
           nodes{ number updatedAt
-            comments(first:50){ nodes{ author{ login } body createdAt
-              replies(first:20){ nodes{ author{ login } body createdAt } } } } }
+            comments(last:50){ nodes{ author{ login } body createdAt
+              replies(last:20){ nodes{ author{ login } body createdAt } } } } }
         }
       }
     }' --jq "$(cat "$DUTY_DIR/lib/jq/discussions.jq")"
@@ -65,7 +65,8 @@ _triage_graph_edges() {  # _triage_graph_edges REPO ISSUES_JSON
     # Keep byte-identical with lib/jq/blockers.jq: signal (e) and signal (f)
     # deliberately recognize the same declaration grammar.
     def blockers:
-      [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
+      gsub("\\((?<p>[^()]*)\\)"; "(" + (.p | gsub("[.;](?=\\s|$)"; ",")) + ")")
+  | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
       | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
     [ .[] as $issue
       | (($issue.body // "") | blockers[]) as $predecessor

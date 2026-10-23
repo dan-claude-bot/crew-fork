@@ -142,7 +142,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # --------------------------------------------------------------------------
 # where
@@ -220,11 +220,17 @@ CREATE TABLE IF NOT EXISTS vitals (
 CREATE TABLE IF NOT EXISTS limit_events (
   box TEXT NOT NULL, ts TEXT, line TEXT NOT NULL,
   UNIQUE(box, line));
+-- Keyed by (box, ts, line): a line is one event. Two byte-identical lines
+-- with NO timestamp (an untimestamped stderr line the tick echoed twice)
+-- land once, by design — their position `n` is not in the key because a
+-- plain cadence pull carries no position, and keying on it would land every
+-- such pull's tail again.
 CREATE TABLE IF NOT EXISTS duty_log (
   box TEXT NOT NULL, ts TEXT NOT NULL, line TEXT NOT NULL, n INTEGER,
   UNIQUE(box, ts, line));
 CREATE TABLE IF NOT EXISTS ledger (
   box TEXT NOT NULL, name TEXT NOT NULL, id TEXT NOT NULL, ts TEXT NOT NULL,
+  rest TEXT,
   PRIMARY KEY(box, name, id));
 CREATE TABLE IF NOT EXISTS state_files (
   box TEXT NOT NULL, name TEXT NOT NULL, content TEXT NOT NULL,
@@ -266,9 +272,42 @@ def now_iso(now=None):
                                   timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def connect(path=None):
-    """Open (and on first use create) the store; refresh the rates table."""
+def _migrate(conn, have):
+    """Bring a store at schema `have` to SCHEMA_VERSION, one step at a time.
+    A store NEWER than this code is refused: guessing at a shape this code
+    never saw is how a read becomes a corruption."""
+    if have > SCHEMA_VERSION:
+        raise SystemExit("store.py: the store is schema %d; this crew reads up to %d — upgrade crew"
+                         % (have, SCHEMA_VERSION))
+    if have < 2:
+        # v2 (#763): ledger rows keep the whole line (`rest`), not id and ts
+        # alone — a hygiene row's digest and epoch, a suppressed set's tail.
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(ledger)").fetchall()]
+        if "rest" not in cols:
+            conn.execute("ALTER TABLE ledger ADD COLUMN rest TEXT")
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+                 (str(SCHEMA_VERSION),))
+
+
+def connect(path=None, readonly=False):
+    """Open the store. A WRITER creates it on first use, runs the schema and
+    migrations, and refreshes the rates table. A READER opens it read-only and
+    runs none of that — so the host tick, status and usage never queue behind
+    an ingest's BEGIN IMMEDIATE, and a read never creates a store (#763)."""
     path = path or store_path()
+    if readonly:
+        if not os.path.exists(path):
+            raise SystemExit("store.py: no store at %s (crew up creates it)" % path)
+        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=30,
+                               isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        have = int(row["value"]) if row and str(row["value"]).isdigit() else 0
+        if have > SCHEMA_VERSION:
+            raise SystemExit("store.py: the store is schema %d; this crew reads up to %d — upgrade crew"
+                             % (have, SCHEMA_VERSION))
+        return conn
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path, timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -276,9 +315,12 @@ def connect(path=None):
     conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(SCHEMA)
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    have = int(row["value"]) if row and str(row["value"]).isdigit() else 0
     if row is None:
         conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
+    elif have != SCHEMA_VERSION:
+        _migrate(conn, have)
     refresh_rates(conn)
     return conn
 
@@ -435,7 +477,7 @@ def classify_tick(text):
         return "run start"
     if text == "duty run end":
         return "run end"
-    if text.startswith("tick skipped"):
+    if re.search(r"(^|\s)tick skipped", text):
         return "skipped"
     if text.startswith("SESSION SKIP "):
         return "session-skip"
@@ -531,17 +573,34 @@ def _ingest_limit_events(conn, box, lines):
                      (box, ts, line))
 
 
-def _ingest_file(conn, box, name, lines):
+def _is_ledger(name):
+    return name.startswith(".seen-") or name.startswith(".suppressed-")
+
+
+def _ingest_file(conn, box, name, lines, full=False):
+    """One state file. A LEDGER lands row by row, the whole line kept (`id ts
+    rest`); on a FULL pull the file is the truth, so rows the box no longer
+    has leave the store too — a dropped `.seen-*` row or a cleared
+    `.suppressed-*` report must not come back at the next reset (#763)."""
     content = "\n".join(lines) + ("\n" if lines else "")
-    if name.startswith(".seen-") or name.startswith(".suppressed-"):
+    if _is_ledger(name):
+        ids = []
         for raw in lines:
             parts = raw.split()
             if len(parts) >= 2:
+                rest = " ".join(parts[2:])
+                ids.append(parts[0])
                 conn.execute(
-                    "INSERT INTO ledger(box, name, id, ts) VALUES(?,?,?,?) "
-                    "ON CONFLICT(box, name, id) DO UPDATE SET ts=excluded.ts "
-                    "WHERE excluded.ts > ledger.ts",
-                    (box, name, parts[0], parts[1]))
+                    "INSERT INTO ledger(box, name, id, ts, rest) VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(box, name, id) DO UPDATE SET ts=excluded.ts, rest=excluded.rest "
+                    "WHERE excluded.ts >= ledger.ts",
+                    (box, name, parts[0], parts[1], rest))
+        if full:
+            if ids:
+                conn.execute("DELETE FROM ledger WHERE box=? AND name=? AND id NOT IN (%s)"
+                             % ",".join("?" * len(ids)), (box, name) + tuple(ids))
+            else:
+                conn.execute("DELETE FROM ledger WHERE box=? AND name=?", (box, name))
         return
     if name == ".limit-events":
         _ingest_limit_events(conn, box, lines)
@@ -634,17 +693,28 @@ def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="
         for name, lines in files.items():
             if name == "duty.log":
                 continue
-            _ingest_file(conn, box, name, lines)
+            if name == "duty.log.1":
+                # The rotated log, shipped whole on a full pull: lines written
+                # between the last pull and the rotation land by content, and
+                # the UNIQUE keys refuse what is already here.
+                _ingest_lines(conn, box, lines, None)
+                landed += 1
+                continue
+            _ingest_file(conn, box, name, lines, full="statefiles" in meta)
             landed += 1
         if "statefiles" in meta:
             # Full mode names every state file the box has, so one it no
-            # longer has — a breaker that cleared — leaves the store too.
+            # longer has — a breaker that cleared, a ledger emptied — leaves
+            # the store too.
             present = tuple(sorted(set(meta["statefiles"].split())))
             if present:
                 conn.execute("DELETE FROM state_files WHERE box=? AND name NOT IN (%s)"
                              % ",".join("?" * len(present)), (box,) + present)
+                conn.execute("DELETE FROM ledger WHERE box=? AND name NOT IN (%s)"
+                             % ",".join("?" * len(present)), (box,) + present)
             else:
                 conn.execute("DELETE FROM state_files WHERE box=?", (box,))
+                conn.execute("DELETE FROM ledger WHERE box=?", (box,))
         if meta.get("limit-events") and "duty.log" not in files:
             _ingest_limit_events(conn, box, meta["limit-events"])
         if meta.get("vitals"):
@@ -937,7 +1007,7 @@ def main(argv=None):
     if verb == "usage":
         since = _arg(argv, "--since", "24h")
         by = _arg(argv, "--by", "member")
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             rows = usage(conn, since, by)
         except ValueError as e:
@@ -954,7 +1024,7 @@ def main(argv=None):
         box, name = _arg(argv, "--box"), _arg(argv, "--name")
         if not box or not name:
             raise SystemExit("store.py state: --box and --name are required")
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             row = conn.execute("SELECT content FROM state_files WHERE box=? AND name=?",
                                (box, name)).fetchone()
@@ -968,7 +1038,7 @@ def main(argv=None):
         box, prefix = _arg(argv, "--box"), _arg(argv, "--prefix", "")
         if not box:
             raise SystemExit("store.py states: --box is required")
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             rows = conn.execute("SELECT name, content FROM state_files WHERE box=? ORDER BY name",
                                 (box,)).fetchall()
@@ -986,10 +1056,10 @@ def main(argv=None):
         if not box or not out:
             raise SystemExit("store.py export: --box and --dir are required")
         os.makedirs(out, exist_ok=True)
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             files = conn.execute("SELECT name, content FROM state_files WHERE box=?", (box,)).fetchall()
-            ledgers = conn.execute("SELECT name, id, ts FROM ledger WHERE box=? ORDER BY name, id",
+            ledgers = conn.execute("SELECT name, id, ts, rest FROM ledger WHERE box=? ORDER BY name, id",
                                    (box,)).fetchall()
         finally:
             conn.close()
@@ -1001,8 +1071,8 @@ def main(argv=None):
                 f.write(content or "")
             written += 1
         by_name = {}
-        for name, rid, ts in ledgers:
-            by_name.setdefault(name, []).append("%s %s" % (rid, ts))
+        for name, rid, ts, rest in ledgers:
+            by_name.setdefault(name, []).append(("%s %s %s" % (rid, ts, rest or "")).rstrip())
         for name, lines in by_name.items():
             if "/" in name:
                 continue
@@ -1017,7 +1087,7 @@ def main(argv=None):
         # sessions reported one — the figure a role's BOX_MEMORY is sized by.
         since = _arg(argv, "--since", "7d")
         box = _arg(argv, "--box")
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             cutoff = _since_iso(since)
             if box:
@@ -1037,7 +1107,7 @@ def main(argv=None):
         box, name = _arg(argv, "--box"), _arg(argv, "--name")
         if not box:
             raise SystemExit("store.py ledger: --box is required")
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             if name:
                 rows = conn.execute("SELECT id, ts FROM ledger WHERE box=? AND name=? ORDER BY id",
@@ -1055,7 +1125,7 @@ def main(argv=None):
         since = _arg(argv, "--since", "24h")
         if not box:
             raise SystemExit("store.py sessions-count: --box is required")
-        conn = connect()
+        conn = connect(readonly=True)
         try:
             cutoff = _since_iso(since)
             if kind:
