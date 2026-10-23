@@ -409,7 +409,7 @@ t "probe.sh: full mode names the files and ships them" \
   "$(printf '%s|%s|%s' "$(sed -n 's/^::statefiles //p' "$ST_TMP/real-full.txt")" \
       "$(sed -n 's/^::logfrom //p' "$ST_TMP/real-full.txt")" "$(sed -n 's/^::logtotal //p' "$ST_TMP/real-full.txt")")"
 t "probe.sh: a file without a trailing newline still closes its own section" "nonewline ::fileend" \
-  "$(awk '/^::filestart \.review-owed$/{f=1; next} f{printf "%s ", $0} /^::fileend$/&&f{f=0; print ""; exit}' "$ST_TMP/real-full.txt")"
+  "$(awk '/^::filestart \.review-owed$/{f=1; next} /^::fileend$/&&f{print "::fileend"; exit} f{printf "%s ", $0}' "$ST_TMP/real-full.txt")"
 t "probe.sh: PROBE_LOG_FROM ships the tail from that line" "15 16 2" \
   "$(HOME="$ST_H" DUTY_DIR="$ST_H/duty" PROBE_FULL=1 PROBE_LOG_FROM=15 bash "$FLOOR/server/probe.sh" </dev/null 2>/dev/null \
     | awk '/^::logfrom /{a=$2} /^::logtotal /{b=$2} /^::filestart duty.log$/{f=1; next} /^::fileend$/{f=0} f{n++} END{print a, b, n}')"

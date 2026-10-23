@@ -816,7 +816,11 @@ def build_unit(unit, state, agent_conf, now, inventory_ok=True, store=None):
         except Exception:                                   # noqa: BLE001
             probe_env = {"PROBE_FULL": "1"}
     probe_started = time.time()
-    raw, err = probe_box(unit, agent_conf, env=probe_env)
+    # The two-argument call is kept for a caller without a store: the suites
+    # stand a `lambda unit, agent_conf` in for probe_box, and a keyword they
+    # never knew is a TypeError on every one of them.
+    raw, err = (probe_box(unit, agent_conf, env=probe_env) if probe_env
+                else probe_box(unit, agent_conf))
     probe_finished = time.time()
     if raw is None:
         # Also "unknown", and this is the one that matters most: a box that
