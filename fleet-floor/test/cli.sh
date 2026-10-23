@@ -1,7 +1,7 @@
 # shellcheck shell=bash  # sourced by run.sh, so it has no shebang of its own
 # fleet-floor/test/cli.sh — `crew floor` argument handling and preflight.
 #
-# Sourced by test/run.sh (which provides ok/fail/t/skip); runnable standalone.
+# Sourced by test/run.sh (which provides ok/fail/t/skip/jqf); runnable standalone.
 #
 # The CLI is the only part an operator actually types, and it is where the
 # auth decision is made: a page that can power-cycle boxes must never come up
@@ -20,6 +20,14 @@ if ! declare -F ok >/dev/null; then
   fail() { echo "FAIL $1${2:+  — $2}"; FAILS+=("$1"); }
   skip() { echo "skip $1${2:+  — $2}"; SKIP=$((SKIP + 1)); }
   t()    { if [ "$2" = "$3" ]; then ok "$1"; else fail "$1" "expected [$2] got [$3]"; fi; }
+  # jqf EXPR — run.sh's copy, byte for byte: `d` is the JSON read from stdin.
+  # Guarded with the rest so it never displaces the aggregate's own (#664).
+  jqf()  { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
+  # Every name this file calls that the block above does not define lands
+  # here, by name, at run time — the one census that cannot be fooled by prose
+  # (#664). jqf's 2>/dev/null hid exactly this "command not found" for weeks.
+  CL_NOT_FOUND="$(mktemp)"
+  command_not_found_handle() { printf '%s\n' "$1" >>"$CL_NOT_FOUND"; return 127; }
   CL_STANDALONE=1
 fi
 
@@ -3475,6 +3483,16 @@ fi
 rm -rf "$CL_TMP"
 
 if [ -n "${CL_STANDALONE:-}" ]; then
+  # The header's "runnable standalone" sentence, asserted (#664): a helper
+  # run.sh defines, called here and missing from the standalone block, was
+  # recorded by command_not_found_handle the moment it was called.
+  if [ -s "$CL_NOT_FOUND" ]; then
+    fail "cli: every helper this file calls is defined in its standalone block" \
+         "not found: $(sort -u "$CL_NOT_FOUND" | tr '\n' ' ')— bash fleet-floor/test/cli.sh by hand loses every case that calls them"
+  else
+    ok "cli: every helper this file calls is defined in its standalone block"
+  fi
+  rm -f "$CL_NOT_FOUND"
   echo
   echo "== cli summary: $PASS ok, $SKIP skipped, ${#FAILS[@]} failed"
   [ "${#FAILS[@]}" -gt 0 ] && exit 1
