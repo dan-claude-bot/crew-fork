@@ -2247,8 +2247,26 @@ foreign_actor_check() {
 # hired the moment its registry is a sandbox — which is the state
 # drill/rehearsal.sh leaves it in while it runs. `crew upgrade --all` already
 # draws this same line for the same reason (#37).
+#
+# The registry half asks whether the box's registry SHARES NOTHING with the
+# production list, not whether it DIFFERS from it (#328). The two were one
+# predicate while a narrowed registry could only be a sandbox; #488 made a
+# per-box selection a SUBSET of the fleet-wide list, so an off-roster box can
+# be narrowed and still name production repositories — and `!=` read that as
+# "narrowed" and armed it against the repositories it kept, #51's finding at
+# reduced size. Disjointness is the predicate that survives both: a drill
+# box's sandbox shares nothing with production and hires; a selection that
+# keeps one production repository is refused over that repository, by name.
+#
+# An EMPTY registry shares nothing with anything and hires, which is what the
+# `!=` did for a box selected down to nothing against a non-empty list. The
+# one state that moves with it is a fleet whose production list is ITSELF
+# empty (a `crew init` whose repos.txt was never filled): equality refused that
+# box over a production registry it then printed as nothing, and disjointness
+# lets it through — there is no production repository for a second agent to
+# race for.
 hire_guard() {
-  local name="$1" allow="$2" reg prod names
+  local name="$1" allow="$2" reg prod names shared
   prod="$(production_registry)"
   reg="$(box_registry "$name")"
   if [ -z "$reg" ]; then
@@ -2273,16 +2291,30 @@ hire_guard() {
   fi
   names="$(roster_names)"
   if grep -qx -- "$name" <<<"$names"; then return 0; fi
-  if [ "$reg" != "$prod" ]; then return 0; fi
+  shared="$(registry_overlap "$reg" "$prod")"
+  if [ -z "$shared" ]; then return 0; fi
   if [ "$allow" -eq 1 ]; then
-    echo "  NOTE: $name is off-roster and carries the PRODUCTION registry — arming anyway (--allow-offroster)"
+    echo "  NOTE: $name is off-roster and names PRODUCTION repositories ($(printf '%s' "$shared" | tr '\n' ' ')) — arming anyway (--allow-offroster)"
     return 0
   fi
-  die "$name is not in $ROSTER, and hiring it would arm it against the PRODUCTION registry:
-    $(printf '%s' "$prod" | tr '\n' ' ')
+  die "$name is not in $ROSTER, and hiring it would arm it against the PRODUCTION registry — it shares with the fleet's:
+    $(printf '%s' "$shared" | tr '\n' ' ')
   That makes it a second production agent racing the fleet for the same work (#51).
-  Narrow its registry first (for a drill box, drill/rehearsal.sh does exactly that),
+  A registry that merely narrows production is still production: point it at one that
+  shares NOTHING with the fleet's (for a drill box, drill/rehearsal.sh does exactly that),
   add it to the roster, or pass --allow-offroster if arming production is what you mean."
+}
+
+# registry_overlap REG PROD — the entries two registries share, one per line,
+# in REG's order; empty when they are disjoint. Each side is one entry per
+# line as `registry_entries` emits them. awk rather than `comm`, for the same
+# reason `resolved_registry` gives: `comm` needs both sides sorted and says so
+# on stderr when they are not, and this must not depend on which caller
+# remembered to sort. A side that is the empty string arrives as one empty
+# line, which names no repository and is never counted.
+registry_overlap() { # REG PROD
+  awk 'NR==FNR { if ($0 != "") prod[$0] = 1; next } ($0 in prod)' \
+    <(printf '%s\n' "$2") <(printf '%s\n' "$1")
 }
 
 # convergence_guard NAME AGENT FORCE — refuse to arm a box whose tenant role
