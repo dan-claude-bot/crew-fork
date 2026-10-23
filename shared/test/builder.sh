@@ -6423,6 +6423,7 @@ t handoff-sections-of-a-body-without-them-are-empty "" "$(_handoff_sections 'jus
 h760_run() {  # h760_run <gh-mode> <fn> <args...> — the fn's stdout, under a gh that answers one way
   (
     DUTY_DIR="$H760"
+    # shellcheck disable=SC2317  # the gh stub is invoked indirectly by the fn under test
     case "$1" in
       ok)   gh() { printf '%s\n' 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$h760_body"; } ;;
       fail) gh() { return 1; } ;;
@@ -6430,6 +6431,7 @@ h760_run() {  # h760_run <gh-mode> <fn> <args...> — the fn's stdout, under a g
       green)   gh() { printf '{"headRefOid":"h1","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}\n'; } ;;
       moved)   gh() { printf '{"headRefOid":"h2","statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":null}]}\n'; } ;;
     esac
+    # shellcheck disable=SC2317  # invoked indirectly by the fn under test
     log() { :; }
     shift; "$@"
   )
@@ -6453,6 +6455,7 @@ printf 'x/y 9 h1 2026-10-23T10:00:00Z\n' >"$H760/.wait-x_y-9"
 t waits-another-repos-park-is-not-this-repos "" "$(h760_run green _builder_waits_due o/r)"
 # The helpers a session calls.
 h760_gh="$TMP/h760-bin"; mkdir -p "$h760_gh"
+# shellcheck disable=SC2016  # the stub's own source, read by the shell that runs it
 printf '#!/usr/bin/env bash\ncase "$*" in *statusCheckRollup*) printf "%%s\\n" "$H760_ROLLUP" ;; *headRefOid*) printf "h1\\n" ;; esac\n' >"$h760_gh/gh"; chmod +x "$h760_gh/gh"
 t wait-for-usage-is-2 2 "$(PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" nothing >/dev/null 2>&1; echo $?)"
 t wait-for-settled-checks-return-0 0 "$(H760_ROLLUP=0 PATH="$h760_gh:$PATH" bash "$SHARED/bin/wait-for.sh" checks o/r 7 --timeout 1 >/dev/null 2>&1; echo $?)"
@@ -6467,9 +6470,12 @@ t prompts-ci-red-reads-the-handoff-first 1 "$(grep -c '{{HANDOFF_BLOCK}}' "$SHAR
 t prompts-every-lane-carries-the-wait-rules "build ci-red resume review" \
   "$(grep -l '{{WAIT_RULES}}' "$SHARED"/prompts/{build,ci-red,resume,review}.txt | xargs -n1 basename | sed 's/\.txt$//' | paste -sd' ' -)"
 t prompts-the-wait-fragment-names-the-helpers 2 "$(grep -o -E '(wait-for|park-until)\.sh' "$SHARED/prompts/fragment-wait-rules.txt" | sort -u | wc -l | tr -d ' ')"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t engine-renders-the-wait-rules-on-every-builder-lane 3 "$(grep -c 'WAIT_RULES="$wait_rules"' "$SHARED/lib/duty-builder.sh")"
 t engine-renders-the-wait-rules-for-the-reviewer 1 "$(grep -c 'fragment-wait-rules.txt' "$SHARED/lib/duty-review.sh")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t engine-passes-the-wait-reason-into-the-resume-session 1 "$(grep -c 'WAKE_REASON="${WAKE_REASON:-cron}${wait_why:+,$wait_why}"' "$SHARED/lib/duty-builder.sh")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t engine-checkpoints-the-note-after-a-complete-session 1 "$(grep -c -- '-ne 0 \] || _handoff_block "$R"' "$SHARED/lib/duty-builder.sh")"
 rm -rf "$H760" "$h760_gh"; unset -f h760_run
 
@@ -6497,7 +6503,9 @@ t panel-sized-a-panel-no-larger-than-the-size-is-whole "rev-a" "$(PANEL_LOW_RISK
 t panel-sized-a-bad-size-is-one "rev-b" "$(PANEL_LOW_RISK_SIZE=x _panel_sized low 7 "$p761_panel")"
 t panel-knobs-ship "PANEL_LOW_RISK_SIZE=1 PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80" \
   "$(grep -hE '^PANEL_(LOW_RISK_SIZE|RISK_MAX_FILES|RISK_MAX_LINES)=' "$SHARED/conf/fleet.defaults.conf" | sort | paste -sd' ' -)"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-request-posts-the-sizing-mark 1 "$(grep -c '"${MARK_PANEL_SIZED:-🧭 panel sized} $risk_tier at $gql_head:' "$SHARED/lib/duty-builder.sh")"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-request-requests-the-sized-set 1 "$(grep -c '^  to_request="$sized"$' "$SHARED/lib/duty-builder.sh")"
 unset -f p761_risk
 

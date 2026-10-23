@@ -2278,9 +2278,9 @@ t drill-board-vocab-ready-swap-needs-claimed-gone 1 "$(grep -cx unswapped-half <
 # coincidence, so it gets a board of its own.
 bv_box_conf 'LABEL_CLAIMED="wip"'
 # shellcheck disable=SC2016  # the snippet is eval'd by bv_drive, which is where it expands
-BV_PM="$(bv_drive '
+bv_drive '
   rehearsal_attention_file_fixture owner/repo box-identity t b
-')"
+' >/dev/null
 t drill-board-vocab-moved-claimed-mint 1 "$(bv_minted wip,attention)"
 
 # (c) THE RESOLVED QUEUE SET CARRIES THE MOVED `ready`, and the stray assertion

@@ -2558,6 +2558,7 @@ _builder_repo() {
   # Parked waits that have concluded join this tick's resume set (#760).
   wait_nums="$(_builder_waits_due "$R" | tr '\n' ' ')"
   wait_nums="${wait_nums% }"
+  # shellcheck disable=SC2086  # the numbers split into lines on purpose
   [ -z "$wait_nums" ] || wait_why="$(printf '%s\n' $wait_nums | sed "s|^|wait#$R#|" | paste -sd, -)"
 
   # panel_for_repo deliberately falls back to FLEET_BENCH when neither the

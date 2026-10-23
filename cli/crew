@@ -2395,6 +2395,7 @@ convergence_guard() {
 hire_box() {
   local name="$1" agent="$2" role="$3" ref="$4" force="$5" allow="${6:-0}"
   local want have have_version identity_args registry_arg
+  # shellcheck disable=SC2016  # the single quotes are the install line's own, read by the box's shell
   identity_args="$(install_identity_args "$name" "$agent" "$role")${pool:+ --pool '$pool'}"
   registry_arg="$(registry_install_arg)"
   # The engine is resolved ONCE by the calling verb, at parse time, not here

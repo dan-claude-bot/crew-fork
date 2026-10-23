@@ -457,7 +457,7 @@ _session_continue_plan() {
   _SESSION_SID="$sid"
   _SESSION_RESUMED=yes
   _SESSION_TRY=$((try + 1))
-  _SESSION_RESUME_OUTCOME=continue
+  _SESSION_RESUME_OUTCOME="continue"
 }
 
 # _session_resume_read FILE KIND KEY — the stub's fields, validated, as `k=v`

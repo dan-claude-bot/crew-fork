@@ -1306,6 +1306,7 @@ t d8-the-last-date-in-the-body-arrives 1 "$(d8_sel 2026-10-22 | grep -o 'o/r#6 '
 # which is later than the thread's own updatedAt, so a thread the ledger saw at
 # its updatedAt is new again the day the promise falls due.
 t d8-a-due-return-advances-the-ledger-key 1 "$(d8_sel 2026-10-23 | grep -o 'o/r#4 2026-10-20T00:00:00Z' | wc -l | tr -d ' ')"
+# shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t d8-the-engine-reads-the-selector-from-its-file 1 "$(grep -c -- '--jq "$(cat "$DUTY_DIR/lib/jq/discussions.jq")"' "$SHARED/lib/duty-triage.sh")"
 t d8-the-query-fetches-bodies-and-times 2 "$(grep -c 'author{ login } body createdAt' "$SHARED/lib/duty-triage.sh")"
 # The worse half: a human answering a thread triage opened arrives as a

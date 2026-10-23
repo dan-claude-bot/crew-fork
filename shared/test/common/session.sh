@@ -2584,19 +2584,23 @@ W759_WORK="$TMP/why-work"; mkdir -p "$W759_WORK"
 BOT_CLI_CMD=(bash -c 'printf "exec\nfinal reply\n"')
 # shellcheck disable=SC2317  # invoked indirectly by session_acted
 bot_session_acted() { grep -qx exec "$1"; }
+# shellcheck disable=SC2031  # DUTY_DIR here is the suite's own; the subshell edits above were theirs
 rm -f "$DUTY_DIR/.tick-acted"
 w759_end="$(WAKE_REASON='ready#o/r#12,attention#o/r#3' run_session build fixture/why "$W759_WORK" 5 prompt | tail -1)"
 t why-the-host-reason-is-on-the-line 1 "$(grep -c ' why=ready#o/r#12,attention#o/r#3 ' <<<"$w759_end")"
 t why-sid-stays-last 1 "$(grep -cE ' why=[^ ]+ sid=[^ ]+$' <<<"$w759_end")"
+# shellcheck disable=SC2031  # as above
 t why-the-session-stamps-the-tick 1 "$([ -e "$DUTY_DIR/.tick-acted" ] && echo 1 || echo 0)"
 w759_end="$( (unset WAKE_REASON; run_session build fixture/why2 "$W759_WORK" 5 prompt) | tail -1)"
 t why-cron-when-nothing-was-written 1 "$(grep -c ' why=cron ' <<<"$w759_end")"
+# shellcheck disable=SC2016  # the literal \$punct is the point: the token is sanitised, not expanded
 w759_end="$(WAKE_REASON='two words; and $punct' run_session build fixture/why3 "$W759_WORK" 5 prompt | tail -1)"
 t why-is-one-sanitised-token 1 "$(grep -c ' why=two_words__and__punct ' <<<"$w759_end")"
 unset -f bot_session_acted
 
 # ── #759 — tier aliases: `cheap` is what the profile says it is ────────────
 w759_tier() {  # w759_tier <MODEL_BUILD value> [BOT_CLI_TIER_CHEAP value]
+  # shellcheck disable=SC2034  # read by the alias resolution in _session_cli_cmd
   ( MODEL_BUILD="$1"; BOT_CLI_TIER_CHEAP="${2-}"; [ -n "${2-}" ] || unset BOT_CLI_TIER_CHEAP
     BOT_CLI_CMD=(vendor -p)
     # shellcheck disable=SC2317  # the profile hook, reached through _session_cli_cmd
@@ -2660,6 +2664,7 @@ t cont-a-profile-without-resume-stays-fresh "" "$(sid_argv_flag "$c7" --resume)"
 cont_plan_verdict="$(
   DUTY_DIR="$TMP/sid-contplan"; mkdir -p "$DUTY_DIR"
   printf 'sid=01a06ef6-ca2a-7fd0-a487-25913257471d\ntry=0\n' >"$DUTY_DIR/.session-continue.build.k"
+  # shellcheck disable=SC2317  # invoked indirectly by the continuation path
   bot_cli_resume_args() { BOT_CLI_RESUME_ARGS=(--resume "$1"); }
   bot_session_transcript_present() { return 1; }
   _SESSION_RESUMED=no
