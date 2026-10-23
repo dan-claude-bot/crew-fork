@@ -2577,7 +2577,7 @@ _builder_waits_due() { # REPO — due pull request numbers, one per line
     [ "$wrepo" = "$repo" ] || continue
     rollup="$(gh pr view "$num" -R "$repo" --json headRefOid,statusCheckRollup 2>/dev/null)" || continue
     now_head="$(jq -r '.headRefOid // ""' <<<"$rollup")"
-    pending="$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length' <<<"$rollup")"
+    pending="$(jq -r '[.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.status // "") == "REQUESTED" or (.status // "") == "EXPECTED" or (.state // "") == "PENDING" or (.state // "") == "EXPECTED"))] | length' <<<"$rollup")"
     if [ "$pending" = 0 ] || { [ -n "$now_head" ] && [ "$now_head" != "$head" ]; }; then
       log "$repo#$num: parked wait is due (pending=$pending head=${now_head:0:7} parked-at=${head:0:7} since $at)"
       printf '%s\n' "$num"

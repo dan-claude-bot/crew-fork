@@ -1,4 +1,4 @@
-# Host maintenance — the one scheduled job, the one deferred, and the ordering rule
+# Host maintenance — the three scheduled jobs, the host's own login, and the ordering rule
 
 Every box carries a five-minute cron line for its own duty tick
 (`shared/crontab.example`). Until now nothing on the **host** side had an
@@ -16,12 +16,20 @@ keeps the reset useful.
 
 | when | job | what it does |
 |---|---|---|
-| daily, 04:10 | `crew restart --all` | drains and cycles every roster box |
+| every 5 min | `crew tick` | reads each board once, starts members for their work, stops idle boxes (#759) |
+| daily, 04:10 | `crew restart --all` | drains and cycles every roster box that is running; a stopped or paused box is left as it is |
+| Sunday, 05:10 | `crew reset --all` | every box back to its `armed` checkpoint, its memory drained first and written back under the duty lock (#761) |
 
 Install it on the box **host** with `crontab -e`, copying
-`shared/host-crontab.example`. There is no installer for this and deliberately
-no second line: the weekly reset is deferred (below) and the real-host drill is
-operator-attended by construction.
+`shared/host-crontab.example`. There is no installer for this; the real-host
+drill is operator-attended by construction and is not scheduled.
+
+**The host needs its own `gh` login.** The tick reads every registered board
+with the host's `gh`, never a box's. Log in once on the host (`gh auth login`,
+as the operator or a read-only identity) before the first tick. A host whose
+`gh` is dead or rate-limited says so on every tick and neither wakes nor
+stops a box: the tick refuses to read blindness as a quiet fleet, so a dead
+credential costs wakes, never a mid-session stop.
 
 The daily cycle is also the fleet's only routine liveness signal.
 `grok-reviewer` ran no session at all between `2026-08-19` and `2026-08-28`,
@@ -285,6 +293,22 @@ session for `IDLE_TICKS_BEFORE_STOP` consecutive ticks is drained to the store
 `~/duty/.wake-reason` and ticked at once; every `SESSION END` that tick
 writes carries it as `why=`.
 
-`crew pause <box>` keeps a member off: the host tick never starts it and its own
-cron is commented while it runs; `crew resume <box>` undoes both. `crew tick
+A wake launches the box's own `tick.sh` in the background and returns at
+once, so a wake that starts an hour-long build never holds the host's lock
+across the next five-minute boundaries, the daily restart or the weekly
+reset. Before an idle box is stopped its duty lock is probed: a box whose own
+cron started a session since its idle counter was written is busy, and busy
+is never stopped. Triage's coarse "the board moved" reason is set aside once
+the box was woken for it `IDLE_TICKS_BEFORE_STOP` times and bought nothing;
+a precise reason (an attention demand, a ready issue, a review request, a
+due wait or cut) never is. A breaker tripped in the store's copy vetoes a
+lane only while the box runs: a stopped box is started for the work and its
+own gate — the one thing that can clear the breaker — decides.
+
+`crew pause <box>` keeps a member off: the host tick never starts it, a paused
+box that is running is drained and stopped on the next tick and never counts
+toward `FLEET_MAX_RUNNING`, and its own cron is commented while it runs. The
+floor's pause button writes the same host marker, so the button and the verb
+pause the same way. `crew resume <box>` undoes all of it; a box resumed while
+it was stopped gets its cron back live when the tick starts it. `crew tick
 --dry-run` prints every decision and changes nothing.

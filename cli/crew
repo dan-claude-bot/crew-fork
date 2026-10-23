@@ -2347,8 +2347,9 @@ hire_guard() {
 # on stderr when they are not, and this must not depend on which caller
 # remembered to sort. A side that is the empty string arrives as one empty
 # line, which names no repository and is never counted.
-registry_overlap() { # REG PROD
-  awk 'NR==FNR { if ($0 != "") prod[$0] = 1; next } ($0 in prod)' \
+registry_overlap() { # REG PROD — the registry's rows that name a production repository
+  # GitHub names are case-insensitive, so `Heavy-Duty/Crew` is `heavy-duty/crew`.
+  awk 'NR==FNR { if ($0 != "") prod[tolower($0)] = 1; next } (tolower($0) in prod)' \
     <(printf '%s\n' "$2") <(printf '%s\n' "$1")
 }
 
@@ -3109,7 +3110,7 @@ cmd_restart() {
   need_box
   [ -f "$ROSTER" ] || die "no roster at $ROSTER"
   require_operator_config "crew restart"
-  if [ "$all" -eq 1 ]; then mapfile -t restart_targets < <(roster_names); else restart_targets=("${named[@]}"); fi
+  if [ "$all" -eq 1 ]; then mapfile -t restart_targets < <(roster_names); RESTART_ALL=1; else restart_targets=("${named[@]}"); RESTART_ALL=0; fi
   # The `+"${…[@]}"` guard, not a bare expansion: an --all over a roster whose
   # rows are all comments yields an EMPTY array, and that run must still reach
   # the log rather than dying on `set -u` before it can say it had nothing to
@@ -3139,6 +3140,17 @@ restart_run() { # FORCE_SECONDS FORCE_HOURS TARGET...
       continue
     fi
     initial_state="$(box_state "$name")"
+    # Under --all the daily cycle is a cycle: a box the host tick stopped
+    # stays stopped (the tick starts it when there is work), and a paused box
+    # is left exactly as paused — neither is started with its cron live.
+    if [ "${RESTART_ALL:-0}" -eq 1 ] && [ -e "$CONFIG_DIR/store/paused/$name" ]; then
+      echo "  $name: paused — left alone"
+      continue
+    fi
+    if [ "${RESTART_ALL:-0}" -eq 1 ] && [ "$initial_state" = stopped ]; then
+      echo "  $name: stopped — left to the host tick, which starts it when there is work"
+      continue
+    fi
     if [ "$initial_state" = stopped ]; then
       echo "  $name: already stopped; starting"
     else
@@ -3763,7 +3775,7 @@ box_memory_of() {
 }
 
 reset_restore_memory() {
-  local name="$1" dir f base count=0
+  local name="$1" dir f base count=0 out
   dir="$(mktemp -d)"
   if ! store_py export --box "$name" --dir "$dir" >/dev/null 2>&1; then
     echo "  $name: no memory in the store to restore (first reset, or never drained)"
@@ -3772,13 +3784,30 @@ reset_restore_memory() {
   for f in "$dir"/.* "$dir"/*; do
     [ -f "$f" ] || continue
     base="${f##*/}"
-    case "$base" in duty.log|.duty.lock*|.identity|.idle-ticks) continue ;; esac
-    # Through bxput: the one stdin-shipping exec site the floor's suite
-    # already knows, atomic on the box side (stage, then mv).
-    bxput "$name" "$f" "duty/$base" 2>/dev/null && count=$((count + 1))
+    case "$base" in duty.log|.duty.lock*|.identity|.idle-ticks) rm -f "$f"; continue ;; esac
+    count=$((count + 1))
   done
-  rm -rf "$dir"
-  echo "  $name: memory restored from the store — $count file(s)"
+  if [ "$count" -eq 0 ]; then
+    echo "  $name: the store holds no memory file to restore"
+    rm -rf "$dir"; return 0
+  fi
+  # One archive, shipped through bxput (the stdin-shipping exec site the
+  # floor's suite knows), unpacked UNDER THE DUTY LOCK: a tick that lands
+  # while the memory is being written finds the lock held and skips, so the
+  # first duty that runs reads the whole memory and never half of it. A
+  # failure is said, by name: a box without its ledgers is not quietly fine.
+  tar -C "$dir" -cf "$dir.tar" . || { echo "  $name: memory restore FAILED — the archive could not be built"; rm -rf "$dir" "$dir.tar"; return 1; }
+  if ! bxput "$name" "$dir.tar" "duty/.memory-restore.tar" 2>/dev/null; then
+    echo "  $name: memory restore FAILED — the archive did not reach the box; its first tick runs without its ledgers"
+    rm -rf "$dir" "$dir.tar"; return 1
+  fi
+  out="$(bxn "$name" 'cd ~/duty && flock .duty.lock -c "tar -xf .memory-restore.tar && rm -f .memory-restore.tar" && echo restored' 2>&1 | tr -d '\r' | tail -1)"
+  rm -rf "$dir" "$dir.tar"
+  if [ "$out" != restored ]; then
+    echo "  $name: memory restore FAILED — the archive did not unpack under the duty lock (${out:-no answer}); its first tick runs without its ledgers"
+    return 1
+  fi
+  echo "  $name: memory restored from the store under the duty lock — $count file(s)"
 }
 
 cmd_reset() {
@@ -4038,7 +4067,7 @@ tick_conf_value() { # KEY — the last assignment wins, fleet.conf after default
 # ceilings, in a subshell so the role confs' many variables never reach this
 # process (BOX_CPU and friends mean something else here).
 tick_veto() {
-  local member="$1" roles="$2" reasons="$3" role files
+  local member="$1" roles="$2" reasons="$3" state="${4:-}" role files
   files="$CREW_ROOT/shared/conf/fleet.defaults.conf"
   [ ! -f "$CONFIG_DIR/fleet.conf" ] || files="$files $CONFIG_DIR/fleet.conf"
   for role in $roles; do
@@ -4050,7 +4079,7 @@ tick_veto() {
     # timeouts) that mean something else in this process.
     # shellcheck disable=SC2086  # $files is a word list by construction
     eval "$(cat $files | sed -n '/^BUDGET_[A-Z_]*=[0-9]*$/p')"
-    wake_veto "$member" "$reasons"
+    wake_veto "$member" "$reasons" "$state"
   )
 }
 
@@ -4068,30 +4097,43 @@ tick_box_ready() {
 # waiting for its own cron: the first session this wake buys carries why=.
 tick_wake() {
   local name="$1" why="$2"
-  bxn "$name" "mkdir -p ~/duty && printf '%s\n' '$why' > ~/duty/.wake-reason && ~/duty/bin/tick.sh" >/dev/null 2>&1 \
-    || echo "  $name: woke, but the tick did not run cleanly (its own cron will)"
+  # Fire and forget: the box's tick runs under ITS lock in the background, so
+  # a wake that starts an hour-long build never holds the host lock — every
+  # later host tick, the daily restart and the weekly reset run on time.
+  bxn "$name" "mkdir -p ~/duty && printf '%s\n' '$why' > ~/duty/.wake-reason && (nohup setsid ~/duty/bin/tick.sh >/dev/null 2>&1 </dev/null &)" >/dev/null 2>&1 \
+    || echo "  $name: woke, but the tick could not be launched (its own cron will)"
 }
 
 tick_run() { # DRY_RUN
   local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line
-  local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0
+  local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
   store_py init >/dev/null 2>&1 || true
   tick_conf_knobs
+  # The host reads the boards with ITS OWN gh login. Without one every board is
+  # unreadable, and a tick that cannot see the board neither wakes nor stops:
+  # stopping on blindness would read a dead credential as a quiet fleet.
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "  gh is not logged in on this host — no board can be read, so this tick wakes nothing and stops nothing (shared/docs/host-maintenance.md: the host's own login)"
+    blind=1
+  fi
   # 1. One read per repository, for the whole fleet.
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
+    [ "$blind" -eq 0 ] || break
     if ! rows="$(wake_board_rows "$repo")"; then
-      echo "  $repo: board unreadable this tick — no change assumed"
+      echo "  $repo: board unreadable this tick — no change assumed, and no box is stopped on a tick that could not see the board"
+      blind=1
       continue
     fi
     ROWS[$repo]="$rows"
     DIGEST[$repo]="$(printf '%s\n' "$rows" | wake_digest)"
   done <<<"$(production_registry)"
-  # 2. Who is running now.
+  # 2. Who is running now. Paused boxes are stopped below and never count.
   while read -r name _rest; do
     [ -n "$name" ] || continue
+    [ ! -e "$(tick_paused_file "$name")" ] || continue
     [ "$(box_state "$name")" = running ] && running=$((running + 1))
   done <<<"$(read_roster)"
   # 3. Each member, against the boards that moved since it last looked.
@@ -4099,7 +4141,24 @@ tick_run() { # DRY_RUN
     [ -n "$name" ] || continue
     roles="${roles//,/ }"
     if [ -e "$(tick_paused_file "$name")" ]; then
-      echo "  $name: paused — left alone"
+      # A pause HOLDS: a paused box that is running is drained and stopped,
+      # off the cap, and nothing starts it until `crew resume`.
+      if [ "$(box_state "$name")" = running ]; then
+        read -r pstate _ <<<"$(drain_probe "$name")"
+        if [ "$pstate" != idle ]; then
+          echo "  $name: paused — a duty holds its lock ($pstate); stopped once it is idle"
+        elif [ "$dry" -eq 1 ]; then
+          echo "  $name: paused — would be drained and stopped"
+        elif ! ( cmd_drain "$name" ) >/dev/null 2>&1; then
+          echo "  $name: paused — drain failed; not stopping a box whose evidence the store does not hold"
+        elif box down "$name" </dev/null; then
+          echo "  $name: paused — drained and stopped"; stopped=$((stopped + 1))
+        else
+          echo "  $name: paused — stop FAILED"
+        fi
+      else
+        echo "  $name: paused — left alone"
+      fi
       continue
     fi
     login="$(store_py state --box "$name" --name .identity 2>/dev/null | head -1 | tr -d '\r')"
@@ -4112,12 +4171,27 @@ tick_run() { # DRY_RUN
     reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
     reasons="$reasons$(wake_release_reasons "$name")"$'\n'
     reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
-    surviving="$(tick_veto "$name" "$roles" "$reasons")"
+    surviving="$(tick_veto "$name" "$roles" "$reasons" "$(box_state "$name")")"
     while IFS= read -r line; do
       case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
     done <<<"$surviving"
     why="$(wake_why "$surviving")"
     state="$(box_state "$name")"
+    idle=0
+    if [ "$state" = running ]; then
+      idle="$(bxn "$name" 'cat ~/duty/.idle-ticks 2>/dev/null' 2>/dev/null | tr -d '\r' | head -1)"
+      case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
+    fi
+    # Triage's coarse `board#` reason fires on any movement at all. A triage
+    # box that was woken for it IDLE_TICKS_BEFORE_STOP times and bought no
+    # session each time has answered: the movement is not its work. The
+    # precise reasons (an attention demand, a ready issue, a review request,
+    # a due wait or cut) are never set aside this way.
+    if [ -n "$why" ] && [ "$state" = running ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] \
+       && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
+      echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"
+      why=""
+    fi
     if [ -n "$why" ]; then
       case "$state" in
         running)
@@ -4131,25 +4205,43 @@ tick_run() { # DRY_RUN
             continue   # no digest recorded: the next tick re-evaluates
           fi
           echo "  $name: starting why=$why"
+          # Counted the moment it is up: a box whose guest is slow to answer is
+          # running, and a later member must not start past the cap on it.
+          running=$((running + 1)); started=$((started + 1))
           if [ "$dry" -eq 0 ]; then
             if ! box start "$name" </dev/null; then echo "  $name: start FAILED"; continue; fi
             if ! tick_box_ready "$name" "$HOST_TICK_READY_S"; then
               echo "  $name: started, but its guest did not answer within ${HOST_TICK_READY_S}s — next tick"
               continue
             fi
+            # A crontab a pause left commented, on a box resumed while it was
+            # stopped, comes back live here; "nothing to resume" is the
+            # ordinary answer and costs nothing.
+            bxn "$name" "$(host_resume_sh)" >/dev/null 2>&1 || true
             tick_wake "$name" "$why"
-          fi
-          running=$((running + 1)); started=$((started + 1)) ;;
+          fi ;;
         *) echo "  $name: state '$state' — left alone; why=$why"; continue ;;
       esac
     else
       if [ "$state" = running ]; then
-        idle="$(bxn "$name" 'cat ~/duty/.idle-ticks 2>/dev/null' 2>/dev/null | tr -d '\r' | head -1)"
-        case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
         if [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ]; then
+          if [ "$blind" -eq 1 ]; then
+            echo "  $name: idle $idle ticks, but a board was unreadable this tick — not stopped on a blind tick"
+            continue
+          fi
+          # The counter says the DUTY bought nothing; the lock says whether a
+          # session is running right now — one the box's own cron started
+          # since the counter was written. Busy is never stopped.
+          read -r pstate _ <<<"$(drain_probe "$name")"
+          if [ "$pstate" != idle ]; then
+            echo "  $name: idle $idle ticks, but a duty holds its lock ($pstate) — not stopped mid-session"
+            continue
+          fi
           echo "  $name: stopping after $idle idle ticks (drained to the store first)"
           if [ "$dry" -eq 0 ]; then
-            if ! cmd_drain "$name" >/dev/null 2>&1; then
+            # In a subshell: a drain that dies (`die`) ends the drain, never
+            # the tick for every member after this one.
+            if ! ( cmd_drain "$name" ) >/dev/null 2>&1; then
               echo "  $name: drain failed — not stopping a box whose evidence the store does not hold"
               continue
             fi

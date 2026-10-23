@@ -255,10 +255,15 @@ case "$cmd" in
       printf 'free-probe %s\n' "$name" >>"$calls"
       printf '1200\n'
     elif [[ "$script" == *'destination="$HOME/duty/'* ]]; then
-      # The memory write-back rides bxput (#761): the file arrives on stdin
-      # and the remote script names its destination under ~/duty.
+      # The memory write-back rides bxput (#761): the archive arrives on
+      # stdin and the remote script names its destination under ~/duty.
       cat >/dev/null
       printf 'memory %s %s\n' "$name" "$(printf '%s' "$script" | sed -n 's|.*destination="\$HOME/duty/\([^"]*\)".*|\1|p' | head -1)" >>"$calls"
+    elif [[ "$script" == *'tar -xf .memory-restore.tar'* ]]; then
+      # ...and is unpacked under the duty lock; the box answers `restored`.
+      printf 'memory-unpack %s\n' "$name" >>"$calls"
+      [ "$name" != "${RST_UNPACK_FAIL:-}" ] || exit 1
+      echo restored
       cat >/dev/null
     elif [[ "$script" == *'crontab -l'* ]]; then
       exit 1
@@ -639,7 +644,9 @@ t reset-stops-before-restoring $'down alpha\nrestore alpha armed --force\nstart 
 t reset-drains-before-stopping "drain alpha|down alpha" \
   "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
 t reset-writes-the-memory-back-after-the-start 1 \
-  "$(awk '/^start alpha/{s=NR} /^memory alpha .seen-build/{m=NR} END{print (s && m && m>s) ? 1 : 0}' "$STATE/calls")"
+  "$(awk '/^start alpha/{s=NR} /^memory alpha .memory-restore.tar/{m=NR} END{print (s && m && m>s) ? 1 : 0}' "$STATE/calls")"
+t reset-unpacks-the-memory-under-the-duty-lock 1 \
+  "$(awk '/^memory alpha .memory-restore.tar/{m=NR} /^memory-unpack alpha/{u=NR} END{print (m && u && u>m) ? 1 : 0}' "$STATE/calls")"
 case "$OUT" in *"alpha: memory restored from the store"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-memory-restore-is-reported reported "$r1"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac

@@ -165,7 +165,9 @@ case "$cmd" in
       *'echo "::logstart"'*) echo "drain $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.record" ;;
       *'.wake-reason'*) echo "wake $name $(printf '%s' "$script" | sed -n "s/.*printf '%s\\\\n' '\([^']*\)'.*/\1/p")" >>"$HT_STATE/calls" ;;
       *'.idle-ticks'*) cat "$HT_STATE/$name.idle" 2>/dev/null || echo 0 ;;
-      *'crontab -l'*) echo "crontab $name" >>"$HT_STATE/calls"; echo "paused 1" ;;
+      # The busy probe the stop path makes: `<box>.lock` names a held lock.
+      *'flock -n "$lock" true'*) echo "probe $name" >>"$HT_STATE/calls"; if [ -s "$HT_STATE/$name.lock" ]; then echo "busy $(cat "$HT_STATE/$name.lock")"; else echo "idle 0"; fi ;;
+      *'CREW-FLOOR-PAUSED'*) echo "crontab $name" >>"$HT_STATE/calls"; echo "paused 1" ;;
       *) exit 1 ;;
     esac ;;
   *) exit 0 ;;
@@ -176,6 +178,7 @@ chmod +x "$SHIM/box"
 cat >"$SHIM/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "auth status") [ -z "${HT_GH_DEAD:-}" ] || exit 1; exit 0 ;;
   "issue list") cat "$HT_STATE/board.issues" 2>/dev/null || exit 1 ;;
   "pr list")    cat "$HT_STATE/board.prs" 2>/dev/null || exit 1 ;;
   "api graphql") cat "$HT_STATE/board.discs" 2>/dev/null || exit 1 ;;
@@ -266,8 +269,20 @@ t tick-dry-run-records-no-digest 0 "$(find "$CONF/store/wake" -name 'alpha.*' 2>
 # (6) an unreadable board is no change, said once
 rm -f "$STATE/board.prs"; : >"$STATE/calls"
 capture tick
-t tick-an-unreadable-board-is-no-change 1 "$(grep -c 'o/r: board unreadable this tick — no change assumed' <<<"$OUT")"
+t tick-an-unreadable-board-is-no-change 1 "$(grep -c 'o/r: board unreadable this tick — no change assumed, and no box is stopped on a tick that could not see the board' <<<"$OUT")"
 t tick-an-unreadable-board-starts-nothing 0 "$(calls 'start ')"
+# ...and stops nothing: a blind tick must not read a dead board as a quiet fleet.
+echo running >"$STATE/beta.state"; printf '5\n' >"$STATE/beta.idle"; : >"$STATE/calls"
+capture tick
+t tick-an-unreadable-board-stops-nobody 0 "$(calls 'down ')"
+t tick-an-unreadable-board-says-why-it-did-not-stop 1 "$(grep -c 'beta: idle 5 ticks, but a board was unreadable this tick — not stopped on a blind tick' <<<"$OUT")"
+# A host whose gh is not logged in is blind the same way, and says so.
+: >"$STATE/calls"
+HT_GH_DEAD=1 capture tick
+t tick-a-logged-out-host-says-so 1 "$(grep -c 'gh is not logged in on this host' <<<"$OUT")"
+t tick-a-logged-out-host-stops-nobody 0 "$(calls 'down ')"
+t tick-a-logged-out-host-starts-nobody 0 "$(calls 'start ')"
+echo stopped >"$STATE/beta.state"; rm -f "$STATE/beta.idle"
 
 # (7) a parked wait in the store wakes a stopped member when its checks conclude
 ht_board 'I 99 2026-10-23T10:00:00Z needs-triage -' '' ''
@@ -283,6 +298,7 @@ t store-states-lists-the-park ".wait-o_r-7	o/r 7 h1 2026-10-23T10:00:00Z" "$(CRE
 cat >"$SHIM/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "auth status") [ -z "${HT_GH_DEAD:-}" ] || exit 1; exit 0 ;;
   "issue list") cat "$HT_STATE/board.issues" 2>/dev/null || exit 1 ;;
   "pr list")    cat "$HT_STATE/board.prs" 2>/dev/null || exit 1 ;;
   "api graphql") cat "$HT_STATE/board.discs" 2>/dev/null || exit 1 ;;
@@ -308,5 +324,72 @@ t crontab-example-runs-the-host-tick 1 "$(grep -c 'crew tick' "$ROOT/shared/host
 t the-floor-reads-the-one-pause-shell 1 "$(grep -c '_host_shell_block("PAUSE_SH")' "$ROOT/fleet-floor/server/floor/actions.py")"
 t exactly-one-copy-of-the-pause-shell 1 "$(grep -rl "sed -E 's|^(\[^#\].\*tick" "$ROOT/shared" "$ROOT/cli" "$ROOT/fleet-floor/server" | wc -l | tr -d ' ')"
 t help-names-the-tick 1 "$(run_crew help 2>&1 | grep -c '^  tick ')"
+
+
+# ── the adversarial review's gaps (#763): a busy box, a frozen breaker, a pause that holds, triage's idle rule ──
+ht_board 'I 12 2026-10-23T10:00:00Z ready -' '' ''
+ht_record alpha dan-claude-bot; ht_record beta codex-bot; ht_record gamma triage-bot
+rm -f "$CONF/store/wake"/* "$CONF/store/paused"/* "$STATE"/*.lock "$STATE"/*.idle
+# (1) a running box past the idle threshold whose duty lock is HELD is never stopped
+echo running >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
+printf '4\n' >"$STATE/alpha.idle"; printf '90\n' >"$STATE/alpha.lock"
+for n in alpha beta gamma; do printf 'x\n' >"$CONF/store/wake/$n.o_r.digest"; done
+: >"$STATE/calls"
+capture tick
+t busy-an-idle-counter-past-the-threshold-is-probed 1 "$(calls 'probe alpha')"
+t busy-a-held-lock-is-not-stopped 0 "$(calls 'down alpha')"
+t busy-the-refusal-is-named 1 "$(grep -c 'alpha: idle 4 ticks, but a duty holds its lock (busy) — not stopped mid-session' <<<"$OUT")"
+rm -f "$STATE/alpha.lock"; : >"$STATE/calls"
+capture tick
+t busy-once-idle-it-is-stopped "drain alpha|down alpha" "$(grep -E '^(drain|down) ' "$STATE/calls" | paste -sd'|' -)"
+# (2) a breaker tripped in the store's copy vetoes only a RUNNING box: a
+# stopped one is started for the work, and its own gate decides.
+{ printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
+  printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
+  printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
+  printf '::statefiles .identity .session-terminal.build\n::filestart .identity\ndan-claude-bot\n::fileend\n'
+  printf '::filestart .session-terminal.build\n3\ttripped\t9\tno\t0\t0\n::fileend\n'
+  printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
+} >"$STATE/alpha.record"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box alpha <"$STATE/alpha.record" >/dev/null
+ht_board 'I 14 2026-10-23T14:00:00Z ready -' '' ''
+echo stopped >"$STATE/alpha.state"; rm -f "$CONF/store/wake"/alpha.* "$STATE/alpha.idle"; : >"$STATE/calls"
+capture tick
+t breaker-a-stopped-box-is-not-vetoed-by-the-stores-copy 0 "$(grep -c 'alpha: veto ready#o/r#14:breaker-build' <<<"$OUT")"
+t breaker-a-stopped-box-is-started-for-the-work 1 "$(calls 'start alpha')"
+ht_board 'I 15 2026-10-23T15:00:00Z ready -' '' ''
+rm -f "$CONF/store/wake"/alpha.*; : >"$STATE/calls"
+capture tick
+t breaker-a-running-box-is-vetoed-while-its-gate-holds 1 "$(grep -c 'alpha: veto ready#o/r#15:breaker-build' <<<"$OUT")"
+# (3) a pause holds: a paused box that is running is drained and stopped, and
+# never counts toward the cap.
+echo running >"$STATE/alpha.state"; printf '0\n' >"$STATE/alpha.idle"
+capture pause alpha
+: >"$STATE/calls"
+capture tick
+t pause-a-paused-running-box-is-drained-and-stopped "drain alpha|down alpha" "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+t pause-the-stop-is-said 1 "$(grep -c 'alpha: paused — drained and stopped' <<<"$OUT")"
+# ...and off the cap: with room for ONE, a paused running box does not hold
+# a member with work; the member starts.
+printf 'FLEET_MAX_RUNNING=1\n' >>"$CONF/fleet.conf"
+echo running >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
+ht_board 'P 21 2026-10-23T16:00:00Z someone 0 codex-bot' '' ''
+rm -f "$CONF/store/wake"/beta.*; : >"$STATE/calls"
+capture tick
+t pause-a-paused-box-is-off-the-cap 0 "$(grep -c 'beta: held' <<<"$OUT")"
+t pause-the-member-with-work-starts-beside-a-paused-box 1 "$(calls 'start beta')"
+printf 'FLEET_MAX_RUNNING=2\n' >>"$CONF/fleet.conf"
+echo stopped >"$STATE/beta.state"
+capture resume alpha
+# (4) triage's coarse board reason: a running triage box the movement bought
+# nothing for, IDLE_TICKS_BEFORE_STOP times, is not woken for it again and
+# is stopped; a precise reason is never set aside this way.
+ht_board 'I 16 2026-10-23T16:00:00Z needs-triage -' '' ''
+echo stopped >"$STATE/alpha.state"; echo running >"$STATE/gamma.state"; printf '2\n' >"$STATE/gamma.idle"
+rm -f "$CONF/store/wake"/gamma.* "$STATE/gamma.lock"; : >"$STATE/calls"
+capture tick
+t triage-a-board-move-that-bought-nothing-is-not-a-wake 1 "$(grep -c 'gamma: the board moved, but 2 idle ticks bought nothing for triage — not woken for it again' <<<"$OUT")"
+t triage-the-box-is-then-stopped "drain gamma|down gamma" "$(grep -E '^(drain|down) gamma' "$STATE/calls" | paste -sd'|' -)"
+t triage-no-wake-was-written 0 "$(calls 'wake gamma')"
 
 suite_finish

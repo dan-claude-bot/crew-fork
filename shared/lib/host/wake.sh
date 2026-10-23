@@ -113,11 +113,11 @@ wake_budget_exhausted() {
   [ "$n" -ge "$ceiling" ]
 }
 
-# wake_veto BOX REASONS — the reasons that survive the member's own memory,
+# wake_veto BOX REASONS [STATE] — the reasons that survive the member's own memory,
 # one per line, plus `veto:<reason>:<why>` lines for the dropped ones (the
 # tick logs those: a veto that is silent is a wake that is missing).
 wake_veto() {
-  local box="$1" reasons="$2" reason ts kind item lane
+  local box="$1" reasons="$2" state="${3:-running}" reason ts kind item lane
   while read -r reason ts; do
     [ -n "$reason" ] || continue
     kind="${reason%%#*}"; item="${reason#*#}"
@@ -125,7 +125,11 @@ wake_veto() {
     if [ "$kind" != board ] && [ "$ts" != - ] && wake_ledger_seen "$box" "$item" "$ts"; then
       echo "veto:$reason:seen"; continue
     fi
-    if wake_breaker_tripped "$box" "$lane"; then echo "veto:$reason:breaker-$lane"; continue; fi
+    # The store's copy of a tripped breaker is read only while the box runs:
+    # only the box's own gate can clear it (a probe, a trial dispatch), so a
+    # stopped box is started for the work and its gate decides — otherwise a
+    # breaker frozen in the store would keep the lane off forever.
+    if [ "$state" = running ] && wake_breaker_tripped "$box" "$lane"; then echo "veto:$reason:breaker-$lane"; continue; fi
     if wake_budget_exhausted "$box" "$lane"; then echo "veto:$reason:budget-$lane"; continue; fi
     echo "$reason $ts"
   done <<<"$reasons"
@@ -142,7 +146,7 @@ wake_wait_reasons() {
     read -r wrepo num head _at <<<"$content"
     { [ -n "$wrepo" ] && [ -n "$num" ]; } || continue
     pending="$(wake_gh pr view "$num" -R "$wrepo" --json headRefOid,statusCheckRollup 2>/dev/null \
-      | jq -r --arg head "$head" 'if (.headRefOid // "") != $head then 0 else ([.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.state // "") == "PENDING"))] | length) end' 2>/dev/null)"
+      | jq -r --arg head "$head" 'if (.headRefOid // "") != $head then 0 else ([.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.status // "") == "REQUESTED" or (.status // "") == "EXPECTED" or (.state // "") == "PENDING" or (.state // "") == "EXPECTED"))] | length) end' 2>/dev/null)"
     [ "$pending" = 0 ] && echo "wait#$wrepo#$num -"
   done < <(wake_store states --box "$box" --prefix .wait- 2>/dev/null)
   return 0

@@ -5,13 +5,14 @@ envelope exists for exactly one caller, the `message` action below.
 """
 
 import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from floor import FLOOR_ENVELOPE
 from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
-from floor.roster import CREW_ROOT, box_states, read_roster
+from floor.roster import CONFIG_DIR, CREW_ROOT, box_states, read_roster
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -96,6 +97,22 @@ def _host_shell_block(name):
     return "\n" + text[start:text.index("# ---END---", start)]
 
 PAUSE_SH = _host_shell_block("PAUSE_SH")
+
+
+def _paused_marker(box, on):
+    """`<config>/store/paused/<box>`: the file `crew pause` writes and `crew
+    tick` reads, so the button and the verb pause the same way."""
+    d = os.path.join(CONFIG_DIR, "store", "paused")
+    path = os.path.join(d, box)
+    if on:
+        os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
+    else:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
 RESUME_SH = _host_shell_block("RESUME_SH")
 
 # The operator's message becomes a real session of the box's own vendor CLI,
@@ -344,8 +361,12 @@ def do_command(fleet, body, actor=""):
                                   stdin_data=operator_conf_for(box)))
 
     elif action == "pause":
+        # The host's marker FIRST: it is what keeps the host tick from starting
+        # the box again (#759); the box's own crontab is paused after it.
+        _paused_marker(box, True)
         results.append(in_box(box, PAUSE_SH))
     elif action == "resume":
+        _paused_marker(box, False)
         results.append(in_box(box, RESUME_SH))
     elif action == "restart":
         # Force-then-start recovery WHEN THE BOX IS UNREACHABLE, and only then

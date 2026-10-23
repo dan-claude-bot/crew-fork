@@ -441,6 +441,25 @@ reset_case
 capture restart --all
 t lifecycle-all-restarts-roster 2 "$(grep -c '^start ' "$STATE/calls")"
 t lifecycle-all-leaves-offroster 0 "$(grep -c 'offroster' "$STATE/calls" || true)"
+# Under --all the daily cycle is a cycle (#763 review): a box the host tick
+# stopped stays stopped, and a paused box is left exactly as paused — neither
+# is started with its cron live; a named restart still starts a stopped box.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+capture restart --all
+t lifecycle-all-leaves-a-stopped-box-to-the-tick 1 "$(grep -c 'alpha: stopped — left to the host tick' <<<"$OUT")"
+t lifecycle-all-does-not-start-a-stopped-box 0 "$(grep -c '^start alpha$' "$STATE/calls" || true)"
+t lifecycle-all-still-cycles-the-running-box 1 "$(grep -c '^start beta$' "$STATE/calls")"
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+capture restart alpha
+t lifecycle-a-named-restart-starts-a-stopped-box 1 "$(grep -c '^start alpha$' "$STATE/calls")"
+reset_case
+mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
+capture restart --all
+t lifecycle-all-leaves-a-paused-box-alone 1 "$(grep -c 'alpha: paused — left alone' <<<"$OUT")"
+t lifecycle-all-neither-stops-nor-starts-a-paused-box 0 "$(grep -cE '^(down|start) alpha$' "$STATE/calls" || true)"
+rm -f "$CONF/store/paused/alpha"
 
 reset_case
 printf 'busy:65\nidle:0\n' >"$STATE/probe-alpha"
@@ -774,8 +793,11 @@ t hostjob-reset-help-preserves-every-invocation-lock-guarantee preserved "$r1"
 # citation would satisfy a substring read (@claude-bot-andresmgsl, #683).
 t hostcron-deferral-names-its-issue yes \
   "$(grep -qE '#678([^0-9]|$)' "$HOST_CRONTAB" && echo yes || echo no)"
-t hostcron-deferral-names-what-returns-it yes \
-  "$(grep -qE '#328([^0-9]|$)' "$HOST_CRONTAB" && echo yes || echo no)"
+# The reset is back (#761): what the header owes now is the host's own gh
+# login and the three jobs, in place of the deferral's return condition.
+t hostcron-names-the-hosts-own-gh-login yes \
+  "$(grep -qE 'HOST NEEDS ITS OWN .gh. LOGIN' "$HOST_CRONTAB" && echo yes || echo no)"
+t hostcron-schedules-three-jobs 3 "$(grep -cE '^[0-9*/]+ [0-9*/]+ [0-9*/]+ [0-9*/]+ [0-9*/]+ ' "$HOST_CRONTAB")"
 # #589's refusal must never be handed a way past it: --force on a scheduled
 # reset is the silent fleet-wide downgrade the interlock exists to prevent,
 # and it would arrive as a one-word edit. The guard outlives the line it was
