@@ -54,6 +54,28 @@ date +%s >"$DUTY_DIR/.duty.lock.since"
 # shellcheck source=../lib/common.sh disable=SC1091
 source "$DUTY_DIR/lib/common.sh"
 load_conf
+# The wake's reason (#759): the host writes $DUTY_DIR/.wake-reason before it
+# ticks a box it started, and every SESSION END this tick carries it as
+# `why=`; the box's own cron finds nothing and ticks as `cron`. Consumed, so a
+# reason never outlives the tick it bought.
+WAKE_REASON="$(head -c 200 "$DUTY_DIR/.wake-reason" 2>/dev/null | tr -d '\r\n' || true)"
+rm -f "$DUTY_DIR/.wake-reason"
+[ -n "$WAKE_REASON" ] || WAKE_REASON=cron
+export WAKE_REASON
+rm -f "$DUTY_DIR/.tick-acted"
+# duty_idle_account — the host's stop-on-idle reads $DUTY_DIR/.idle-ticks: the
+# number of consecutive ticks that bought no session, reset by the first tick
+# that does (run_session stamps .tick-acted). Written on every exit path.
+duty_idle_account() {
+  local n
+  if [ -e "$DUTY_DIR/.tick-acted" ]; then
+    printf '0\n' >"$DUTY_DIR/.idle-ticks"
+  else
+    n="$(cat "$DUTY_DIR/.idle-ticks" 2>/dev/null || echo 0)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s\n' "$((n + 1))" >"$DUTY_DIR/.idle-ticks"
+  fi
+}
 mkdir -p "$WORK_DIR" "$TREES_DIR" "$LOG_DIR"
 # shellcheck source=../lib/duty-review.sh disable=SC1091
 source "$DUTY_DIR/lib/duty-review.sh"
@@ -135,9 +157,14 @@ ME="$(gh_identity)"
 # asking the vendor. The boot gate above still pays for one real bot_cli_probe
 # per boot, which is where certainty is worth a round-trip.
 check_vendor_credential
+# The member's login, for the host's wake decision (#759): the host reads it
+# from the store, the store pulls it from this file, and nothing on the host
+# has to hold a box's token to know whose work a pull request is.
+[ -z "$ME" ] || printf '%s\n' "$ME" >"$DUTY_DIR/.identity"
 if [ -z "$ME" ]; then
   warn "cannot resolve own login (gh auth dead?) — nothing to do this tick"
-  log "duty run end"
+  duty_idle_account
+log "duty run end"
   exit 0
 fi
 
@@ -160,7 +187,8 @@ if ! converge_git_identity "$ME"; then
   case "${GIT_IDENTITY_FAILURE_KIND:-identity}" in
     credential)
       note_auth_failure gh "$GIT_IDENTITY_FAILURE_EVIDENCE"
-      log "duty run end"
+      duty_idle_account
+log "duty run end"
       exit 0
       ;;
   esac
@@ -171,7 +199,8 @@ if ! converge_git_identity "$ME"; then
     alert "🪪 $(hostname): $identity_failure — refusing to run sessions that would commit as somebody else"
     echo "$boot_id" >"$DUTY_DIR/.identity-alerted"
   fi
-  log "duty run end"
+  duty_idle_account
+log "duty run end"
   exit 0
 fi
 
@@ -231,4 +260,5 @@ if [ $((reaper_now - reaper_last)) -ge "$REAPER_INTERVAL_SECONDS" ]; then
   duty_reaper && echo "$reaper_now" >"$DUTY_DIR/.reaper-last"
 fi
 
+duty_idle_account
 log "duty run end"

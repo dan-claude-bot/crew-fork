@@ -162,6 +162,19 @@ _session_sid_suffix() {
   printf ' sid=%s' "$_SESSION_SID"
 }
 
+# _session_why_suffix — ` why=<reason>` for the SESSION END line (#759): the
+# wake's reason, as the host wrote it to $DUTY_DIR/.wake-reason before this
+# tick (duty.sh reads it into WAKE_REASON) or `cron` when the box's own cron
+# fired with nothing written. Sanitised to one token: a reason is a list of
+# `kind#item` words joined by commas, never free text. Sits past the pool
+# suffix and ahead of `sid=`, which #538 keeps last.
+_session_why_suffix() {
+  local why="${WAKE_REASON:-cron}"
+  why="${why//[^A-Za-z0-9._:#,\/-]/_}"
+  [ -n "$why" ] || why=cron
+  printf ' why=%s' "$why"
+}
+
 _session_pool_suffix() {
   local pool="${SESSION_CREDENTIAL_POOL:-}"
   [ -n "$pool" ] || return 0
@@ -792,6 +805,8 @@ $prompt"
   # breaks all of them. This is the same position — and the same reason — as
   # tier=, log=, left= and peak_rss= on SESSION END below.
   log "SESSION START kind=$kind key=$key timeout=${tmo}s log=$slog holder=$(_session_holder) sid=$_SESSION_SID"
+  # The tick bought a session: duty.sh's idle counter reads this stamp (#759).
+  : >"$DUTY_DIR/.tick-acted" 2>/dev/null || true
   start=$SECONDS
   oom_source="$(_session_oom_source)"
   [ -z "$oom_source" ] || oom_before="$(_session_oom_count "$oom_source")"
@@ -877,7 +892,7 @@ $prompt"
   # after dispatch and before the resume stub is considered (#673).
   _session_observe_identity "$structured_log" "$dir" "$slog"
   local dur=$((SECONDS - start)) verdict=ok acted reply_tail peak_rss mem_hit log_bytes
-  local usage_suffix pool_suffix sid_suffix
+  local usage_suffix pool_suffix sid_suffix why_suffix
   sid_suffix="$(_session_sid_suffix)"
   mem_hit="$(session_mem_hit "$slog.mem")"
   [ "$rc" -eq 124 ] && verdict=TIMEOUT
@@ -915,6 +930,7 @@ $prompt"
   else
     pool_suffix=""
   fi
+  why_suffix="$(_session_why_suffix)"
   rm -f "$slog.peak" "$slog.mem" 2>/dev/null || true
   [ -z "$structured_log" ] || rm -f "$structured_log" 2>/dev/null || true
   # log= and left= are appended immediately after reply_tail (#529), then the
@@ -960,7 +976,7 @@ $prompt"
   # Unconditional, unlike the two suffixes ahead of it — a session with no id
   # emits `sid=unknown`, because D3 asks for the token on EVERY record and
   # `unknown` is the answer `_session_mint_sid` already gives.
-  log "SESSION END kind=$kind key=$key rc=$rc dur=${dur}s outcome=$verdict acted=$acted reply_tail=$reply_tail log=$log_bytes left=$survivor_count tier=$_SESSION_TIER${peak_rss:+ peak_rss=$peak_rss} oom=$oom_delta$usage_suffix$pool_suffix$sid_suffix"
+  log "SESSION END kind=$kind key=$key rc=$rc dur=${dur}s outcome=$verdict acted=$acted reply_tail=$reply_tail log=$log_bytes left=$survivor_count tier=$_SESSION_TIER${peak_rss:+ peak_rss=$peak_rss} oom=$oom_delta$usage_suffix$pool_suffix$why_suffix$sid_suffix"
   # Written after the line that reports the session and before the counters
   # that bill it, reading the two figures that line just published: this stub
   # and that record can never disagree about what the session left behind.

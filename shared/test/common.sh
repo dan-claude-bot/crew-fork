@@ -11067,4 +11067,24 @@ t common-module-suite-registered "" "$mirror_unregistered"
 if "$SHARED/test/claim.test.sh"; then r1=0; else r1=$?; fi
 t claim-regression-suite 0 "$r1"
 
+# ── #759 — duty.sh consumes the wake reason, publishes the identity, counts idle ticks ──
+W759_DUTY="$SHARED/bin/duty.sh"
+t duty-reads-the-wake-reason 1 "$(grep -c 'WAKE_REASON="$(head -c 200 "$DUTY_DIR/.wake-reason"' "$W759_DUTY")"
+t duty-consumes-the-wake-reason 1 "$(grep -c '^rm -f "$DUTY_DIR/.wake-reason"$' "$W759_DUTY")"
+t duty-exports-the-reason-to-sessions 1 "$(grep -c '^export WAKE_REASON$' "$W759_DUTY")"
+t duty-publishes-the-identity 1 "$(grep -c 'printf .%s.n. "$ME" >"$DUTY_DIR/.identity"' "$W759_DUTY")"
+# The idle counter is written on every exit path: as many accountings as
+# `duty run end` lines, and each immediately before one.
+t duty-idle-accounts-on-every-exit "$(grep -c '^log "duty run end"$' "$W759_DUTY")" \
+  "$(grep -c -B1 '^log "duty run end"$' "$W759_DUTY" | true; grep -B1 '^log "duty run end"$' "$W759_DUTY" | grep -c '^duty_idle_account$')"
+W759_HOME="$TMP/idle-home"; mkdir -p "$W759_HOME"
+eval "$(sed -n '/^duty_idle_account() {/,/^}/p' "$W759_DUTY")"
+( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; duty_idle_account; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
+t duty-idle-ticks-count-up 2 "$(cat "$TMP/idle-out")"
+( DUTY_DIR="$W759_HOME"; : >"$DUTY_DIR/.tick-acted"; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
+t duty-a-session-resets-the-count 0 "$(cat "$TMP/idle-out")"
+( DUTY_DIR="$W759_HOME"; rm -f "$DUTY_DIR/.tick-acted"; printf 'junk\n' >"$DUTY_DIR/.idle-ticks"; duty_idle_account; cat "$DUTY_DIR/.idle-ticks" ) >"$TMP/idle-out"
+t duty-a-corrupt-count-restarts-at-one 1 "$(cat "$TMP/idle-out")"
+unset -f duty_idle_account
+
 suite_finish

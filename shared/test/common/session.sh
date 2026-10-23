@@ -2577,4 +2577,22 @@ t mem-the-measurement-only-ever-probes-liveness 0 "$(mem_watch_signals)"
 t mem-the-measurement-does-not-reach-the-terminator 0 \
   "$(declare -f _session_peak_rss_watch | grep -c '_session_mem_terminate' || true)"
 
+# ── #759 — every SESSION END says why the session was bought ──────────────
+# The host writes the wake's reason; duty.sh exports it as WAKE_REASON; the
+# line carries it as `why=`, one token, ahead of `sid=` which stays last.
+W759_WORK="$TMP/why-work"; mkdir -p "$W759_WORK"
+BOT_CLI_CMD=(bash -c 'printf "exec\nfinal reply\n"')
+# shellcheck disable=SC2317  # invoked indirectly by session_acted
+bot_session_acted() { grep -qx exec "$1"; }
+rm -f "$DUTY_DIR/.tick-acted"
+w759_end="$(WAKE_REASON='ready#o/r#12,attention#o/r#3' run_session build fixture/why "$W759_WORK" 5 prompt | tail -1)"
+t why-the-host-reason-is-on-the-line 1 "$(grep -c ' why=ready#o/r#12,attention#o/r#3 ' <<<"$w759_end")"
+t why-sid-stays-last 1 "$(grep -cE ' why=[^ ]+ sid=[^ ]+$' <<<"$w759_end")"
+t why-the-session-stamps-the-tick 1 "$([ -e "$DUTY_DIR/.tick-acted" ] && echo 1 || echo 0)"
+w759_end="$(env -u WAKE_REASON bash -c 'cd "'"$PWD"'"; source "$SHARED/lib/common.sh"; BOT_CLI_CMD=(bash -c "printf \"exec\\nfinal reply\\n\""); bot_session_acted() { grep -qx exec "$1"; }; run_session build fixture/why2 "'"$W759_WORK"'" 5 prompt' 2>/dev/null | tail -1)"
+t why-cron-when-nothing-was-written 1 "$(grep -c ' why=cron ' <<<"$w759_end")"
+w759_end="$(WAKE_REASON='two words; and $punct' run_session build fixture/why3 "$W759_WORK" 5 prompt | tail -1)"
+t why-is-one-sanitised-token 1 "$(grep -c ' why=two_words__and__punct ' <<<"$w759_end")"
+unset -f bot_session_acted
+
 suite_finish
