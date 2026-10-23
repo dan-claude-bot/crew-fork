@@ -617,6 +617,47 @@ if grep -Fq 'Possibly unblockable issues: #244' "$TR_PROMPT.triage"; then
   r1=unchanged; else r1=MISSING; fi
 t triage471-signal-e-unblockable-verdict-unchanged unchanged "$r1"
 
+# --- #632: a cross-repo gate holds signal (e) and fabricates no (f) edge ---
+# heavy-duty/landing-site#40's declaration verbatim, driven through the
+# module's own functions. The state map carries the locals CLOSED and ALSO a
+# CLOSED local #421 — the wrong-repo collision — so a parser that keyed
+# incubator#421 by its bare number would both nominate #40 and teach (f) an
+# edge onto an unrelated local issue.
+tr632_fn() {  # tr632_fn FUNCTION ARGS... — in a subshell with the module loaded
+  # DUTY_DIR is the harness copy that carries lib/jq: signal (e) reads
+  # blockers.jq from there, and against a directory without it the function
+  # fails closed and the hold case would pass vacuously (its control catches
+  # that, which is why the control exists).
+  ( DUTY_DIR="$TRD"
+    # shellcheck disable=SC1091
+    . "$SHARED/lib/duty-triage.sh"; "$@" )
+}
+TR632_LS40='[{"number":40,"body":"Blocked by #38, #39, heavy-duty/incubator#421.","updatedAt":"2026-09-01T07:00:00Z"}]'
+TR632_LOCAL='[{"number":40,"body":"Blocked by #38, #39.","updatedAt":"2026-09-01T07:00:00Z"}]'
+TR632_S='{"38":"CLOSED","39":"CLOSED","421":"CLOSED"}'
+t triage632-signal-e-holds-on-crossrepo-gate "" \
+  "$(tr632_fn _triage_unblockable_items o/r "$TR632_LS40" "$TR632_S")"
+t triage632-signal-e-control-releases-on-locals "o/r#40 2026-09-01T07:00:00Z" \
+  "$(tr632_fn _triage_unblockable_items o/r "$TR632_LOCAL" "$TR632_S")"
+# D3: the (f) edge set for the body carrying the cross-repo reference is the
+# edge set for the same body without it — the qualified member is UNKNOWN to
+# the state map and absorbed, never `o/r#40#421 CLOSED`.
+tr632_edges() { tr632_fn _triage_graph_items "$(tr632_fn _triage_graph_edges o/r "$1")" "$TR632_S"; }
+t triage632-signal-f-edge-set-unchanged-by-crossrepo-ref \
+  "$(tr632_edges "$TR632_LOCAL")" "$(tr632_edges "$TR632_LS40")"
+t triage632-signal-f-edge-set-is-the-two-locals \
+  $'o/r#40#38 CLOSED\no/r#40#39 CLOSED' "$(tr632_edges "$TR632_LS40")"
+# The engine end to end on the same board: (f)'s two cold edges wake one
+# session, and the prompt it renders carries no unblockable lead for #40.
+tr_fix '[]' '[]' '[]' "$TR632_LS40" "$TR632_LS40" \
+  "$(tr471_states 38 CLOSED 39 CLOSED 421 CLOSED)"
+tr_run 0
+t triage632-crossrepo-board-wakes-on-graph-only 1 "$(trc '^SESSION triage$')"
+if grep -Fq 'Possibly unblockable issues' "$TR_PROMPT.triage"; then
+  r1=NOMINATED; else r1=held; fi
+t triage632-crossrepo-board-prompt-has-no-unblockable-lead held "$r1"
+t triage632-crossrepo-board-ledgers-no-fabricated-edge 0 "$(grep -c '#421' "$TRD/.seen-graph")"
+
 # --- #359: successful triage sessions settle ledgers at their exit state ---
 TR359_T1='2026-08-05T10:00:00Z'
 TR359_T2='2026-08-05T10:05:00Z'

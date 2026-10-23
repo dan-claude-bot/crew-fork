@@ -15,8 +15,10 @@
 # Architectural spine (dan-claude-bot): this module only ever WAKES a
 # session — it never edits a label itself. A parser bug becomes a false lead
 # the session rejects, not a wrong board write. Every signal is fail-safe:
-# (e)'s unknown blocker counts as still-open, and the hourly hygiene sweep
-# is the unconditional backstop for anything detection misses.
+# (e)'s unknown blocker counts as still-open — a cross-repo one included,
+# since it parses keyed by its whole token and no local state map resolves
+# it (#632) — and the hourly hygiene sweep is the unconditional backstop for
+# anything detection misses.
 #
 # Every board read is isolated per signal per repo: one transient API failure
 # degrades to a logged skip, never an aborted tick (the old duty.sh died
@@ -62,8 +64,8 @@ _triage_graph_edges() {  # _triage_graph_edges REPO ISSUES_JSON
     # Keep byte-identical with lib/jq/blockers.jq: signal (e) and signal (f)
     # deliberately recognize the same declaration grammar.
     def blockers:
-      [ match("[Bb]locked by([^.]*)"; "g").captures[0].string ] | join(" ")
-      | [ scan("(?:^|[^A-Za-z0-9/])#([0-9]+)") | .[0] ];
+      [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
+      | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
     [ .[] as $issue
       | (($issue.body // "") | blockers[]) as $predecessor
       | {edge:"\($repo)#\($issue.number)#\($predecessor)", predecessor:$predecessor} ]
@@ -522,7 +524,9 @@ _triage_repo() {
   # (e) blocked issues whose named blockers all landed. The parser is
   # deliberately narrow (see lib/jq/blockers.jq — corpus-tested); issue and
   # PR numbering is shared, so the state map needs both lists. Fail-safe by
-  # construction: an unknown number counts as still-open.
+  # construction: an unknown number counts as still-open, and so does a
+  # cross-repo reference, which is keyed by its whole token (owner/repo#N)
+  # and therefore never resolves against this map (#632).
   local blocked_json numstates graph_edges='[]' graph_items=""
   local unblockable_items="" fresh_unblockable=""
   blocked_json="$(jq -c --arg b "$LABEL_BLOCKED" \
