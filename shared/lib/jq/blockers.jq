@@ -36,7 +36,7 @@
 # still open must never be captured with its "#" and so read "OPEN" (#632).
 def blockers:
   def mask: if test("\\([^()]*\\)") then gsub("\\((?<p>[^()]*)\\)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]") | mask else . end; mask
-  | gsub("\\((?<p>[^()\\n]*)(?=\\n|$)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]")
+  | gsub("\\((?<p>[^()\\n]*)(?=\\n|$)"; "[" + (.p | gsub("[.;](?=[ \\t])"; ",")) + "]")
   | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
   | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
 [ .[]
