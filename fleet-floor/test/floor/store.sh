@@ -548,13 +548,19 @@ st_rec .seen-hygiene 'o/r 9876-100 x' >"$ST_TMP/rec-f2a.txt"; st_rec .seen-hygie
 st_rec .seen-graph 'o/r#1#o/r#2 OPEN' >"$ST_TMP/rec-f2c.txt"; st_rec .seen-graph 'o/r#1#o/r#2 CLOSED' >"$ST_TMP/rec-f2d.txt"
 ST_F2="$ST_TMP/f2.sqlite"
 st_py "$ST_F2" 'from floor import store; store.init()' >/dev/null
-for f in rec-f2a rec-f2b rec-f2c rec-f2d; do
-  ST_REC="$ST_TMP/$f.txt" st_py "$ST_F2" '
+st_f2_ingest() { # RECORD… — each a full pull, in order
+  local f
+  for f in "$@"; do
+    ST_REC="$ST_TMP/$f.txt" st_py "$ST_F2" '
 import os
 from floor import store
 store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
 ' >/dev/null
-done
+  done
+}
+# Each pair on its own: a full pull names every file the box has, so the graph
+# records would (correctly) prune the hygiene ledger the box no longer ships.
+st_f2_ingest rec-f2a rec-f2b
 t "ledger: a hygiene digest that sorts lower still replaces the stored one" "1234-100 y" \
   "$(st_py "$ST_F2" '
 from floor import store
@@ -562,6 +568,7 @@ c = store.connect(readonly=True)
 r = c.execute("SELECT ts, rest FROM ledger WHERE box=\"alpha\" AND name=\".seen-hygiene\"").fetchone()
 print(r["ts"], r["rest"])
 ')"
+st_f2_ingest rec-f2c rec-f2d
 t "ledger: an edge that closed is CLOSED in the store" CLOSED \
   "$(st_py "$ST_F2" '
 from floor import store

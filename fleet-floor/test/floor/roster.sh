@@ -50,8 +50,11 @@ RS_PORT=$((PORT + 5))
 RS_ROSTER="$TMP/roster-edit.txt"
 RS_STATE="$TMP/roster-state"; mkdir -p "$RS_STATE"
 RS_JOURNAL="$CREW_CONFIG_DIR/.roster-journal.log"
-printf '# the fleet, one line per box\n#   <box-name> <agent> <role> [<from-box>/<snapshot>]\n\nff-working    claude  builder\nff-idle       claude  reviewer\nff-stopped    codex   triage  ff-working/armed\n' >"$RS_ROSTER"
-printf 'ff-working running working\nff-idle running idle\nff-stopped stopped idle\n' >"$TMP/roster-fixture.txt"
+# Box names of its own (`rs-*`): the shared stub answers any name from the
+# fixture state, and a second collector watching `ff-idle` would deliver that
+# box's carried limit event to the shared alert channel a second time.
+printf '# the fleet, one line per box\n#   <box-name> <agent> <role> [<from-box>/<snapshot>]\n\nrs-working    claude  builder\nrs-idle       claude  reviewer\nrs-stopped    codex   triage  rs-working/armed\n' >"$RS_ROSTER"
+printf 'rs-working running working\nrs-idle running idle\nrs-stopped stopped idle\n' >"$TMP/roster-fixture.txt"
 FLOOR_FIXTURE="$TMP/roster-fixture.txt" FLOOR_STATE="$RS_STATE" \
 CREW_FLOOR_ROSTER="$RS_ROSTER" CREW_FLOOR_STORE="$TMP/roster-store.sqlite" \
 CREW_FLOOR_PASS="$PASSWD" CREW_FLOOR_USER="$USER" CREW_FLOOR_PORT="$RS_PORT" \
@@ -74,42 +77,44 @@ for _ in $(seq 1 80); do
   kill -0 "$SRV6" 2>/dev/null || { echo "roster collector died:"; cat "$TMP/roster-server.log"; break; }
   sleep 0.5
 done
-t "roster: the editor opens on the file as it is on disk" "3 ff-working,ff-idle,ff-stopped" \
+t "roster: the editor opens on the file as it is on disk" "3 rs-working,rs-idle,rs-stopped" \
   "$(rs_body GET /api/roster | jqf "str(len(d['members']))+' '+','.join(m['box'] for m in d['members'])")"
-t "roster: the fourth column rides with its line" "ff-working/armed" \
-  "$(rs_body GET /api/roster | jqf "[m for m in d['members'] if m['box']=='ff-stopped'][0]['from']")"
+t "roster: the fourth column rides with its line" "rs-working/armed" \
+  "$(rs_body GET /api/roster | jqf "[m for m in d['members'] if m['box']=='rs-stopped'][0]['from']")"
 t "roster: the names a line may use are the profiles" "yes yes" \
   "$(rs_body GET /api/roster | jqf "('yes' if 'claude' in d['agents'] else 'no')+' '+('yes' if 'builder' in d['roles'] else 'no')")"
 t "roster: the path is the file a save writes" "$RS_ROSTER" "$(rs_body GET /api/roster | jqf "d['path']")"
-RS_SET='{"action":"roster-set","members":[{"box":"ff-working","agent":"claude","roles":["builder"],"from":""},{"box":"ff-idle","agent":"codex","roles":["reviewer","triage"],"from":""},{"box":"ff-new","agent":"grok","roles":["reviewer"],"from":"ff-working/armed"}]}'
-t "roster-set: a valid roster lands" 200 "$(rs_status POST /api/command "$RS_SET")"
+RS_SET='{"action":"roster-set","members":[{"box":"rs-working","agent":"claude","roles":["builder"],"from":""},{"box":"rs-idle","agent":"codex","roles":["reviewer","triage"],"from":""},{"box":"rs-new","agent":"grok","roles":["reviewer"],"from":"rs-working/armed"}]}'
+RS_SAVE="$(rs_api POST /api/command "$RS_SET")"
+t "roster-set: a valid roster lands" 200 "$(printf '%s\n' "$RS_SAVE" | tail -1)"
 t "roster-set: the file reads as written, aligned, fourth column kept" \
-  "ff-working claude builder|ff-idle codex reviewer,triage|ff-new grok reviewer ff-working/armed" \
+  "rs-working claude builder|rs-idle codex reviewer,triage|rs-new grok reviewer rs-working/armed" \
   "$(grep -v '^#' "$RS_ROSTER" | awk 'NF' | tr -s ' ' | paste -sd'|' -)"
 t "roster-set: the header comments are kept word for word" 2 "$(grep -c '^#' "$RS_ROSTER")"
-t "roster-set: the deltas come back" "ff-new|ff-stopped|ff-idle" \
-  "$(rs_body POST /api/command "$RS_SET" | jqf "','.join(d['roster']['added'])+'|'+','.join(d['roster']['removed'])+'|'+','.join(d['roster']['changed'])" 2>/dev/null || true)"
-# The second identical save above reports no delta; the FIRST one's record is
-# what the journal holds, with who and the state the write applied.
+t "roster-set: the deltas come back" "rs-new|rs-stopped|rs-idle" \
+  "$(printf '%s\n' "$RS_SAVE" | sed '$d' | jqf "','.join(d['roster']['added'])+'|'+','.join(d['roster']['removed'])+'|'+','.join(d['roster']['changed'])" 2>/dev/null || true)"
 t "roster-set: the write is journalled with its actor and state" 1 \
-  "$(grep -c "^[0-9T:Z-]* roster set actor=$USER members=ff-working:claude:builder,ff-idle:codex:reviewer,triage,ff-new:grok:reviewer@ff-working/armed added=ff-new removed=ff-stopped changed=ff-idle$" "$RS_JOURNAL")"
+  "$(grep -c "^[0-9T:Z-]* roster set actor=$USER members=rs-working:claude:builder,rs-idle:codex:reviewer,triage,rs-new:grok:reviewer@rs-working/armed added=rs-new removed=rs-stopped changed=rs-idle$" "$RS_JOURNAL")"
+# The same roster saved again is no change, and says so.
+t "roster-set: saving the same roster again reports no delta" "||" \
+  "$(rs_body POST /api/command "$RS_SET" | jqf "','.join(d['roster']['added'])+'|'+','.join(d['roster']['removed'])+'|'+','.join(d['roster']['changed'])" 2>/dev/null || true)"
 # ...and the collector reads it at the next poll: the new line is a unit, the
 # removed one is gone, and a line with no box yet is said as the target fleet.
 for _ in $(seq 1 40); do
-  [ "$(rs_body GET /api/fleet | jqf "','.join(sorted(u['box'] for u in d['units']))")" = "ff-idle,ff-new,ff-working" ] && break
+  [ "$(rs_body GET /api/fleet | jqf "','.join(sorted(u['box'] for u in d['units']))")" = "rs-idle,rs-new,rs-working" ] && break
   sleep 0.5
 done
-t "roster-set: the fleet follows the roster at the next poll" "ff-idle,ff-new,ff-working" \
+t "roster-set: the fleet follows the roster at the next poll" "rs-idle,rs-new,rs-working" \
   "$(rs_body GET /api/fleet | jqf "','.join(sorted(u['box'] for u in d['units']))")"
-t "roster-set: an unknown agent is refused with its line" "400 ff-new: unknown agent 'nobody'" \
-  "$(rs_api POST /api/command '{"action":"roster-set","members":[{"box":"ff-new","agent":"nobody","roles":["builder"]}]}' | python3 -c "
+t "roster-set: an unknown agent is refused with its line" "400 box rs-new: unknown agent 'nobody'" \
+  "$(rs_api POST /api/command '{"action":"roster-set","members":[{"box":"rs-new","agent":"nobody","roles":["builder"]}]}' | python3 -c "
 import sys,json
-lines=sys.stdin.read().splitlines(); d=json.loads(lines[0]); print(lines[-1], d['error'][:len(\"ff-new: unknown agent 'nobody'\")])")"
-t "roster-set: an unknown role is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"ff-new","agent":"claude","roles":["janitor"]}]}')"
+lines=sys.stdin.read().splitlines(); d=json.loads(lines[0]); print(lines[-1], d['error'][:len(\"box rs-new: unknown agent 'nobody'\")])")"
+t "roster-set: an unknown role is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-new","agent":"claude","roles":["janitor"]}]}')"
 t "roster-set: a name outside incus alphabet is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"Bad_Name","agent":"claude","roles":["builder"]}]}')"
-t "roster-set: a box named twice is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"ff-a","agent":"claude","roles":["builder"]},{"box":"ff-a","agent":"codex","roles":["reviewer"]}]}')"
-t "roster-set: a line with no role is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"ff-a","agent":"claude","roles":[]}]}')"
-t "roster-set: a malformed from is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"ff-a","agent":"claude","roles":["builder"],"from":"../x"}]}')"
+t "roster-set: a box named twice is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-a","agent":"claude","roles":["builder"]},{"box":"rs-a","agent":"codex","roles":["reviewer"]}]}')"
+t "roster-set: a line with no role is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-a","agent":"claude","roles":[]}]}')"
+t "roster-set: a malformed from is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-a","agent":"claude","roles":["builder"],"from":"../x"}]}')"
 t "roster-set: an empty roster is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[]}')"
 t "roster-set: a refusal says refused and moves nothing" "true 3" \
   "$(rs_body POST /api/command '{"action":"roster-set","members":[]}' | jqf "str(d['refused']).lower()") $(grep -vc '^#' "$RS_ROSTER" | tr -d ' ')"
