@@ -54,6 +54,24 @@ date +%s >"$DUTY_DIR/.duty.lock.since"
 # shellcheck source=../lib/common.sh disable=SC1091
 source "$DUTY_DIR/lib/common.sh"
 load_conf
+# A box restored from its weekly checkpoint boots with `.memory-pending` (the
+# host's `reset --cut` leaves it in the snapshot): its memory — the ledgers,
+# the breakers, the counters — is the host's to write back, and a tick that
+# ran first would re-buy every refusal the box had already made and then be
+# written over (#761, #763 review). So the tick waits, under its own lock,
+# for up to MEMORY_PENDING_GRACE_S of uptime; the host lifts the marker in
+# the same locked step that unpacks the memory. Past the grace the host did
+# not come, and the box runs without it, saying so once.
+if [ -e "$DUTY_DIR/.memory-pending" ]; then
+  _mp_up="$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
+  case "$_mp_up" in ''|*[!0-9]*) _mp_up=0 ;; esac
+  if [ "$_mp_up" -lt "${MEMORY_PENDING_GRACE_S:-1800}" ]; then
+    log "duty tick skipped: the host has not written this box's memory back yet (up ${_mp_up}s; waits ${MEMORY_PENDING_GRACE_S:-1800}s)"
+    exit 0
+  fi
+  warn "memory restore did not arrive within ${MEMORY_PENDING_GRACE_S:-1800}s of boot; this box runs without its ledgers from here"
+  rm -f "$DUTY_DIR/.memory-pending"
+fi
 # The wake's reason (#759): the host writes $DUTY_DIR/.wake-reason before it
 # ticks a box it started, and every SESSION END this tick carries it as
 # `why=`; the box's own cron finds nothing and ticks as `cron`. Consumed, so a

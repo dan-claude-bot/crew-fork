@@ -227,8 +227,8 @@ mk_pr() {  # head mergeable labels requests reviews
 }
 CJ_ME="builder-me"
 CJ_MARK="🤝 handed off at head"   # MARK_HANDOFF, the wire string (fleet.defaults.conf)
-cj() {  # cj [signal-json] [panel-json] [human]
-  jq -r --argjson panel "${2:-$PANEL}" --arg me "$CJ_ME" --arg mark_handoff "$CJ_MARK" \
+cj() {  # cj [signal-json] [panel-json] [human] [roster-json]
+  jq -r --argjson panel "${2:-$PANEL}" --argjson roster "${4:-${2:-$PANEL}}" --arg me "$CJ_ME" --arg mark_handoff "$CJ_MARK" \
     --arg human "${3-$CJ_HUMAN}" --argjson signal "${1:-$CJ_NO_SIG}" -f "$CJQ"
 }
 
@@ -4205,7 +4205,7 @@ mk_addressing_payload() {  # draft labels requests reviews [comments]
 review_addressing_actions() (  # payload [label-rc]
   AR_PAYLOAD="$1"; AR_LABEL_RC="${2:-0}"
   LABEL_ADDRESSING=state:addressing
-  DUTY_DIR="$SHARED"
+  DUTY_DIR="$SHARED" PANEL_SIZED_CACHE=off
   AR_LOG="$TMP/addressing-actions"; : >"$AR_LOG"
   panel_for_repo() { printf '%s\n' '["rev-a","rev-b"]'; }
   log() { :; }
@@ -4218,6 +4218,11 @@ review_addressing_actions() (  # payload [label-rc]
     if [ "$1" = issue ] && [ "$2" = edit ]; then
       printf '%s\n' label >>"$AR_LOG"
       return "$AR_LABEL_RC"
+    fi
+    # The head's files, when the case sizes the panel (low: one small file).
+    if [ "$1" = pr ] && [ "$2" = view ] && [[ "$*" == *"--json files"* ]] && [ -n "${AR_FILES:-}" ]; then
+      printf '%s\n' "$AR_FILES"
+      return 0
     fi
     return 3
   }
@@ -4272,6 +4277,23 @@ t redraft-label-failure-is-best-effort 'rc=0 actions=label' \
   "$(review_addressing_actions "$AR_OPEN" 1)"
 t redraft-conversion-failure-is-best-effort 'rc=0 actions=draft' \
   "$(author_redraft_actions "$AR_LABELLED" 1)"
+
+# THE SIZED PANEL CLOSES THE ROUND (#763 review). PR #7 at low risk is asked of
+# rev-b alone (7 mod 2 = 1); rev-b's change-request at the head is then the
+# whole round — closed, not approved — and the label is written. Read against
+# the whole roster the same verdict is "rev-a has not reviewed", the round is
+# still open, and state:addressing is never written (it is written nowhere
+# else). A request still open to rev-a — outside the sized subset — keeps the
+# round open under either reading: the whole roster's requests count.
+AR_ONE_CR='[{"author":{"login":"rev-b"},"state":"CHANGES_REQUESTED","commit":{"oid":"'$AR_H'"}}]'
+AR_SIZED="$(mk_addressing_payload false '[]' '[]' "$AR_ONE_CR")"
+AR_SIZED_REQ="$(mk_addressing_payload false '[]' '["rev-a"]' "$AR_ONE_CR")"
+t addressing-a-low-risk-head-is-marked-on-its-sized-reviewers-verdict 'rc=0 actions=label' \
+  "$(AR_FILES='README.md 3' review_addressing_actions "$AR_SIZED")"
+t addressing-the-same-verdict-against-the-whole-roster-is-an-open-round 'rc=0 actions=' \
+  "$(review_addressing_actions "$AR_SIZED")"
+t addressing-a-request-open-outside-the-sized-subset-holds-the-round 'rc=0 actions=' \
+  "$(AR_FILES='README.md 3' review_addressing_actions "$AR_SIZED_REQ")"
 
 # The author-aware panel is resolved once per repository tick and passed into
 # every PR predicate. panel_for_repo owns the safe fleet-bench fallback, so the
@@ -5788,10 +5810,18 @@ rc_census() (  # payload listing
   RC_LOG="$TMP/round-cap-census"; : >"$RC_LOG"
   log() { printf 'log %s\n' "$*" >>"$RC_LOG"; }
   warn() { printf 'warn %s\n' "$*" >>"$RC_LOG"; }
+  PANEL_SIZED_CACHE=off
   gh() {
     printf 'gh %s\n' "$*" >>"$RC_LOG"
     if [ "$1" = api ] && [ "$2" = graphql ]; then
       printf '%s\n' "$RC_PAYLOAD"
+      return 0
+    fi
+    # The head's files, when the case sizes the panel: one small file, no
+    # risky path, which is the low tier (#761). Unanswered, the read fails and
+    # the panel is whole.
+    if [ "$1" = pr ] && [ "$2" = view ] && [[ "$*" == *"--json files"* ]] && [ -n "${RC_FILES:-}" ]; then
+      printf '%s\n' "$RC_FILES"
       return 0
     fi
     return 3
@@ -5813,11 +5843,29 @@ t roundcap-census-leaves-a-below-cap-pr-unnamed \
 # closes one, or writes a body.
 rm -f "$RC_DUTY/.seen-round-cap"
 rc_census "$(rc_build 5)" "$RC_LISTING" >/dev/null
-RC_CALLS="$(grep -c '^gh ' "$TMP/round-cap-census")"
+RC_CALLS="$(grep -c '^gh api graphql' "$TMP/round-cap-census")"
+RC_FILE_READS="$(grep -c '^gh pr view 7 -R owner/repo --json files' "$TMP/round-cap-census")"
 RC_MUTATIONS="$(grep -Ec '^gh .*(mutation|pr create|pr close|pr edit|-X PATCH|-X POST|convertPullRequest|requested_reviewers|issue edit)' \
   "$TMP/round-cap-census" || true)"
 t roundcap-census-reads-once-per-pr 1 "$RC_CALLS"
+t roundcap-census-reads-the-heads-files-once 1 "$RC_FILE_READS"
 t roundcap-census-performs-no-act-of-the-cut 0 "$RC_MUTATIONS"
+# THE SIZED PANEL (#763 review): the census counts against the panel the head
+# was asked of. PR #7 at low risk is sized to rev-b (7 mod 2 = 1), who approved
+# every round — so the fifth round closed APPROVED and the cap is not reached,
+# where the whole roster (rev-a's five change-requests) would name it. PR #8 is
+# sized to rev-a (8 mod 2 = 0): five change-requests from the one reviewer the
+# head was asked of IS the cap. Without the sizing the low-risk PR cycled past
+# five forever, the one reviewer never being "every panelist".
+rm -f "$RC_DUTY/.seen-round-cap"
+t roundcap-census-a-low-risk-pr-is-counted-against-its-sized-reviewer-approving \
+  'prs=[] named=[-]' \
+  "$(RC_FILES='README.md 3' rc_census "$(rc_build 5)" "$RC_LISTING")"
+rm -f "$RC_DUTY/.seen-round-cap"
+t roundcap-census-a-low-risk-pr-reaches-the-cap-on-its-one-reviewer \
+  'prs=[owner/repo#8] named=[owner/repo#8 (5 rounds)]' \
+  "$(RC_FILES='README.md 3' rc_census "$(rc_build 5)" '[{"number":8}]')"
+rm -f "$RC_DUTY/.seen-round-cap"
 # ...and no module of the engine opens or closes a pull request at all, which is
 # the same claim made where a later change would actually make it. Comment lines
 # are stripped first: duty-builder.sh's resume header names `gh pr create` while
@@ -5957,7 +6005,7 @@ rc_flow() (  # cap-payload pr-payload
   _request_panel owner/repo 7 "$RC_PR" '["rev-a","rev-b"]' green "$AR_H" "$rc_cap"
   rc_signal="$(printf '%s' "$RC_PR" | jq -c --arg me "$ME" --arg mark "$MARK_ANSWERED" \
     -f "$RC_DUTY/lib/jq/answered-head.jq")"
-  rc_conv="$(printf '%s' "$RC_PR" | jq -r --argjson panel '["rev-a","rev-b"]' \
+  rc_conv="$(printf '%s' "$RC_PR" | jq -r --argjson panel '["rev-a","rev-b"]' --argjson roster '["rev-a","rev-b"]' \
     --arg me "$ME" --arg mark_handoff "${MARK_HANDOFF:-🤝 handed off at head}" --arg human "" --argjson signal "$rc_signal" \
     -f "$RC_DUTY/lib/jq/converged.jq")"
   printf 'named=[%s] at_cap=%s requested=[%s] converged=%s' \
@@ -6530,7 +6578,7 @@ t panel-request-requests-from-the-sized-panel 2 "$(grep -c -- '--argjson panel "
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-redraft-reads-the-round-against-the-sized-panel 1 "$(grep -c '^  eff_panel="$_PANEL_EFFECTIVE_JSON"$' "$SHARED/lib/duty-builder.sh")"
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
-t panel-handoff-counts-against-the-sized-panel 1 "$(grep -c -- '--argjson panel "$_PANEL_EFFECTIVE_JSON" --arg me "$ME" --arg mark_handoff' "$SHARED/lib/duty-builder.sh")"
+t panel-handoff-counts-against-the-sized-panel 1 "$(grep -c -- '--argjson panel "$_PANEL_EFFECTIVE_JSON" --argjson roster "$panel_json" --arg me "$ME" --arg mark_handoff' "$SHARED/lib/duty-builder.sh")"
 # shellcheck disable=SC2016  # the pin quotes the engine's source line verbatim
 t panel-sizing-mark-is-keyed-once-per-head 1 "$(grep -c 'sized_marker="<!-- duty:panel-sized:$repo#$num@$gql_head -->"' "$SHARED/lib/duty-builder.sh")"
 # The effective panel: a low-risk head is ONE reviewer, the same one every

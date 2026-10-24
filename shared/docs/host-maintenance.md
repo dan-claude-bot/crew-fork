@@ -37,6 +37,30 @@ and nothing on the board or the floor reported it.
 
 ## The weekly reset — scheduled again since `0.1.4` (#761)
 
+Three rules the reset keeps since the `0.1.4` review, each the host tick's
+own rule applied to the one verb that could undo it:
+
+- **A paused box is left alone under `--all`**, exactly as the daily
+  restart leaves it: the restored disk's cron is live, and nothing but
+  `crew resume` starts a paused box. `crew reset <box>` by name restores it,
+  writes its memory back, pauses its crontab again and stops it.
+- **The cap holds.** A box restored while `FLEET_MAX_RUNNING` other boxes
+  are running goes back down once its memory is written; the host tick
+  starts it when there is work for it.
+- **The first tick waits for the memory.** `crew reset --cut` leaves
+  `~/duty/.memory-pending` inside the checkpoint, so a box restored from it
+  boots with the marker and `duty.sh` skips every tick (under its own lock)
+  until the host's write-back lifts it in the same locked step that unpacks
+  the archive. The box's own `*/5` cron can therefore never run a session
+  with no ledgers ahead of the write-back, and the write-back never lands
+  over what such a session wrote. The wait is bounded by
+  `MEMORY_PENDING_GRACE_S` (1800 s of uptime): past it the box runs
+  without its memory and says so once in `duty.log`. A write-back that
+  fails is a failed reset (rc 1), said by name in the job log; a store that
+  simply holds nothing for the box (its first reset) lifts the marker and
+  is said as that. Checkpoints cut before `0.1.4` carry no marker: re-cut
+  them once (`crew reset --cut <box>`) to get the guarantee.
+
 `crew reset --all` is the second line, weekly on Sunday at 05:10. #678 had
 deferred it to this window because a restore wiped two things nothing could
 rebuild — `duty.log` and the engine's ledgers. The store (#758) now holds both:
@@ -274,6 +298,13 @@ after the on-demand reaper has run. `crew help reset` has all of them. Re-cut
 attended, read what it says, and repair what it names before you reset.
 
 ## The host tick — `crew tick` (#759)
+
+A board the host cannot read holds every idle stop for that tick — a blind
+tick must not read a dead board as a quiet fleet. A board unreadable for
+`TICK_BLIND_TICKS` ticks running (3) is a repository the host cannot read at
+all — renamed, private to this login, gone — and is set aside instead: said
+on every tick, and no longer holding the fleet up. Fix the registry or the
+host's login; the count clears on the first readable tick.
 
 The host's cron runs `crew tick` every five minutes (`shared/host-crontab.example`).
 A tick reads each registered board once — issues, pull requests, discussions —

@@ -265,6 +265,12 @@ case "$cmd" in
       [ "$name" != "${RST_UNPACK_FAIL:-}" ] || exit 1
       echo restored
       cat >/dev/null
+    elif [[ "$script" == *'touch ~/duty/.memory-pending'* ]]; then
+      # The checkpoint's marker (#763 re-review): set on the live box for the
+      # snapshot's duration, lifted after it and by the memory's return.
+      printf 'pending-on %s\n' "$name" >>"$calls"
+    elif [[ "$script" == *'rm -f ~/duty/.memory-pending'* ]]; then
+      printf 'pending-off %s\n' "$name" >>"$calls"
     elif [[ "$script" == *'crontab -l'* ]]; then
       exit 1
     else
@@ -651,6 +657,76 @@ case "$OUT" in *"alpha: memory restored from the store"*) r1=reported ;; *) r1="
 t reset-memory-restore-is-reported reported "$r1"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-restore-is-reported reported "$r1"
+# The memory's return lifts `.memory-pending` in the same locked step that
+# unpacks it, and a reset that cannot read the store is a FAILURE (#763
+# re-review) — not "no memory", which is a store that holds nothing for the
+# box and lifts the marker so its ticks run.
+t reset-the-unpack-lifts-the-marker-in-the-locked-step 1 \
+  "$(grep -c 'flock .duty.lock -c "tar -xf .memory-restore.tar && rm -f .memory-restore.tar .memory-pending"' "$CLI")"
+reset_case
+arm alpha
+printf 'stopped\n' >"$STATE/state-alpha"
+: >"$STATE/calls"
+CREW_FLOOR_STORE="$STATE/absent/fleet.sqlite" capture reset alpha
+t reset-a-store-that-cannot-be-read-is-a-failure 1 "$RC"
+case "$OUT" in *'alpha: memory restore FAILED — the store could not be read'*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-the-unreadable-store-is-said said "$r1"
+case "$OUT" in *'alpha: FAILED — restored to armed and started, but its memory did not come back from the store'*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-the-failed-memory-fails-the-restore said "$r1"
+case "$OUT" in *'reset: 0 restored, 0 skipped-busy, 1 failed'*) r1=counted ;; *) r1="$OUT" ;; esac
+t reset-the-failed-memory-is-counted counted "$r1"
+CREW_CONFIG_DIR="$CONF" CREW_FLOOR_STORE="$STATE/fresh.sqlite" python3 "$ROOT/fleet-floor/server/floor/store.py" init >/dev/null
+printf 'stopped\n' >"$STATE/state-alpha"
+: >"$STATE/calls"
+CREW_FLOOR_STORE="$STATE/fresh.sqlite" capture reset alpha
+t reset-a-store-with-no-memory-for-the-box-is-not-a-failure 0 "$RC"
+case "$OUT" in *'alpha: the store holds no memory file to restore (first reset, or never drained)'*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-no-memory-is-said-as-that said "$r1"
+t reset-no-memory-lifts-the-marker-so-the-box-ticks 1 "$(calls_of 'pending-off alpha')"
+# The checkpoint carries the marker: set before the snapshot, lifted after it.
+reset_case
+arm alpha
+: >"$STATE/calls"
+capture reset --cut alpha
+t cut-sets-memory-pending-before-the-snapshot 1 \
+  "$(awk '/^pending-on alpha/{p=NR} /^snapshot alpha armed/{s=NR} END{print (p && s && p<s) ? 1 : 0}' "$STATE/calls")"
+t cut-lifts-memory-pending-from-the-live-box-after-it 1 \
+  "$(awk '/^snapshot alpha armed/{s=NR} /^pending-off alpha/{o=NR} END{print (s && o && o>s) ? 1 : 0}' "$STATE/calls")"
+# THE PAUSE AND THE CAP ARE KEPT (#763 re-review). Under --all a paused box
+# is left alone, as the daily restart leaves it; by name it is restored, its
+# memory written back, its crontab paused again and stopped. A box restored
+# while the cap is full goes back down for the host tick to start.
+reset_case
+arm alpha "$BOX_STAMP_VERSION"
+arm beta "$BOX_STAMP_VERSION"
+mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
+: >"$STATE/calls"
+capture reset --all
+case "$OUT" in *'alpha: paused — left alone'*) r1=left ;; *) r1="$OUT" ;; esac
+t reset-all-leaves-a-paused-box-alone left "$r1"
+t reset-all-restores-nothing-for-a-paused-box 0 "$(calls_of 'restore alpha')"
+t reset-all-still-restores-the-others 1 "$(calls_of 'restore beta armed')"
+: >"$STATE/calls"
+capture reset alpha
+t reset-by-name-restores-a-paused-box 1 "$(calls_of 'restore alpha armed')"
+t reset-by-name-stops-a-paused-box-again-after-its-memory 1 \
+  "$(awk '/^memory-unpack alpha/{m=NR} /^down alpha/{if(m && NR>m)d=NR} END{print (m && d) ? 1 : 0}' "$STATE/calls")"
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again — it is paused"*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-the-paused-stop-is-said said "$r1"
+rm -f "$CONF/store/paused/alpha"
+reset_case
+arm alpha "$BOX_STAMP_VERSION"
+arm beta "$BOX_STAMP_VERSION"
+printf 'FLEET_MAX_RUNNING=1\n' >>"$CONF/fleet.conf"
+printf 'running\n' >"$STATE/state-beta"
+: >"$STATE/calls"
+capture reset alpha
+t reset-a-box-past-the-cap-goes-back-down-after-its-memory 1 \
+  "$(awk '/^memory-unpack alpha/{m=NR} /^down alpha/{if(m && NR>m)d=NR} END{print (m && d) ? 1 : 0}' "$STATE/calls")"
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again — 1 of 1 boxes running; the host tick starts it when there is work"*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-the-cap-stop-is-said said "$r1"
+t reset-the-cap-stop-is-not-a-failure 0 "$RC"
+sed -i '/^FLEET_MAX_RUNNING=1$/d' "$CONF/fleet.conf"
 
 reset_case
 arm alpha

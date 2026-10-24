@@ -121,7 +121,10 @@ wake_veto() {
   while read -r reason ts; do
     [ -n "$reason" ] || continue
     kind="${reason%%#*}"; item="${reason#*#}"
-    case "$kind" in attention) lane=attention ;; ready|pr) lane=build ;; review) lane=review ;; board) lane=triage ;; *) lane="$kind" ;; esac
+    # A due wait is answered by the RESUME session, so it is vetoed by that
+    # lane's budget: a wait the budget refused would otherwise wake the box
+    # every tick until the window rolls.
+    case "$kind" in attention) lane=attention ;; ready|pr) lane=build ;; review) lane=review ;; board) lane=triage ;; wait) lane=resume ;; *) lane="$kind" ;; esac
     if [ "$kind" != board ] && [ "$ts" != - ] && wake_ledger_seen "$box" "$item" "$ts"; then
       echo "veto:$reason:seen"; continue
     fi

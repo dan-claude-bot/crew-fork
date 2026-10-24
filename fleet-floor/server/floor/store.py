@@ -320,7 +320,15 @@ def connect(path=None, readonly=False):
         conn.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
     elif have != SCHEMA_VERSION:
-        _migrate(conn, have)
+        # One transaction: a migration a second writer interrupts is either
+        # whole or not there, never a column without its version stamp.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _migrate(conn, have)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     refresh_rates(conn)
     return conn
 
@@ -590,10 +598,16 @@ def _ingest_file(conn, box, name, lines, full=False):
             if len(parts) >= 2:
                 rest = " ".join(parts[2:])
                 ids.append(parts[0])
+                # The box's line REPLACES the stored one: field 2 is a
+                # timestamp in a seen-ledger, but a digest in .seen-hygiene
+                # and a state (OPEN/CLOSED) in .seen-graph, so ordering the
+                # two by it kept an old digest and an OPEN over a CLOSED —
+                # and a reset box swept, or re-fired, what it had already
+                # acted on. Ledgers cross only on a full pull, and there the
+                # file is the truth (#763 review).
                 conn.execute(
                     "INSERT INTO ledger(box, name, id, ts, rest) VALUES(?,?,?,?,?) "
-                    "ON CONFLICT(box, name, id) DO UPDATE SET ts=excluded.ts, rest=excluded.rest "
-                    "WHERE excluded.ts >= ledger.ts",
+                    "ON CONFLICT(box, name, id) DO UPDATE SET ts=excluded.ts, rest=excluded.rest",
                     (box, name, parts[0], parts[1], rest))
         if full:
             if ids:
@@ -694,11 +708,17 @@ def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="
             if name == "duty.log":
                 continue
             if name == "duty.log.1":
-                # The rotated log, shipped whole on a full pull: lines written
-                # between the last pull and the rotation land by content, and
-                # the UNIQUE keys refuse what is already here.
+                # The rotated log, shipped whole once per rotation: lines
+                # written between the last pull and the rotation land by
+                # content, and the UNIQUE keys refuse what is already here.
+                # Its size+mtime mark is remembered so the next probe is told
+                # (PROBE_LOG1_SEEN) and ships it again only when it changes —
+                # not up to 5 MB on every poll until the next rotation.
                 _ingest_lines(conn, box, lines, None)
                 landed += 1
+                if meta.get("log1mark"):
+                    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                                 ("log1mark:%s" % box, meta["log1mark"]))
                 continue
             _ingest_file(conn, box, name, lines, full="statefiles" in meta)
             landed += 1
@@ -762,10 +782,25 @@ def next_log_line(box, path=None):
         conn.close()
 
 
+def log1_seen(box, path=None):
+    """The size+mtime mark of the rotated log last landed for this box."""
+    conn = connect(path)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key=?", ("log1mark:%s" % box,)).fetchone()
+        return row["value"] if row else ""
+    finally:
+        conn.close()
+
+
 def probe_env(box, path=None):
     """The environment that puts probe.sh in full mode for this box's next
-    cadence pull: everything new since the last one, every state file."""
-    return {"PROBE_FULL": "1", "PROBE_LOG_FROM": str(next_log_line(box, path))}
+    cadence pull: everything new since the last one, every state file, and
+    the rotated log only when it is not the one already landed."""
+    env = {"PROBE_FULL": "1", "PROBE_LOG_FROM": str(next_log_line(box, path))}
+    seen = log1_seen(box, path)
+    if seen:
+        env["PROBE_LOG1_SEEN"] = seen
+    return env
 
 
 # --------------------------------------------------------------------------
@@ -1059,8 +1094,15 @@ def main(argv=None):
         conn = connect(readonly=True)
         try:
             files = conn.execute("SELECT name, content FROM state_files WHERE box=?", (box,)).fetchall()
-            ledgers = conn.execute("SELECT name, id, ts, rest FROM ledger WHERE box=? ORDER BY name, id",
-                                   (box,)).fetchall()
+            try:
+                ledgers = conn.execute("SELECT name, id, ts, rest FROM ledger WHERE box=? ORDER BY name, id",
+                                       (box,)).fetchall()
+            except sqlite3.OperationalError as e:
+                # A reader never migrates; a store still at schema 1 has no
+                # `rest`. Said as that, not as a traceback: the next writer
+                # (the collector's poll, `crew up`) brings it to this schema.
+                raise SystemExit("store.py export: the store predates this schema (%s); "
+                                 "a writer — the collector or `crew up` — migrates it first" % e)
         finally:
             conn.close()
         written = 0

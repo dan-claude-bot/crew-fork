@@ -511,7 +511,7 @@ _session_continue_plan() {
 _session_resume_read() {
   local file="$1" want_kind="${2-}" want_key="${3-}" line field value lines=0
   local kind="" key="" sid="" head="" wall="" try="" logb="" outcome="" productive=""
-  local survivor_count=""
+  local survivor_count="" task=""
   local seen=""
   [ -s "$file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -551,6 +551,7 @@ _session_resume_read() {
       outcome) outcome="$value" ;;
       productive) productive="$value" ;;
       left) survivor_count="$value" ;;
+      task) task="$value" ;;
       *) return 0 ;;
     esac
   done <"$file"
@@ -571,6 +572,12 @@ _session_resume_read() {
   case "$outcome" in TIMEOUT | MEMORY) ;; *) return 0 ;; esac
   case "$productive" in yes | no) ;; *) return 0 ;; esac
   case "$survivor_count" in unknown) ;; '' | *[!0-9]*) return 0 ;; esac
+  # A stub written before `task=` existed carries none and resumes as it did;
+  # one that names a task resumes only into a dispatch for that same task.
+  if [ -n "$task" ] && [ "$task" != - ] \
+      && [ "$task" != "$(_session_continue_task "$want_kind" "$want_key" | tr -d '\n')" ]; then
+    return 0
+  fi
   printf 'sid=%s\nhead=%s\nwall=%s\ntry=%s\nlog=%s\noutcome=%s\nproductive=%s\nleft=%s\n' \
     "$sid" "$head" "$wall" "$try" "$logb" "$outcome" "$productive" "$survivor_count"
 }
@@ -807,9 +814,14 @@ _session_resume_record() {
     fi
   fi
   case "$wall" in '' | *[!0-9]*) wall=0 ;; esac
-  printf 'kind=%s\nkey=%s\nsid=%s\nhead=%s\nwall=%s\ntry=%s\nlog=%s\noutcome=%s\nproductive=%s\nleft=%s\n' \
+  # `task=` is the work the killed session was on (the resume set, the PR
+  # set, a `repo#num`), so a later dispatch on OTHER work never resumes this
+  # transcript into it — the same rule _session_continue_task applies to
+  # continuation. `-` when the lane names no task.
+  printf 'kind=%s\nkey=%s\nsid=%s\nhead=%s\nwall=%s\ntry=%s\nlog=%s\noutcome=%s\nproductive=%s\nleft=%s\ntask=%s\n' \
     "$kind" "$key" "$record_sid" "$(_session_head "$dir")" "$wall" \
     "$_SESSION_TRY" "$logb" "$verdict" "$productive" "$survivor_count" \
+    "$(_session_continue_task "$kind" "$key" | tr -d '\n')" \
     >"$state" 2>/dev/null || true
   return 0
 }

@@ -887,6 +887,20 @@ sid_plan_verdict() ( # sid_plan_verdict none|both
 )
 t sid-the-gate-itself-refuses-without-the-resume-hook no "$(sid_plan_verdict none)"
 t sid-the-gate-resumes-when-only-the-hook-was-missing yes "$(sid_plan_verdict both)"
+# The stub names the task the killed session was on; a dispatch for other
+# work never resumes it (#763 re-review: a review of PR A resumed into PR B).
+sid_plan_task() ( # sid_plan_task STUB-TASK DISPATCH-TASK
+  local stub="$SID_PLAN_BOX/.session-resume.build.fixture_plan"
+  printf 'kind=build\nkey=fixture/plan\nsid=%s\nhead=%s\nwall=1\ntry=0\nlog=14\noutcome=TIMEOUT\nproductive=yes\nleft=0\ntask=%s\n' \
+    "$(_session_mint_sid)" "$(git -C "$SID_PLAN_BOX/work_dir.dot space" rev-parse HEAD)" "$1" >"$stub"
+  DUTY_DIR="$SID_PLAN_BOX"
+  eval 'bot_cli_resume_args() { BOT_CLI_RESUME_ARGS=(--resume "$1"); }'
+  SESSION_TASK="$2" _session_resume_plan build fixture/plan "$SID_PLAN_BOX/work_dir.dot space"
+  printf '%s' "$_SESSION_RESUMED"
+)
+t sid-a-stub-resumes-into-its-own-task yes "$(sid_plan_task o/r#1 o/r#1)"
+t sid-a-stub-never-resumes-into-another-task no "$(sid_plan_task o/r#1 o/r#2)"
+t sid-a-stub-with-no-task-resumes-as-before yes "$(sid_plan_task - '')"
 
 # --- a stub that is not one is absent, never resumable -------------------
 sid_corrupt_case() { # sid_corrupt_case BOX MUTATION...
@@ -980,6 +994,8 @@ sid_record_says() ( # sid_record_says RC VERDICT [STALE] — WROTE | deleted
 t sid-a-timeout-writes-the-stub WROTE "$(sid_record_says 124 TIMEOUT)"
 t sid-a-memory-kill-at-124-writes-the-stub WROTE "$(sid_record_says 124 MEMORY)"
 t sid-an-ordinary-end-deletes-a-stale-stub deleted "$(sid_record_says 0 ok stale)"
+# The stub names the task the killed session was on (#763 re-review).
+t sid-the-record-names-its-task 1 "$(SESSION_TASK=o/r#3 sid_record_says 124 TIMEOUT >/dev/null; grep -c '^task=o/r#3$' "$TMP/sid-record/.session-resume.build.fixture_rec")"
 
 # --- two keys, one filename: the tuple decides, never the path -----------
 #

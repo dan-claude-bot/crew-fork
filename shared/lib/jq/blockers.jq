@@ -35,7 +35,8 @@
 # bare alternative stays keyed by its number alone: a local blocker that is
 # still open must never be captured with its "#" and so read "OPEN" (#632).
 def blockers:
-  gsub("\\((?<p>[^()]*)\\)"; "(" + (.p | gsub("[.;](?=\\s|$)"; ",")) + ")")
+  def mask: if test("\\([^()]*\\)") then gsub("\\((?<p>[^()]*)\\)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]") | mask else . end; mask
+  | gsub("\\((?<p>[^()\\n]*)(?=\\n|$)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]")
   | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
   | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
 [ .[]

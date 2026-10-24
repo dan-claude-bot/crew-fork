@@ -381,7 +381,14 @@ if [ "${PROBE_FULL:-0}" = 1 ]; then
        && [ "$(tail -c1 "$DUTY_DIR/duty.log" 2>/dev/null | wc -l)" -eq 0 ]; then echo; fi
   fi
   echo "::fileend"
-  # The rotated log, whole, on a full pull: the lines written between the
-  # last pull and the rotation live there, SESSION END rows included.
-  [ ! -r "$DUTY_DIR/duty.log.1" ] || probe_file duty.log.1 "$DUTY_DIR/duty.log.1"
+  # The rotated log, whole, ONCE per rotation: the lines written between the
+  # last pull and the rotation live there, SESSION END rows included. Its
+  # size+mtime is the mark; the host says which mark it already holds
+  # (PROBE_LOG1_SEEN) and the file crosses again only when the mark moved —
+  # never up to 5 MB on every poll until the next rotation.
+  if [ -r "$DUTY_DIR/duty.log.1" ]; then
+    log1_mark="$(stat -c '%s.%Y' "$DUTY_DIR/duty.log.1" 2>/dev/null || echo 0.0)"
+    emit log1mark "$log1_mark"
+    [ "$log1_mark" = "${PROBE_LOG1_SEEN:-}" ] || probe_file duty.log.1 "$DUTY_DIR/duty.log.1"
+  fi
 fi

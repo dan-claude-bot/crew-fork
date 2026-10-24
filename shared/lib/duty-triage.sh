@@ -65,8 +65,9 @@ _triage_graph_edges() {  # _triage_graph_edges REPO ISSUES_JSON
     # Keep byte-identical with lib/jq/blockers.jq: signal (e) and signal (f)
     # deliberately recognize the same declaration grammar.
     def blockers:
-      gsub("\\((?<p>[^()]*)\\)"; "(" + (.p | gsub("[.;](?=\\s|$)"; ",")) + ")")
-  | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
+      def mask: if test("\\([^()]*\\)") then gsub("\\((?<p>[^()]*)\\)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]") | mask else . end; mask
+      | gsub("\\((?<p>[^()\\n]*)(?=\\n|$)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]")
+      | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
       | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
     [ .[] as $issue
       | (($issue.body // "") | blockers[]) as $predecessor

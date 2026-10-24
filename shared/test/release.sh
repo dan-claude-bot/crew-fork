@@ -63,7 +63,7 @@ gh() {
       printf '%s\n' "${GH_PRS:-}" | awk 'NF' | jq -Rn '[inputs | split(" ") | {number: (.[0]|tonumber), author: {login: .[1]}, headRefName: .[2]}]' ;;
     "pr view"*"--json state,mergedAt"*)
       printf '%s\n' "${GH_PR_STATE:-OPEN }" ;;
-    "pr view"*"--json commits"*)
+    "api graphql"*"commits(first:100)"*)
       printf '%s\n' "${GH_PR_AUTHORS:-dan-claude-bot}" ;;
     "pr close"*)
       return "${GH_CLOSE_RC:-0}" ;;
@@ -87,6 +87,9 @@ gh() {
 }
 SESSION_LOG="$TMP/session"
 run_session() { # kind key dir tmo prompt
+  # A lane that refuses (budget spent, breaker tripped) returns 0 with
+  # RUN_SESSION_RC=75 and no session ran — the real run_session's shape.
+  if [ -n "${SIM_REFUSE:-}" ]; then RUN_SESSION_RC=75; return 0; fi
   printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >>"$SESSION_LOG"
   printf '%s' "$5" >"$TMP/prompt"
   # The session's product, when the case says it opens one: a fixed listing,
@@ -150,6 +153,11 @@ GH_CI=red;     t ci-a-failed-check-reads-red red "$(_release_ci acme/site "$REAR
 GH_CI=stale;   t ci-a-stale-check-is-not-green red "$(_release_ci acme/site "$REARM_HEAD" "$CLONE")"
 GH_CI=fail;    t ci-an-unanswered-api-reads-unknown unknown "$(_release_ci acme/site "$REARM_HEAD" "$CLONE")"
 GH_CI=none;    t ci-no-runs-on-a-repo-with-workflows-is-pending pending "$(_release_ci acme/site "$REARM_HEAD" "$CLONE")"
+# ...for RELEASE_CI_GRACE_S of the head's age; past it the workflows do not run
+# on main and the head is cut as it stands (#763 re-review).
+GH_CI=none;    t ci-no-runs-inside-the-grace-is-pending pending "$(_release_ci acme/site "$REARM_HEAD" "$CLONE" 1799)"
+GH_CI=none;    t ci-no-runs-past-the-grace-is-none none "$(_release_ci acme/site "$REARM_HEAD" "$CLONE" 1800)"
+GH_CI=none;    t ci-the-grace-is-a-knob none "$(RELEASE_CI_GRACE_S=10 _release_ci acme/site "$REARM_HEAD" "$CLONE" 11)"
 GH_CI=green; GH_STATUS='failure 1'; t ci-a-failed-commit-status-is-red red "$(_release_ci acme/site "$REARM_HEAD" "$CLONE")"
 GH_STATUS='pending 2'; t ci-a-pending-commit-status-is-pending pending "$(_release_ci acme/site "$REARM_HEAD" "$CLONE")"
 GH_STATUS='success 0'
@@ -290,7 +298,11 @@ HEAD5="$(git -C "$ORIGIN" rev-parse HEAD)"
 : >"$SESSION_LOG"; : >"$GH_CALLS"
 OUT="$(GH_PRS="93 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-stale-cut-is-withdrawn 1 "$(grep -c "release: acme/site#93 withdrawn (release/site-2.1.46) — main moved 1 merge(s) past ${HEAD4:0:7}; the new head is cut next tick" <<<"$OUT")"
-t withdrawal-checks-whose-commits-they-are 1 "$(grep -c '^GH pr view 93 -R acme/site --json commits' "$GH_CALLS")"
+t withdrawal-checks-whose-commits-they-are 1 "$(grep -Fc -- '-F num=93 --jq [.data.repository.pullRequest.commits.nodes[].commit.author.user.login' "$GH_CALLS")"
+# By the GIT AUTHOR's login (#763 re-review): `gh pr view --json commits` lists
+# the Co-Authored-By trailers as authors too, so an engine commit carrying one
+# never read as the engine's and no stale cut was ever withdrawn.
+t withdrawal-reads-the-git-author-not-the-trailers 1 "$(grep -Fc 'commits(first:100){nodes{commit{author{user{login}}}}}' "$GH_CALLS")"
 t withdrawal-closes-the-pr-and-its-branch 1 "$(grep -c '^GH pr close 93 -R acme/site --delete-branch --comment Withdrawn by dan-claude-bot: main moved past this cut' "$GH_CALLS")"
 t withdrawal-buys-nothing-this-tick 0 "$(sessions)"
 t withdrawal-forgets-the-cut 0 "$(cuts)"
@@ -330,6 +342,20 @@ t at-the-cap-the-tried-file-is-gone 0 "$(find "$DUTY_DIR" -maxdepth 1 -name '.re
 : >"$SESSION_LOG"
 OUT="$(SIM_PR_AFTER="" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t past-the-cap-the-next-tick-buys-nothing 0 "$(sessions)"
+# A session the LANE refused never ran, so it is not a try (#763 re-review):
+# two refused ticks — a spent budget, a vendor outage — must not refuse the
+# track and lose the cut until another merge lands.
+rel_reset
+printf 'r\n' >"$ORIGIN/apps/site/r.txt"; gq add -A; gq commit -q -m "feat(site): r (#9)"
+OUT="$(SIM_REFUSE=1 GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-refused-session-is-said-as-the-lanes 1 "$(grep -c 'release: acme/site — the session was refused by its lane (budget or breaker); not a try, the cut waits for the lane' <<<"$OUT")"
+t a-refused-session-is-not-a-try 0 "$(find "$DUTY_DIR" -maxdepth 1 -name '.release-tried-*' | wc -l | tr -d ' ')"
+OUT="$(SIM_REFUSE=1 GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+OUT="$(SIM_REFUSE=1 GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t three-refused-ticks-refuse-nothing 0 "$([ -f "$DUTY_DIR/.seen-release" ] && grep -c . "$DUTY_DIR/.seen-release" || echo 0)"
+: >"$SESSION_LOG"
+OUT="$(SIM_PR_AFTER=auto GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t the-lane-back-the-cut-is-bought 1 "$(sessions)"
 
 # ── two AUTO tracks in one repository keep separate memory ──────────────────
 printf 'admin-1\n' >"$ORIGIN/apps/admin/a.txt"; printf -- '- A (#8).\n' >"$ORIGIN/apps/admin/changelog.d/8.md"; gq add -A; gq commit -q -m "feat(admin): a (#8)"
@@ -398,6 +424,7 @@ DEFAULTS="$SHARED/conf/fleet.defaults.conf"
 t defaults-ship-no-track 1 "$(grep -c '^RELEASE_TRACKS=""$' "$DEFAULTS")"
 t defaults-quiet-window-matches-the-module 1 "$(grep -c "^RELEASE_QUIET_S=$RELEASE_QUIET_S_DEFAULT\$" "$DEFAULTS")"
 t defaults-try-cap-matches-the-module 1 "$(grep -c "^RELEASE_MAX_TRIES=$RELEASE_MAX_TRIES_DEFAULT\$" "$DEFAULTS")"
+t defaults-ci-grace-matches-the-module 1 "$(grep -c "^RELEASE_CI_GRACE_S=$RELEASE_CI_GRACE_S_DEFAULT\$" "$DEFAULTS")"
 t defaults-ceremony-repo-matches-the-module 1 "$(grep -c "^RELEASE_CEREMONY_REPO=\"$RELEASE_CEREMONY_REPO_DEFAULT\"\$" "$DEFAULTS")"
 t defaults-name-the-release-label 1 "$(grep -c '^LABEL_RELEASE="release"$' "$DEFAULTS")"
 t example-conf-shows-the-site-tracks-commented 1 "$(grep -c '^# RELEASE_TRACKS="heavy-duty/la-familia-site:apps/site:site- heavy-duty/la-familia-site:apps/admin:admin-:hold"$' "$ROOT/examples/fleet.conf")"

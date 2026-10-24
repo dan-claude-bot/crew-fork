@@ -226,8 +226,10 @@ print(c.execute("SELECT content FROM state_files WHERE box=\"alpha\" AND name=\"
       "$ST_TMP/rec-full.txt" \
     | awk 'BEGIN{skip=0} /^::filestart \.session-terminal\.review$/{skip=1} skip&&/^::fileend$/{skip=0; next} !skip'
 } >"$ST_TMP/rec-later.txt"
-t "ledger: a later pull advances an entry and never regresses one" \
-  "crew#1/2026-10-01T00:00:00Z crew#2/2026-10-05T00:00:00Z" \
+# The box's line is the truth, forward or back: field 2 is a timestamp here
+# but a digest in .seen-hygiene and a state in .seen-graph (#763 re-review).
+t "ledger: a later full pull is the box's line, whichever way field 2 moved" \
+  "crew#1/2026-09-01T00:00:00Z crew#2/2026-10-05T00:00:00Z" \
   "$(ST_REC="$ST_TMP/rec-later.txt" st_py "$ST_B" '
 import os
 from floor import store
@@ -536,6 +538,48 @@ from floor import store
 c = store.connect(readonly=True)
 print(c.execute("SELECT count(*) FROM ledger WHERE box=\"alpha\" AND name=\".suppressed-review\"").fetchone()[0])
 ')"
+# Field 2 is not a timestamp everywhere: .seen-hygiene carries a digest,
+# .seen-graph a state. The box's line replaces the stored one on a full pull,
+# so a digest that sorts lower lands and OPEN gives way to CLOSED.
+st_rec() { # NAME LINE — a minimal full record carrying one ledger line
+  printf '::engine 9\n::logstart\n::logend\n::statefiles %s\n::filestart %s\n%s\n::fileend\n' "$1" "$1" "$2"
+}
+st_rec .seen-hygiene 'o/r 9876-100 x' >"$ST_TMP/rec-f2a.txt"; st_rec .seen-hygiene 'o/r 1234-100 y' >"$ST_TMP/rec-f2b.txt"
+st_rec .seen-graph 'o/r#1#o/r#2 OPEN' >"$ST_TMP/rec-f2c.txt"; st_rec .seen-graph 'o/r#1#o/r#2 CLOSED' >"$ST_TMP/rec-f2d.txt"
+ST_F2="$ST_TMP/f2.sqlite"
+st_py "$ST_F2" 'from floor import store; store.init()' >/dev/null
+for f in rec-f2a rec-f2b rec-f2c rec-f2d; do
+  ST_REC="$ST_TMP/$f.txt" st_py "$ST_F2" '
+import os
+from floor import store
+store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
+' >/dev/null
+done
+t "ledger: a hygiene digest that sorts lower still replaces the stored one" "1234-100 y" \
+  "$(st_py "$ST_F2" '
+from floor import store
+c = store.connect(readonly=True)
+r = c.execute("SELECT ts, rest FROM ledger WHERE box=\"alpha\" AND name=\".seen-hygiene\"").fetchone()
+print(r["ts"], r["rest"])
+')"
+t "ledger: an edge that closed is CLOSED in the store" CLOSED \
+  "$(st_py "$ST_F2" '
+from floor import store
+c = store.connect(readonly=True)
+print(c.execute("SELECT ts FROM ledger WHERE box=\"alpha\" AND name=\".seen-graph\"").fetchone()["ts"])
+')"
+# The rotated log crosses once per rotation: its mark is kept, handed to the
+# next probe as PROBE_LOG1_SEEN, and the file is not re-landed on every poll.
+printf '::engine 9\n::logstart\n::logend\n::statefiles\n::log1mark 4096.1700000000\n::filestart duty.log.1\n2026-10-01T00:00:00Z duty run start\n::fileend\n' >"$ST_TMP/rec-log1.txt"
+ST_REC="$ST_TMP/rec-log1.txt" st_py "$ST_F2" '
+import os
+from floor import store
+store.ingest_record("alpha", open(os.environ["ST_REC"]).read())
+' >/dev/null
+t "log.1: the mark of the rotated log landed is remembered for the next probe" "4096.1700000000" \
+  "$(st_py "$ST_F2" 'from floor import store; print(store.probe_env("alpha").get("PROBE_LOG1_SEEN", ""))')"
+t "log.1: a box whose rotated log never crossed is asked for it whole" "" \
+  "$(st_py "$ST_F2" 'from floor import store; print(store.probe_env("nobody").get("PROBE_LOG1_SEEN", ""))')"
 t "reader: a read-only open never creates a store" "no-store absent" \
   "$(st_py "$ST_TMP/never.sqlite" '
 import os

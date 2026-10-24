@@ -7374,6 +7374,14 @@ t blockers-a-semicolon-outside-parentheses-still-ends-it '["5"]' \
   "$(bjq_set 'Blocked by #5; #7 is unrelated.')"
 t blockers-a-dotted-repository-inside-parentheses-survives '["foo.js/bar#3","9"]' \
   "$(bjq_set 'Blocked by foo.js/bar#3 (upstream) and #9.')"
+# Every level of parentheses, and a parenthesis never closed: the aside runs
+# to the end of its line (#763 re-review).
+t blockers-nested-parentheses-do-not-end-the-clause '["5","7"]' \
+  "$(bjq_set 'Blocked by #5 (see (the step); logs) and #7.')"
+t blockers-an-unclosed-parenthesis-runs-to-the-end-of-its-line '["5","7"]' \
+  "$(bjq_set 'Blocked by #5 (the step; see logs and #7.')"
+t blockers-an-unclosed-parenthesis-does-not-swallow-the-next-line '["5"]' \
+  "$(bjq_set $'Blocked by #5 (the step; see logs.\n\nUnrelated: #7 is closed.')"
 # shellcheck disable=SC2016  # the backticks are the fixture body's own prose
 t blockers-live-clause-beside-quote '["5"]' \
   "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"
@@ -7414,7 +7422,7 @@ CJ_NO_SIG='{"sha":"","createdAt":""}'
 CJ_ME="builder-me"
 CJ_MARK="🤝 handed off at head"   # MARK_HANDOFF, the wire string (fleet.defaults.conf)
 cj() {  # cj [signal-json] [panel-json] [human]
-  jq -r --argjson panel "${2:-$PANEL}" --arg me "$CJ_ME" --arg mark_handoff "$CJ_MARK" \
+  jq -r --argjson panel "${2:-$PANEL}" --argjson roster "${4:-${2:-$PANEL}}" --arg me "$CJ_ME" --arg mark_handoff "$CJ_MARK" \
     --arg human "${3-$CJ_HUMAN}" --argjson signal "${1:-$CJ_NO_SIG}" -f "$CJQ"
 }
 
@@ -8777,7 +8785,7 @@ CROSS_PR="$(jq -cn --argjson reviews "$CEREMONY_207" '{
   }}}
 }')"
 t round-siblings-addressing true \
-  "$(printf '%s' "$CROSS_PR" | jq -r --argjson panel '["p1","p2","p3"]' \
+  "$(printf '%s' "$CROSS_PR" | jq -r --argjson panel '["p1","p2","p3"]' --argjson roster '["p1","p2","p3"]' \
     --arg addressing state:addressing -f "$SHARED/lib/jq/addressing.jq")"
 t round-siblings-round-owed owed \
   "$(hc '["p1","p2","p3"]' "$(mk_prc "$CHK_OK" "$CEREMONY_207")" | cut -f5)"
@@ -8812,7 +8820,7 @@ t round-siblings-281-requests-none "" \
 t round-siblings-281-round-owed owed \
   "$(hc "$PR281_PANEL" "$(mk_prc "$CHK_OK" "$PR281_REVIEWS")" | cut -f5)"
 t round-siblings-281-addressing true \
-  "$(printf '%s' "$PR281_GQL" | jq -r --argjson panel "$PR281_PANEL" \
+  "$(printf '%s' "$PR281_GQL" | jq -r --argjson panel "$PR281_PANEL" --argjson roster "$PR281_PANEL" \
     --arg addressing state:addressing -f "$SHARED/lib/jq/addressing.jq")"
 t round-siblings-281-converged false \
   "$(printf '%s' "$PR281_GQL" | cj "$PR281_SIG" "$PR281_PANEL")"
@@ -8824,7 +8832,7 @@ PR281_MID="$(printf '%s' "$PR281_GQL" \
   | jq -c '.data.repository.pullRequest.reviewRequests.nodes
              = [{requestedReviewer:{login:"p2"}}]')"
 t round-siblings-281-mid-round-addressing false \
-  "$(printf '%s' "$PR281_MID" | jq -r --argjson panel "$PR281_PANEL" \
+  "$(printf '%s' "$PR281_MID" | jq -r --argjson panel "$PR281_PANEL" --argjson roster "$PR281_PANEL" \
     --arg addressing state:addressing -f "$SHARED/lib/jq/addressing.jq")"
 t round-siblings-281-mid-round-requests-none "" \
   "$(mk_rp abc1234 '["p2"]' "$PR281_REVIEWS" '[]' \

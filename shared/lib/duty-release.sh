@@ -37,6 +37,7 @@
 
 RELEASE_QUIET_S_DEFAULT=900
 RELEASE_MAX_TRIES_DEFAULT=2
+RELEASE_CI_GRACE_S_DEFAULT=1800
 RELEASE_CEREMONY_REPO_DEFAULT="heavy-duty/ceremony"
 
 # _release_slug REPO PREFIX — the per-track file suffix.
@@ -161,12 +162,14 @@ _release_fragments() {
     | grep -vx 'README.md' | grep -vx 'shape'
 }
 
-# _release_ci REPO SHA DIR — green | pending | red | unknown, from EVERY
-# check run at SHA (paginated) and the commit's combined status. A run not
-# yet completed is pending; failure, timed out, cancelled, action required
-# and STALE are red (a stale run says nothing about this tree, so it is not
-# green). No run and no status at all is green only on a repository with no
-# workflows on main — anywhere else it means the runs have not reported yet.
+# _release_ci REPO SHA DIR [AGE] — green | none | pending | red | unknown,
+# from EVERY check run at SHA (paginated) and the commit's combined status. A
+# run not yet completed is pending; failure, timed out, cancelled, action
+# required and STALE are red (a stale run says nothing about this tree, so it
+# is not green). No run and no status at all is green on a repository with no
+# workflows on main; with workflows it means the runs have not reported yet
+# (pending) — until the head is AGE seconds old past RELEASE_CI_GRACE_S, when
+# it means the workflows do not run on main at all (`none`; the caller cuts).
 # Unknown (an API that did not answer) refuses like red: a cut is bought on
 # evidence, never on its absence.
 _release_ci() {
@@ -187,8 +190,12 @@ _release_ci() {
     "pending "*) case "${statuses#pending }" in 0) ;; *) [ "$verdict" = red ] && echo red || echo pending; return 0 ;; esac ;;
   esac
   if [ "$n_runs" -eq 0 ] && [ "${statuses#* }" = 0 ]; then
+    # Workflows exist and none ran on this head: a `pull_request`-only or
+    # path-filtered CI never will, so "pending" would hold the track forever.
+    # The head is given RELEASE_CI_GRACE_S to start a run; past that, no run
+    # is the repository's answer and the head is cut as it stands (`none`).
     if [ -n "$(git -C "$dir" ls-tree --name-only origin/main:.github/workflows 2>/dev/null)" ]; then
-      echo pending
+      if [ "${4:-0}" -ge "${RELEASE_CI_GRACE_S:-$RELEASE_CI_GRACE_S_DEFAULT}" ] 2>/dev/null; then echo none; else echo pending; fi
     else
       echo green
     fi
@@ -242,9 +249,19 @@ _release_refuse() {
 # cut is the engine's: a branch somebody else pushed to is not withdrawn (its
 # branch is not deleted, its PR not closed) — it is held, and said.
 _release_mine() {
-  local authors
-  authors="$(gh pr view "$3" -R "$2" --json commits \
-    --jq '[.commits[].authors[]?.login // "unknown"] | unique | join(" ")' 2>/dev/null)" || return 1
+  local authors owner name
+  owner="${2%%/*}"; name="${2##*/}"
+  # The GIT AUTHOR of every commit, read through GraphQL: `gh pr view --json
+  # commits` lists `authors`, which GitHub fills from the Co-Authored-By
+  # trailers too, and the engine's commits carry one — so that reading never
+  # equalled $ME and no engine cut was ever withdrawn. An author GitHub cannot
+  # resolve to a user reads `unknown`, which is not $ME: held, and said.
+  # shellcheck disable=SC2016  # GraphQL's own $variables, bound with -f/-F
+  authors="$(gh api graphql -f query='query($owner:String!,$name:String!,$num:Int!){
+    repository(owner:$owner,name:$name){ pullRequest(number:$num){
+      commits(first:100){nodes{commit{author{user{login}}}}}
+    } } }' -f owner="$owner" -f name="$name" -F num="$3" \
+    --jq '[.data.repository.pullRequest.commits.nodes[].commit.author.user.login // "unknown"] | unique | join(" ")' 2>/dev/null)" || return 1
   [ -n "$authors" ] || return 1
   [ "$authors" = "$ME" ]
 }
@@ -328,6 +345,9 @@ _release_gate() {
   shape=final; case "$RELEASE_VERSION" in *-rc[0-9]*) shape=any ;; esac
   RELEASE_LAST_TAG="$(_release_last_tag "$dir" "$prefix" "$shape")"
   if [ -z "$RELEASE_LAST_TAG" ]; then
+    if [ "$shape" = final ] && [ -n "$(_release_last_tag "$dir" "$prefix" any)" ]; then
+      log "no release duty: $name — only candidate tags under the prefix ($(_release_last_tag "$dir" "$prefix" any)); the first final is the operator's (the known first-release edge)"; return 1
+    fi
     log "no release duty: $name — no release tag under the prefix yet; the first cut is the operator's (the known first-release edge)"; return 1
   fi
   RELEASE_MERGES="$(_release_merges "$dir" "$RELEASE_LAST_TAG" "$path")"
@@ -367,9 +387,10 @@ _release_gate() {
     _release_due_write "$slug" "$repo" $((now + quiet - age))
     log "no release duty: $name — main moved ${age}s ago, under the ${quiet}s quiet window; due in $((quiet - age))s"; return 1
   fi
-  ci="$(_release_ci "$repo" "$head" "$dir")"
+  ci="$(_release_ci "$repo" "$head" "$dir" "$age")"
   case "$ci" in
     green) ;;
+    none) log "release: $name — no CI ran at ${head:0:7} in ${age}s (the repository's workflows do not run on main); the head is cut as it stands" ;;
     pending) log "no release duty: $name — CI at ${head:0:7} is still running; a cut is bought on a green head"; return 1 ;;
     *) log "no release duty: $name — CI at ${head:0:7} is $ci; a cut is bought on a green head"; return 1 ;;
   esac
@@ -390,6 +411,14 @@ _release_gate() {
 # tick cuts it again until RELEASE_MAX_TRIES.
 _release_after() {
   local slug="$1" repo="$2" path="$3" branch="$4" head="$5" track_id="$6" num tried tried_n=0
+  # A session the lane REFUSED — its budget spent, its terminal breaker tripped
+  # — never ran (run_session returns with RUN_SESSION_RC=75), so it is not a
+  # try: counting it would refuse the track after two quiet refusals and lose
+  # the cut until another merge lands. The lane's own veto says why, once.
+  if [ "${RUN_SESSION_RC:-1}" = 75 ]; then
+    log "release: $repo — the session was refused by its lane (budget or breaker); not a try, the cut waits for the lane"
+    return 1
+  fi
   num="$(gh pr list -R "$repo" --state open --label "${LABEL_RELEASE:-release}" --limit 20 \
     --json number,author,headRefName 2>/dev/null \
     | jq -r --arg b "$branch" --arg me "$ME" \
@@ -434,6 +463,7 @@ duty_release() {
     [ -n "$fragments" ] || fragments="none (a candidate is tag-only)"
     wt_rules="$(render_prompt fragment-wt-rules.txt WT_DIR="$TREES_DIR/$slug" ME="$ME" NAME="$name")"
     log "release: $repo — cutting ${prefix}${RELEASE_VERSION} from ${RELEASE_MAIN_HEAD:0:7} (since $RELEASE_LAST_TAG; ceremony@$RELEASE_PIN)"
+    RUN_SESSION_RC=1
     run_session release "$repo" "$dir" "${TIMEOUT_RELEASE:-2400}" \
       "$(render_prompt release.txt ME="$ME" REPO="$repo" NAME="$name" TRACK_PATH="$path" TAG_PREFIX="$prefix" VERSION="$RELEASE_VERSION" LAST_TAG="$RELEASE_LAST_TAG" MAIN_HEAD="$RELEASE_MAIN_HEAD" MERGES="$merges" FRAGMENTS="$fragments" CEREMONY_PIN="$RELEASE_PIN" CEREMONY_TREE="$RELEASE_TREE" BRANCH="$branch" LABEL_RELEASE="${LABEL_RELEASE:-release}" WT_RULES="$wt_rules")"
     _release_after "$tslug" "$repo" "$path" "$branch" "$RELEASE_MAIN_HEAD" "$RELEASE_TRACK_ID" || true

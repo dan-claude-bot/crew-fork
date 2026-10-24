@@ -3639,7 +3639,17 @@ cut_box() { # NAME
       fi
       replaced=1 ;;
   esac
+  # THE CHECKPOINT CARRIES `.memory-pending` (#763 review). A box restored
+  # from it boots with the marker, and duty.sh holds every tick under its own
+  # lock until the host writes the memory back (reset_restore_memory removes
+  # the marker in the same locked step) — so the box's `*/5` cron can never
+  # win the lock first and run a session with no ledgers, and the write-back
+  # never lands over what such a session wrote. Touched into the LIVE box for
+  # exactly the snapshot's duration, and removed on every path out of it.
+  bxn "$name" 'mkdir -p ~/duty && touch ~/duty/.memory-pending' >/dev/null 2>&1 \
+    || echo "  $name: NOTE — .memory-pending could not be written; a box restored from this checkpoint ticks before its memory is back (shared/docs/host-maintenance.md)"
   if ! box snapshot "$name" "$RESET_LABEL" </dev/null >/dev/null; then
+    bxn "$name" 'rm -f ~/duty/.memory-pending' >/dev/null 2>&1 || true
     # Said loudly, and said ACCURATELY. When the delete above landed, this box
     # is left with no checkpoint at all — exactly the state D4 refuses on weeks
     # later with nobody knowing why — and when it did not, the old one is still
@@ -3652,6 +3662,8 @@ cut_box() { # NAME
     fi
     return 1
   fi
+  bxn "$name" 'rm -f ~/duty/.memory-pending' >/dev/null 2>&1 \
+    || echo "  $name: NOTE — .memory-pending is still set on the live box; remove it with: box exec $name -- rm -f duty/.memory-pending"
   if ! checkpoint_record "$name" "$ver"; then
     echo "  $name: FAILED — $RESET_LABEL was cut but its version could not be recorded at $(checkpoint_file "$name"); re-cut once the path is writable"
     return 1
@@ -3665,7 +3677,7 @@ cut_box() { # NAME
 # reason: a stop that does not take must never be followed by anything, and
 # here "anything" includes rolling a running box's disk out from under it.
 restore_box() { # NAME
-  local name="$1" recorded stale live state
+  local name="$1" recorded stale live state why pstate
   case "$(has_reset_checkpoint "$name"; echo $?)" in
     2)
       echo "  $name: REFUSED — could not read its snapshot labels; a reset is not performed on an unverified box"
@@ -3757,8 +3769,50 @@ restore_box() { # NAME
     echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name"
     return 1
   fi
-  reset_restore_memory "$name"
-  echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started"
+  if ! reset_restore_memory "$name"; then
+    echo "  $name: FAILED — restored to $RESET_LABEL and started, but its memory did not come back from the store (above); its ticks run without it once the box's own grace passes (MEMORY_PENDING_GRACE_S)"
+    return 1
+  fi
+  # THE PAUSE AND THE CAP ARE KEPT (#763 review). The restored disk's cron is
+  # live, and the box had to be up for its memory to be written — but a
+  # paused box is the host's to keep down, and a box past FLEET_MAX_RUNNING
+  # is the host tick's to start when there is work. Both go back down here,
+  # the paused one with its crontab paused again first; a duty that already
+  # holds the lock is never cut short — the host tick stops it once idle.
+  why="$(reset_settle_why "$name")"
+  if [ -z "$why" ]; then
+    echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started"
+    return 0
+  fi
+  read -r pstate _ <<<"$(drain_probe "$name")"
+  if [ "$pstate" != idle ]; then
+    echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is ${why%%:*}, but a duty already holds its lock ($pstate) — the host tick stops it once idle"
+    return 0
+  fi
+  [ "$why" != paused ] || bxn "$name" "$(host_pause_sh)" >/dev/null 2>&1 || true
+  if ! box down "$name" </dev/null; then
+    echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its ${why%%:*} state asks for FAILED — the host tick will"
+    return 1
+  fi
+  case "$why" in
+    paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — it is paused" ;;
+    *) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — ${why#held:} of $FLEET_MAX_RUNNING boxes running; the host tick starts it when there is work" ;;
+  esac
+}
+
+# reset_settle_why NAME — why a freshly restored box goes back down: `paused`
+# (the host's marker stands), `held:<n>` (n other unpaused roster boxes run,
+# the cap is full), or nothing (it stays up).
+reset_settle_why() {
+  local name="$1" other running=0
+  if [ -e "$(tick_paused_file "$name")" ]; then echo paused; return 0; fi
+  while read -r other _; do
+    [ -n "$other" ] && [ "$other" != "$name" ] || continue
+    [ ! -e "$(tick_paused_file "$other")" ] || continue
+    [ "$(box_state "$other")" = running ] && running=$((running + 1))
+  done <<<"$(read_roster)"
+  [ "$running" -lt "${FLEET_MAX_RUNNING:-2}" ] || echo "held:$running"
+  return 0
 }
 
 # reset_restore_memory NAME — the member's memory back onto the restored
@@ -3777,9 +3831,13 @@ box_memory_of() {
 reset_restore_memory() {
   local name="$1" dir f base count=0 out
   dir="$(mktemp -d)"
-  if ! store_py export --box "$name" --dir "$dir" >/dev/null 2>&1; then
-    echo "  $name: no memory in the store to restore (first reset, or never drained)"
-    rm -rf "$dir"; return 0
+  # A store that cannot be read is a FAILURE, not "no memory": the box has
+  # ledgers in there and would run without them. A store that holds nothing
+  # for the box (first reset, never drained) is the honest nothing, and the
+  # box's `.memory-pending` is lifted so its ticks run.
+  if ! out="$(store_py export --box "$name" --dir "$dir" 2>&1)"; then
+    echo "  $name: memory restore FAILED — the store could not be read ($(printf '%s' "$out" | tail -1)); the box ticks without its ledgers once its grace passes"
+    rm -rf "$dir"; return 1
   fi
   for f in "$dir"/.* "$dir"/*; do
     [ -f "$f" ] || continue
@@ -3788,8 +3846,11 @@ reset_restore_memory() {
     count=$((count + 1))
   done
   if [ "$count" -eq 0 ]; then
-    echo "  $name: the store holds no memory file to restore"
-    rm -rf "$dir"; return 0
+    echo "  $name: the store holds no memory file to restore (first reset, or never drained)"
+    rm -rf "$dir"
+    bxn "$name" 'rm -f ~/duty/.memory-pending' >/dev/null 2>&1 \
+      || echo "  $name: NOTE — .memory-pending could not be lifted; the box ticks once its grace passes"
+    return 0
   fi
   # One archive, shipped through bxput (the stdin-shipping exec site the
   # floor's suite knows), unpacked UNDER THE DUTY LOCK: a tick that lands
@@ -3801,7 +3862,7 @@ reset_restore_memory() {
     echo "  $name: memory restore FAILED — the archive did not reach the box; its first tick runs without its ledgers"
     rm -rf "$dir" "$dir.tar"; return 1
   fi
-  out="$(bxn "$name" 'cd ~/duty && flock .duty.lock -c "tar -xf .memory-restore.tar && rm -f .memory-restore.tar" && echo restored' 2>&1 | tr -d '\r' | tail -1)"
+  out="$(bxn "$name" 'cd ~/duty && flock .duty.lock -c "tar -xf .memory-restore.tar && rm -f .memory-restore.tar .memory-pending" && echo restored' 2>&1 | tr -d '\r' | tail -1)"
   rm -rf "$dir" "$dir.tar"
   if [ "$out" != restored ]; then
     echo "  $name: memory restore FAILED — the archive did not unpack under the duty lock (${out:-no answer}); its first tick runs without its ledgers"
@@ -3860,7 +3921,7 @@ cmd_reset() {
   # --all is the ROSTER, not every box on the host — `crew upgrade --all`'s
   # rule, for its stated reason (#37): a disarmed box carrying a real identity
   # must not be rolled back by routine maintenance.
-  if [ "$all" -eq 1 ]; then mapfile -t reset_targets < <(roster_names); else reset_targets=("${named[@]}"); fi
+  if [ "$all" -eq 1 ]; then mapfile -t reset_targets < <(roster_names); RESET_ALL=1; else reset_targets=("${named[@]}"); RESET_ALL=0; fi
   host_job reset reset_run "$cut" "$force_seconds" "$force_hours" \
     ${reset_targets[@]+"${reset_targets[@]}"}
 }
@@ -3888,10 +3949,19 @@ reset_run() { # CUT FORCE_SECONDS FORCE_HOURS TARGET...
     printf ' %s' "${reset_targets[@]}"
     printf '\n'
   fi
+  # FLEET_MAX_RUNNING, for the cap a restored box is put back under.
+  tick_conf_knobs
   for name in "${reset_targets[@]}"; do
     if ! box_exists "$name"; then
       echo "  $name: not present — reset FAILED"
       failed=$((failed + 1)); failed_names="${failed_names}${failed_names:+, }$name"
+      continue
+    fi
+    # Under --all the weekly cycle leaves a paused box exactly as paused — the
+    # daily restart's rule (#759): nothing starts a paused box but `crew
+    # resume`, and a reset by name is the operator asking for this one.
+    if [ "${RESET_ALL:-0}" -eq 1 ] && [ -e "$(tick_paused_file "$name")" ]; then
+      echo "  $name: paused — left alone"
       continue
     fi
     # A STOPPED BOX REFUSES THE CUT AND NOT THE RESTORE, because only the cut
@@ -4046,16 +4116,25 @@ tick_digest_file() { # MEMBER REPO
   printf '%s/%s.%s.digest' "$(TICK_DIGEST_DIR)" "$1" "$(printf '%s' "$2" | tr '/' '_')"
 }
 tick_paused_file() { printf '%s/store/paused/%s' "$CONFIG_DIR" "$1"; }
+# tick_unreadable_count REPO INC — consecutive ticks REPO's board was
+# unreadable: INC=1 counts one more and prints the count, INC=0 clears it.
+tick_unreadable_count() {
+  local f n=0
+  f="$(TICK_DIGEST_DIR)/$(printf '%s' "$1" | tr '/' '_').unreadable"
+  if [ "$2" -eq 0 ]; then rm -f "$f"; echo 0; return 0; fi
+  n="$(cat "$f" 2>/dev/null || echo 0)"; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1)); printf '%s\n' "$n" >"$f"; echo "$n"
+}
 
 # tick_conf_knobs — the fleet's own knobs, read the way the engine layers
 # them (defaults, then fleet.conf over them), in THIS shell: these four are
 # host-side numbers and nothing else from those files is read here.
 tick_conf_knobs() {
   local line
-  for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW; do
+  for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW TICK_BLIND_TICKS; do
     eval "$line=\"\$(tick_conf_value $line)\""
   done
-  : "${FLEET_MAX_RUNNING:=2}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}"
+  : "${FLEET_MAX_RUNNING:=2}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}" "${TICK_BLIND_TICKS:=3}"
 }
 tick_conf_value() { # KEY — the last assignment wins, fleet.conf after defaults
   { sed -n "s/^$1=//p" "$CREW_ROOT/shared/conf/fleet.defaults.conf"
@@ -4105,7 +4184,7 @@ tick_wake() {
 }
 
 tick_run() { # DRY_RUN
-  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line
+  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4123,10 +4202,21 @@ tick_run() { # DRY_RUN
     [ -n "$repo" ] || continue
     [ "$blind" -eq 0 ] || break
     if ! rows="$(wake_board_rows "$repo")"; then
-      echo "  $repo: board unreadable this tick — no change assumed, and no box is stopped on a tick that could not see the board"
-      blind=1
+      # Blind for a tick or two is a hiccup; blind for TICK_BLIND_TICKS running
+      # is a repository the host cannot read (renamed, private to this login,
+      # gone), and holding every idle box up for it would keep the fleet fully
+      # up until somebody noticed. Past that count the repository is said and
+      # set aside, and the rest of the fleet converges on the boards it can see.
+      miss="$(tick_unreadable_count "$repo" 1)"
+      if [ "$miss" -ge "${TICK_BLIND_TICKS:-3}" ]; then
+        echo "  $repo: board unreadable for $miss ticks — not holding the fleet for it (a renamed or inaccessible repository: fix the registry, or the host's login)"
+      else
+        echo "  $repo: board unreadable this tick — no change assumed, and no box is stopped on a tick that could not see the board"
+        blind=1
+      fi
       continue
     fi
+    tick_unreadable_count "$repo" 0 >/dev/null
     ROWS[$repo]="$rows"
     DIGEST[$repo]="$(printf '%s\n' "$rows" | wake_digest)"
   done <<<"$(production_registry)"
@@ -4180,14 +4270,21 @@ tick_run() { # DRY_RUN
     idle=0
     if [ "$state" = running ]; then
       idle="$(bxn "$name" 'cat ~/duty/.idle-ticks 2>/dev/null' 2>/dev/null | tr -d '\r' | head -1)"
-      case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
+    else
+      # The count the box carried when it was drained and stopped: a box
+      # stopped for idleness is not started again for the same coarse reason
+      # (it would be stopped again two ticks later — a boot every ten minutes
+      # on an active board). A session resets the count; a precise reason
+      # never reads it.
+      idle="$(store_py state --box "$name" --name .idle-ticks 2>/dev/null | head -1 | tr -d '\r')"
     fi
+    case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
     # Triage's coarse `board#` reason fires on any movement at all. A triage
     # box that was woken for it IDLE_TICKS_BEFORE_STOP times and bought no
     # session each time has answered: the movement is not its work. The
     # precise reasons (an attention demand, a ready issue, a review request,
     # a due wait or cut) are never set aside this way.
-    if [ -n "$why" ] && [ "$state" = running ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] \
+    if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] \
        && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
       echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"
       why=""

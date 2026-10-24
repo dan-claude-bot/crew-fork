@@ -79,7 +79,11 @@ HT_COUNT=11
 t veto-a-budget-with-room-wakes 0 "$(wake_veto alpha "$R" | grep -c ':budget-')"
 export BUDGET_SESSIONS_BUILD=0; HT_COUNT=999
 t veto-no-ceiling-no-veto 0 "$(wake_veto alpha "$R" | grep -c ':budget-')"
-unset BUDGET_SESSIONS_BUILD BUDGET_WINDOW HT_COUNT
+# A due wait is answered by the RESUME session, so the resume lane's spent
+# budget vetoes it — otherwise a refused resume woke the box every tick.
+export BUDGET_SESSIONS_RESUME=1; HT_COUNT=1
+t veto-a-due-wait-is-vetoed-by-the-resume-lanes-budget 'veto:wait#o/r#5:budget-resume' "$(wake_veto alpha 'wait#o/r#5 -')"
+unset BUDGET_SESSIONS_BUILD BUDGET_SESSIONS_RESUME BUDGET_WINDOW HT_COUNT
 t veto-triage-board-reason-is-never-ledger-vetoed 1 "$(HT_LEDGER='o/r#12 2099-01-01T00:00:00Z' wake_veto alpha "board#o/r -" | grep -c '^board#o/r -$')"
 
 # --- the why token -----------------------------------------------------------
@@ -193,13 +197,14 @@ run_crew() { env CREW_CONFIG_DIR="$CONF" HT_STATE="$STATE" PATH="$SHIM:$PATH" ba
 capture() { OUT="$(run_crew "$@" 2>&1)"; RC=$?; }
 calls() { grep -c "^$1" "$STATE/calls" 2>/dev/null || true; }
 # A record that lands alpha's identity and an empty ledger in the store.
-ht_record() {  # ht_record <box> <login> [ledger-line]
+ht_record() {  # ht_record <box> <login> [ledger-line] [idle-ticks]
   {
     printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
     printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
     printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
-    printf '::statefiles .identity .seen-build\n::filestart .identity\n%s\n::fileend\n' "$2"
+    printf '::statefiles .identity .seen-build%s\n::filestart .identity\n%s\n::fileend\n' "${4:+ .idle-ticks}" "$2"
     printf '::filestart .seen-build\n%s\n::fileend\n' "${3:-}"
+    [ -z "${4:-}" ] || printf '::filestart .idle-ticks\n%s\n::fileend\n' "$4"
     printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
   } >"$STATE/$1.record"
   CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box "$1" <"$STATE/$1.record" >/dev/null
@@ -282,6 +287,18 @@ HT_GH_DEAD=1 capture tick
 t tick-a-logged-out-host-says-so 1 "$(grep -c 'gh is not logged in on this host' <<<"$OUT")"
 t tick-a-logged-out-host-stops-nobody 0 "$(calls 'down ')"
 t tick-a-logged-out-host-starts-nobody 0 "$(calls 'start ')"
+# A board unreadable for TICK_BLIND_TICKS running ticks is a repository the
+# host cannot read, not a hiccup: said, set aside, and the idle box is stopped
+# (two blind ticks above, this is the third; the logged-out tick read no
+# board). A readable board clears the count.
+echo running >"$STATE/beta.state"; printf '5\n' >"$STATE/beta.idle"; : >"$STATE/calls"
+capture tick
+t tick-a-board-unreadable-for-three-ticks-is-set-aside 1 "$(grep -c 'o/r: board unreadable for 3 ticks — not holding the fleet for it' <<<"$OUT")"
+t tick-a-set-aside-board-no-longer-holds-the-idle-stop 1 "$(calls 'down beta')"
+t tick-the-blind-count-is-kept 3 "$(cat "$CONF/store/wake/o_r.unreadable")"
+ht_board 'P 12 2026-10-23T12:00:00Z codex-bot 0 dan-claude-bot' '' ''
+capture tick
+t tick-a-readable-board-clears-the-blind-count no "$([ -e "$CONF/store/wake/o_r.unreadable" ] && echo yes || echo no)"
 echo stopped >"$STATE/beta.state"; rm -f "$STATE/beta.idle"
 
 # (7) a parked wait in the store wakes a stopped member when its checks conclude
@@ -389,10 +406,21 @@ capture resume alpha
 # is stopped; a precise reason is never set aside this way.
 ht_board 'I 16 2026-10-23T16:00:00Z needs-triage -' '' ''
 echo stopped >"$STATE/alpha.state"; echo running >"$STATE/gamma.state"; printf '2\n' >"$STATE/gamma.idle"
+# The record the drain lands carries the count too, as the real probe's does.
+ht_record gamma triage-bot '' 2
 rm -f "$CONF/store/wake"/gamma.* "$STATE/gamma.lock"; : >"$STATE/calls"
 capture tick
 t triage-a-board-move-that-bought-nothing-is-not-a-wake 1 "$(grep -c 'gamma: the board moved, but 2 idle ticks bought nothing for triage — not woken for it again' <<<"$OUT")"
 t triage-the-box-is-then-stopped "drain gamma|down gamma" "$(grep -E '^(drain|down) gamma' "$STATE/calls" | paste -sd'|' -)"
 t triage-no-wake-was-written 0 "$(calls 'wake gamma')"
+# ...and STAYS stopped on the next coarse move: the count the drain landed in
+# the store is read for a stopped box too, so the board moving again does not
+# boot it to be stopped two ticks later (#763 re-review: start/stop churn).
+echo stopped >"$STATE/gamma.state"
+ht_board 'I 17 2026-10-23T17:00:00Z needs-triage -' '' ''
+: >"$STATE/calls"
+capture tick
+t triage-a-stopped-box-is-not-started-for-the-same-coarse-reason 0 "$(calls 'start gamma')"
+t triage-the-stored-idle-count-is-what-says-so 1 "$(grep -c 'gamma: the board moved, but 2 idle ticks bought nothing for triage — not woken for it again' <<<"$OUT")"
 
 suite_finish

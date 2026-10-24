@@ -396,11 +396,15 @@ _redraft_authored_pr() {
   # The round is read against the panel sized for THIS head (#761): the
   # reviewers the engine asked are the ones whose verdicts close it.
   _panel_effective "$repo" "$num" "$(printf '%s' "$payload" | jq -r '.data.repository.pullRequest.headRefOid // ""' 2>/dev/null)" "$eff_panel"
+  # The whole roster rides beside the sized subset: a request still open to a
+  # reviewer outside the subset (a head requested whole under the old rule, a
+  # PR whose risk dropped) is a round still open, never a closed one.
+  local roster_panel="$eff_panel"
   eff_panel="$_PANEL_EFFECTIVE_JSON"
   redraft="$(printf '%s' "$payload" \
     | jq -c --arg addressing "$LABEL_ADDRESSING" \
         '.data.repository.pullRequest.labels.nodes |= map(select(.name != $addressing))' 2>/dev/null \
-    | jq -r --argjson panel "$eff_panel" --arg addressing "$LABEL_ADDRESSING" \
+    | jq -r --argjson panel "$eff_panel" --argjson roster "$roster_panel" --arg addressing "$LABEL_ADDRESSING" \
         -f "$DUTY_DIR/lib/jq/addressing.jq" 2>/dev/null || echo err)"
   case "$redraft" in
     true)
@@ -631,7 +635,7 @@ ROUND_CAP_NAMED="-"
 # PR that has rounds left.
 _round_cap_census() {
   local repo="$1" panel_json="$2" listing="$3"
-  local owner name num payload capjson rounds at_cap named="" items="" fresh measured
+  local owner name num payload capjson rounds at_cap named="" items="" fresh measured cap_head
   local issue record="" record_fresh
   ROUND_CAP_PRS=""
   ROUND_CAP_NAMED="-"
@@ -659,8 +663,15 @@ _round_cap_census() {
         'round-cap history exceeds its unpaginated GraphQL window'; then
       continue
     fi
+    # THE SIZED PANEL, here as at the request, the redraft and the handoff
+    # (#761): a round closes when the reviewers THIS head was asked of have all
+    # spoken, so a low-risk PR reviewed by one sized reviewer reaches the cap on
+    # that reviewer's five rounds — counted against the whole roster it never
+    # would, and the PR would cycle past five without the cut.
+    cap_head="$(printf '%s' "$payload" | jq -r '.data.repository.pullRequest.headRefOid // ""' 2>/dev/null)"
+    _panel_effective "$repo" "$num" "$cap_head" "$panel_json"
     capjson="$(printf '%s' "$payload" \
-      | jq -c -L "$DUTY_DIR/lib/jq" --argjson panel "$panel_json" \
+      | jq -c -L "$DUTY_DIR/lib/jq" --argjson panel "$_PANEL_EFFECTIVE_JSON" \
           -f "$DUTY_DIR/lib/jq/round-cap.jq" 2>/dev/null)" || capjson="" # Decision-path empty fallback: the next branch warns and excludes this PR from the destructive cap decision.
     if [ -z "$capjson" ]; then
       warn "$repo#$num: round-cap eval failed; not counted this tick"
@@ -3270,7 +3281,7 @@ _builder_repo() {
       # Against the SAME sized panel the request was made from (#761).
       _panel_effective "$R" "$N" "$(jq -r '.data.repository.pullRequest.headRefOid // ""' <<<"$pr_payload" 2>/dev/null)" "$panel_json"
       converged="$(printf '%s' "$pr_payload" \
-        | jq -r --argjson panel "$_PANEL_EFFECTIVE_JSON" --arg me "$ME" --arg mark_handoff "$MARK_HANDOFF" \
+        | jq -r --argjson panel "$_PANEL_EFFECTIVE_JSON" --argjson roster "$panel_json" --arg me "$ME" --arg mark_handoff "$MARK_HANDOFF" \
             --arg human "${FLEET_HUMAN:-}" --argjson signal "$handoff_signal" \
             -f "$DUTY_DIR/lib/jq/converged.jq" 2>/dev/null || echo err)"
       case "$converged" in

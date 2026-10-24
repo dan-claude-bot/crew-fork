@@ -38,7 +38,7 @@
 # Approvals must be AT the current head: an approval is of a specific tree.
 .data.repository.pullRequest as $pr
 | (($pr.reviewRequests.nodes | map(.requestedReviewer.login // empty)
-    | map(select(. as $l | ($panel | index($l)) != null)) | length) == 0) as $no_panel_reqs
+    | map(select(. as $l | ($roster | index($l)) != null)) | length) == 0) as $no_panel_reqs
 | ([$pr.comments.nodes[]?
      | select((.author.login // "") == $me
               and (((.body // "") | split("\n") | first) == ($mark_handoff + " " + $pr.headRefOid)))]
