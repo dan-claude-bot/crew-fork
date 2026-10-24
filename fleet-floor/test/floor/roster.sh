@@ -53,7 +53,22 @@ RS_JOURNAL="$CREW_CONFIG_DIR/.roster-journal.log"
 # Box names of its own (`rs-*`): the shared stub answers any name from the
 # fixture state, and a second collector watching `ff-idle` would deliver that
 # box's carried limit event to the shared alert channel a second time.
-printf '# the fleet, one line per box\n#   <box-name> <agent> <role> [<from-box>/<snapshot>]\n\nrs-working    claude  builder\nrs-idle       claude  reviewer\nrs-stopped    codex   triage  rs-working/armed\n' >"$RS_ROSTER"
+# Prose EVERYWHERE a roster can carry it — a header, a note between members,
+# a commented-out parked member, a trailing remark — because a save must keep
+# every line of it where it was (#763 round 3).
+cat >"$RS_ROSTER" <<'EOF'
+# the fleet, one line per box
+#   <box-name> <agent> <role> [<from-box>/<snapshot>]
+
+rs-working    claude  builder
+# the reviewer pair
+rs-idle       claude  reviewer
+# rs-parked     grok    reviewer   (parked until its login lands)
+rs-stopped    codex   triage  rs-working/armed
+
+# nothing below this line is a member
+EOF
+RS_PROSE_BEFORE="$(grep '^#\|^$' "$RS_ROSTER")"
 printf 'rs-working running working\nrs-idle running idle\nrs-stopped stopped idle\n' >"$TMP/roster-fixture.txt"
 FLOOR_FIXTURE="$TMP/roster-fixture.txt" FLOOR_STATE="$RS_STATE" \
 CREW_FLOOR_ROSTER="$RS_ROSTER" CREW_FLOOR_STORE="$TMP/roster-store.sqlite" \
@@ -84,20 +99,36 @@ t "roster: the fourth column rides with its line" "rs-working/armed" \
 t "roster: the names a line may use are the profiles" "yes yes" \
   "$(rs_body GET /api/roster | jqf "('yes' if 'claude' in d['agents'] else 'no')+' '+('yes' if 'builder' in d['roles'] else 'no')")"
 t "roster: the path is the file a save writes" "$RS_ROSTER" "$(rs_body GET /api/roster | jqf "d['path']")"
-RS_SET='{"action":"roster-set","members":[{"box":"rs-working","agent":"claude","roles":["builder"],"from":""},{"box":"rs-idle","agent":"codex","roles":["reviewer","triage"],"from":""},{"box":"rs-new","agent":"grok","roles":["reviewer"],"from":"rs-working/armed"}]}'
-RS_SAVE="$(rs_api POST /api/command "$RS_SET")"
+# Every save names the roster it edits: the etag GET /api/roster answered.
+rs_etag() { rs_body GET /api/roster | jqf "d['etag']"; }
+rs_set() {  # rs_set MEMBERS_JSON [ETAG] -> "<body>\n<status>"
+  rs_api POST /api/command "{\"action\":\"roster-set\",\"etag\":\"${2:-$(rs_etag)}\",\"members\":$1}"
+}
+rs_set_status() { rs_set "$@" | tail -1; }
+rs_set_body() { rs_set "$@" | sed '$d'; }
+t "roster: the editor opens with the file's etag" 16 "$(rs_etag | tr -d '\n' | wc -c | tr -d ' ')"
+RS_MEMBERS='[{"box":"rs-working","agent":"claude","roles":["builder"],"from":""},{"box":"rs-idle","agent":"codex","roles":["reviewer","triage"],"from":""},{"box":"rs-new","agent":"grok","roles":["reviewer"],"from":"rs-working/armed"}]'
+RS_SAVE="$(rs_set "$RS_MEMBERS")"
 t "roster-set: a valid roster lands" 200 "$(printf '%s\n' "$RS_SAVE" | tail -1)"
-t "roster-set: the file reads as written, aligned, fourth column kept" \
+t "roster-set: the file reads as written, aligned, fourth column kept, two roles in one column" \
   "rs-working claude builder|rs-idle codex reviewer,triage|rs-new grok reviewer rs-working/armed" \
   "$(grep -v '^#' "$RS_ROSTER" | awk 'NF' | tr -s ' ' | paste -sd'|' -)"
-t "roster-set: the header comments are kept word for word" 2 "$(grep -c '^#' "$RS_ROSTER")"
+# Every comment and blank line is where it was — the header, the note between
+# the two members, the parked line, the trailing remark — and the new member
+# landed after the last one, ahead of the trailing prose.
+t "roster-set: every comment and blank line is kept, in order" "$RS_PROSE_BEFORE" "$(grep '^#\|^$' "$RS_ROSTER")"
+t "roster-set: a commented-out parked member survives the save" 1 "$(grep -c '^# rs-parked ' "$RS_ROSTER")"
+t "roster-set: a new member lands where the last one stood, before the trailing note" "rs-idle|#|rs-new||#" \
+  "$(awk '/^rs-idle/{p=1} p{print}' "$RS_ROSTER" | cut -d' ' -f1 | paste -sd'|' -)"
 t "roster-set: the deltas come back" "rs-new|rs-stopped|rs-idle" \
   "$(printf '%s\n' "$RS_SAVE" | sed '$d' | jqf "','.join(d['roster']['added'])+'|'+','.join(d['roster']['removed'])+'|'+','.join(d['roster']['changed'])" 2>/dev/null || true)"
+t "roster-set: the answer carries the new etag, so the editor can keep going" "$(rs_etag)" \
+  "$(printf '%s\n' "$RS_SAVE" | sed '$d' | jqf "d['roster']['etag']" 2>/dev/null || true)"
 t "roster-set: the write is journalled with its actor and state" 1 \
   "$(grep -c "^[0-9T:Z-]* roster set actor=$USER members=rs-working:claude:builder,rs-idle:codex:reviewer,triage,rs-new:grok:reviewer@rs-working/armed added=rs-new removed=rs-stopped changed=rs-idle$" "$RS_JOURNAL")"
 # The same roster saved again is no change, and says so.
 t "roster-set: saving the same roster again reports no delta" "||" \
-  "$(rs_body POST /api/command "$RS_SET" | jqf "','.join(d['roster']['added'])+'|'+','.join(d['roster']['removed'])+'|'+','.join(d['roster']['changed'])" 2>/dev/null || true)"
+  "$(rs_set_body "$RS_MEMBERS" | jqf "','.join(d['roster']['added'])+'|'+','.join(d['roster']['removed'])+'|'+','.join(d['roster']['changed'])" 2>/dev/null || true)"
 # ...and the collector reads it at the next poll: the new line is a unit, the
 # removed one is gone, and a line with no box yet is said as the target fleet.
 for _ in $(seq 1 40); do
@@ -106,24 +137,58 @@ for _ in $(seq 1 40); do
 done
 t "roster-set: the fleet follows the roster at the next poll" "rs-idle,rs-new,rs-working" \
   "$(rs_body GET /api/fleet | jqf "','.join(sorted(u['box'] for u in d['units']))")"
+# A save without the etag, or with a stale one, is refused 409 and moves
+# nothing (#763 round 3): the file is rewritten whole from the browser's
+# copy, so a line added by hand or from another tab in between must never
+# be dropped — nor journalled as a removal.
+t "roster-set: a save that names no etag is refused 409" 409 \
+  "$(rs_status POST /api/command "{\"action\":\"roster-set\",\"members\":$RS_MEMBERS}")"
+RS_STALE="$(rs_etag)"
+printf 'rs-hand        kimi    reviewer\n' >>"$RS_ROSTER"
+RS_JOURNAL_N="$(wc -l <"$RS_JOURNAL")"
+t "roster-set: a save over a file edited since the editor opened is refused 409" 409 "$(rs_set_status "$RS_MEMBERS" "$RS_STALE")"
+t "roster-set: the refusal says what to do" 1 "$(rs_set_body "$RS_MEMBERS" "$RS_STALE" | jqf "d['error']" | grep -c 'changed on disk since the editor opened it.*reopen the roster')"
+t "roster-set: the hand edit is still in the file" 1 "$(grep -c '^rs-hand ' "$RS_ROSTER")"
+t "roster-set: nothing was journalled for the refusal" "$RS_JOURNAL_N" "$(wc -l <"$RS_JOURNAL")"
+# A fresh read carries the hand-written line, and a save that keeps it lands.
+RS_MEMBERS4="${RS_MEMBERS%]*},{\"box\":\"rs-hand\",\"agent\":\"kimi\",\"roles\":[\"reviewer\"],\"from\":\"\"}]"
+t "roster-set: reopened, the hand edit is a member and the save lands" 200 "$(rs_set_status "$RS_MEMBERS4")"
+# A NEW line may not name a box the host already has off the roster: that
+# line would make `crew up` hire a gold source or a scratch box past the
+# off-roster guard (#763 round 3). rs-stopped exists on this host (the stub's
+# fixture) and left the roster above.
+RS_ADOPT="${RS_MEMBERS4%]*},{\"box\":\"rs-stopped\",\"agent\":\"codex\",\"roles\":[\"triage\"],\"from\":\"\"}]"
+t "roster-set: a new line naming an existing off-roster box is refused" "400 1" \
+  "$(rs_set_status "$RS_ADOPT") $(rs_set_body "$RS_ADOPT" | jqf "d['error']" | grep -c 'box rs-stopped already exists on this host and is not on the roster')"
+# The roles a line may name are the SHIPPED profiles — what the CLI's
+# validate_profiles accepts — never an operator roles/ file (#763 round 3).
+mkdir -p "$CREW_CONFIG_DIR/roles"; printf 'BOX_CPU=1\n' >"$CREW_CONFIG_DIR/roles/janitor.conf"
+t "roster: an operator roles/ file is not a name a line may carry" "no 400" \
+  "$(rs_body GET /api/roster | jqf "'yes' if 'janitor' in d['roles'] else 'no'") $(rs_set_status '[{"box":"rs-new","agent":"claude","roles":["janitor"]}]')"
+rm -rf "$CREW_CONFIG_DIR/roles"
 t "roster-set: an unknown agent is refused with its line" "400 box rs-new: unknown agent 'nobody'" \
-  "$(rs_api POST /api/command '{"action":"roster-set","members":[{"box":"rs-new","agent":"nobody","roles":["builder"]}]}' | python3 -c "
+  "$(rs_set '[{"box":"rs-new","agent":"nobody","roles":["builder"]}]' | python3 -c "
 import sys,json
 lines=sys.stdin.read().splitlines(); d=json.loads(lines[0]); print(lines[-1], d['error'][:len(\"box rs-new: unknown agent 'nobody'\")])")"
-t "roster-set: an unknown role is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-new","agent":"claude","roles":["janitor"]}]}')"
-t "roster-set: a name outside incus alphabet is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"Bad_Name","agent":"claude","roles":["builder"]}]}')"
-t "roster-set: a box named twice is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-a","agent":"claude","roles":["builder"]},{"box":"rs-a","agent":"codex","roles":["reviewer"]}]}')"
-t "roster-set: a line with no role is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-a","agent":"claude","roles":[]}]}')"
-t "roster-set: a malformed from is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[{"box":"rs-a","agent":"claude","roles":["builder"],"from":"../x"}]}')"
-t "roster-set: an empty roster is refused" 400 "$(rs_status POST /api/command '{"action":"roster-set","members":[]}')"
-t "roster-set: a refusal says refused and moves nothing" "true 3" \
-  "$(rs_body POST /api/command '{"action":"roster-set","members":[]}' | jqf "str(d['refused']).lower()") $(grep -vc '^#' "$RS_ROSTER" | tr -d ' ')"
+t "roster-set: an unknown role is refused" 400 "$(rs_set_status '[{"box":"rs-new","agent":"claude","roles":["janitor"]}]')"
+t "roster-set: a name outside incus alphabet is refused" 400 "$(rs_set_status '[{"box":"Bad_Name","agent":"claude","roles":["builder"]}]')"
+t "roster-set: a box named twice is refused" 400 "$(rs_set_status '[{"box":"rs-a","agent":"claude","roles":["builder"]},{"box":"rs-a","agent":"codex","roles":["reviewer"]}]')"
+t "roster-set: a line with no role is refused" 400 "$(rs_set_status '[{"box":"rs-a","agent":"claude","roles":[]}]')"
+t "roster-set: a malformed from is refused" 400 "$(rs_set_status '[{"box":"rs-a","agent":"claude","roles":["builder"],"from":"../x"}]')"
+t "roster-set: an empty roster is refused" 400 "$(rs_set_status '[]')"
+t "roster-set: a refusal says refused and moves nothing" "true 4" \
+  "$(rs_set_body '[]' | jqf "str(d['refused']).lower()") $(grep -vc '^#\|^$' "$RS_ROSTER" | tr -d ' ')"
+# A roster kept as a symlink stays one, keeps its mode, and the target carries
+# the write (#763 round 3: os.replace on the link swapped it for a 0664 copy).
+mv "$RS_ROSTER" "$RS_ROSTER.real" && ln -s "$RS_ROSTER.real" "$RS_ROSTER" && chmod 600 "$RS_ROSTER.real"
+t "roster-set: a symlinked roster is written through the link" "200 link 600 1" \
+  "$(rs_set_status "$RS_MEMBERS") $([ -L "$RS_ROSTER" ] && echo link || echo file) $(stat -c %a "$RS_ROSTER.real") $(grep -c '^rs-new ' "$RS_ROSTER.real")"
 t "roster: the shipped example roster is never edited from the console" "refused" \
   "$(cd / && env -u CREW_CONFIG_DIR XDG_CONFIG_HOME="$TMP/xdg-empty" python3 -c "
 import sys
 sys.path.insert(0, '$FLOOR/server')
 from floor import roster
-r, e = roster.roster_set([{'box': 'x', 'agent': 'claude', 'roles': ['builder']}])
+r, e = roster.roster_set([{'box': 'x', 'agent': 'claude', 'roles': ['builder']}], 'me', 'whatever')
 print('refused' if r is None and 'shipped example' in e else (r, e))
 ")"
 kill "$SRV6" 2>/dev/null

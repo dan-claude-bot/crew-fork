@@ -45,7 +45,15 @@ t reasons-builder-sees-the-unassigned-ready-issue-and-its-own-pr \
   "$(reasons_of builder dan-claude-bot)"
 t reasons-reviewer-sees-the-request-and-the-attention "attention#o/r#13 2026-10-23T09:00:00Z|review#o/r#21 2026-10-23T07:00:00Z" \
   "$(reasons_of reviewer dan-claude-bot)"
-t reasons-triage-sees-the-whole-board "board#o/r -" "$(reasons_of triage nobody)"
+t reasons-triage-sees-the-whole-board-and-the-untriaged-issue "board#o/r -|triage#o/r#14 2026-10-23T08:00:00Z" "$(reasons_of triage nobody)"
+# The precise reason (#763 round 3): an untriaged issue — needs-triage, or a
+# stray with no queue label that is not an epic — is triage's own item, read
+# by the ledger veto and the idle set-aside as one; a labelled issue is not.
+t reasons-a-stray-with-no-queue-label-is-triage-work 1 "$(wake_reasons triage nobody o/r 'I 30 2026-10-23T08:00:00Z - -' | grep -c '^triage#o/r#30 2026-10-23T08:00:00Z$')"
+t reasons-a-stray-with-only-a-flag-is-triage-work 1 "$(wake_reasons triage nobody o/r 'I 31 2026-10-23T08:00:00Z attention,operator -' | grep -c '^triage#o/r#31 ')"
+t reasons-a-queue-labelled-issue-is-not-triage-work 0 "$(wake_reasons triage nobody o/r $'I 32 2026-10-23T08:00:00Z claimed -\nI 33 2026-10-23T08:00:00Z blocked,operator -' | grep -c '^triage#')"
+t reasons-an-epic-is-not-triage-work 0 "$(wake_reasons triage nobody o/r 'I 34 2026-10-23T08:00:00Z epic -' | grep -c '^triage#')"
+t reasons-the-label-names-are-the-confs "triage#o/r#35 2026-10-23T08:00:00Z" "$(LABEL_NEEDS_TRIAGE=por-clasificar LABEL_READY=lista wake_reasons triage nobody o/r $'I 35 2026-10-23T08:00:00Z por-clasificar -\nI 36 2026-10-23T08:00:00Z lista -' | grep '^triage#' | paste -sd'|' -)"
 t reasons-an-assigned-ready-issue-is-not-ready-work 0 "$(reasons_of builder other | grep -c 'ready#o/r#13')"
 t reasons-no-login-no-personal-work "ready#o/r#12 2026-10-23T10:00:00Z" "$(reasons_of builder "")"
 t reasons-a-draft-of-someone-else-is-nobodys-review 0 "$(reasons_of reviewer codex-bot | grep -c 'review#o/r#21')"
@@ -85,6 +93,10 @@ export BUDGET_SESSIONS_RESUME=1; HT_COUNT=1
 t veto-a-due-wait-is-vetoed-by-the-resume-lanes-budget 'veto:wait#o/r#5:budget-resume' "$(wake_veto alpha 'wait#o/r#5 -')"
 unset BUDGET_SESSIONS_BUILD BUDGET_SESSIONS_RESUME BUDGET_WINDOW HT_COUNT
 t veto-triage-board-reason-is-never-ledger-vetoed 1 "$(HT_LEDGER='o/r#12 2099-01-01T00:00:00Z' wake_veto alpha "board#o/r -" | grep -c '^board#o/r -$')"
+# ...while the precise triage item is: the box's `.seen-triage-board` ledger
+# names the issue at its updatedAt once a session has looked at it.
+t veto-a-triage-item-the-ledger-holds-is-dropped 'veto:triage#o/r#14:seen' "$(HT_LEDGER='o/r#14 2026-10-23T08:00:00Z' wake_veto gamma 'triage#o/r#14 2026-10-23T08:00:00Z')"
+t veto-a-triage-item-that-moved-since-still-wakes 'triage#o/r#14 2026-10-23T09:00:00Z' "$(HT_LEDGER='o/r#14 2026-10-23T08:00:00Z' wake_veto gamma 'triage#o/r#14 2026-10-23T09:00:00Z')"
 
 # --- the why token -----------------------------------------------------------
 t why-joins-the-surviving-reasons "attention#o/r#13,pr#o/r#20,ready#o/r#12" "$(wake_why "$(wake_veto alpha "$R" | sort)")"
@@ -403,8 +415,9 @@ echo stopped >"$STATE/beta.state"
 capture resume alpha
 # (4) triage's coarse board reason: a running triage box the movement bought
 # nothing for, IDLE_TICKS_BEFORE_STOP times, is not woken for it again and
-# is stopped; a precise reason is never set aside this way.
-ht_board 'I 16 2026-10-23T16:00:00Z needs-triage -' '' ''
+# is stopped; a precise reason is never set aside this way. The movement here
+# is a discussion and a labelled issue — nothing untriaged, so only `board#`.
+ht_board 'I 16 2026-10-23T16:00:00Z ready -' '' 'D 6 2026-10-23T16:00:00Z'
 echo stopped >"$STATE/alpha.state"; echo running >"$STATE/gamma.state"; printf '2\n' >"$STATE/gamma.idle"
 # The record the drain lands carries the count too, as the real probe's does.
 ht_record gamma triage-bot '' 2
@@ -417,10 +430,27 @@ t triage-no-wake-was-written 0 "$(calls 'wake gamma')"
 # the store is read for a stopped box too, so the board moving again does not
 # boot it to be stopped two ticks later (#763 re-review: start/stop churn).
 echo stopped >"$STATE/gamma.state"
-ht_board 'I 17 2026-10-23T17:00:00Z needs-triage -' '' ''
+ht_board 'I 16 2026-10-23T16:00:00Z ready -' '' 'D 7 2026-10-23T17:00:00Z'
 : >"$STATE/calls"
 capture tick
 t triage-a-stopped-box-is-not-started-for-the-same-coarse-reason 0 "$(calls 'start gamma')"
 t triage-the-stored-idle-count-is-what-says-so 1 "$(grep -c 'gamma: the board moved, but 2 idle ticks bought nothing for triage — not woken for it again' <<<"$OUT")"
+# ...but a NEW needs-triage issue is triage's own item, precise, and starts
+# the box whatever the stored count says (#763 round 3: with only the coarse
+# reason, an idle-stopped triage box was never woken for new issues again).
+ht_board $'I 16 2026-10-23T16:00:00Z ready -\nI 17 2026-10-23T17:30:00Z needs-triage -' '' 'D 7 2026-10-23T17:00:00Z'
+: >"$STATE/calls"
+capture tick
+t triage-a-new-untriaged-issue-starts-the-stopped-box 1 "$(calls 'start gamma')"
+t triage-the-start-names-the-issue 1 "$(grep -c 'gamma: starting why=triage#o/r#17,board#o/r' <<<"$OUT")"
+t triage-the-stored-count-is-not-the-last-word 0 "$(grep -c 'gamma: the board moved, but 2 idle ticks bought nothing for triage' <<<"$OUT")"
+# ...and once triage's ledger names that issue at its timestamp (a session
+# looked at it and left it for a person), the same board does not boot it.
+echo stopped >"$STATE/gamma.state"
+ht_record gamma triage-bot 'o/r#17 2026-10-23T17:30:00Z' 2
+rm -f "$CONF/store/wake"/gamma.*; : >"$STATE/calls"
+capture tick
+t triage-an-issue-its-ledger-holds-does-not-boot-it 0 "$(calls 'start gamma')"
+t triage-the-ledger-veto-is-said 1 "$(grep -c 'gamma: veto triage#o/r#17:seen' <<<"$OUT")"
 
 suite_finish

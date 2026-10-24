@@ -220,7 +220,7 @@ no build step, no dependencies.
 |---|---|---|
 | `/` | GET | the page |
 | `/api/fleet` | GET | latest telemetry snapshot |
-| `/api/roster` | GET | the fleet's definition as it is on disk: members, the agent and role profiles a line may name, the path (#764) |
+| `/api/roster` | GET | the fleet's definition as it is on disk: members, the agent and role profiles a line may name, the path, and the `etag` a save hands back (#764) |
 | `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set` |
 | `/api/logs` | GET | tail `duty.log` or one session log |
 | `/healthz` | GET | liveness |
@@ -236,12 +236,20 @@ gold box/snapshot it is minted from — and **Roster** (beside **Registries**)
 edits it the way the registries are edited: an overlay painted from the file
 as it is on disk right now, one row per box (add, remove, save), each row's
 standing read off the poll (hired, not created, new). A save is validated
-whole before anything moves — box names in incus's alphabet, agents and roles
-that exist as profiles, no duplicates, `from` as `<box>/<snapshot>` — refused
-with the line and the reason, written atomically with the file's header
-comments kept, and journalled in `.roster-journal.log` (who, the state the
-write applied, the deltas). It is refused under the shipped examples fallback,
-as every writer is.
+whole before anything moves — box names in incus's alphabet, agents that
+exist as profiles and roles from the shipped set (the only ones the CLI
+accepts), no duplicates, `from` as `<box>/<snapshot>`, and a NEW name that
+is not already a box on the host (adopting an existing box into the fleet is
+a hand edit, where that choice is visible) — refused with the line and the
+reason. The save names the file it edits: `GET /api/roster` answers an
+`etag`, the save hands it back, and a roster edited since the overlay opened
+(by hand, from another tab) is refused `409` with nothing written. The write
+replaces the members in place and keeps every other line where it was — the
+header, a note between members, a commented-out parked member, a trailing
+remark — through a symlink if the roster is one, with the file's own mode,
+fsynced, and journalled in `.roster-journal.log` (who, the state the write
+applied, the deltas). It is refused under the shipped examples fallback, as
+every writer is.
 
 Saving writes the definition and nothing else. A new line becomes a box when
 the operator runs `crew up` on the host (it creates, starts and hires every

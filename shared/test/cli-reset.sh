@@ -272,6 +272,13 @@ case "$cmd" in
     elif [[ "$script" == *'rm -f ~/duty/.memory-pending'* ]]; then
       printf 'pending-off %s\n' "$name" >>"$calls"
     elif [[ "$script" == *'crontab -l'* ]]; then
+      # The pause/resume shells (shared/lib/host/pause.sh) are logged by name:
+      # the restore of a paused box must pause the crontab again whatever the
+      # duty lock says (#763 round 3).
+      case "$script" in
+        *'echo "paused $armed"'*) printf 'pause %s\n' "$name" >>"$calls" ;;
+        *'echo "resumed $paused"'*) printf 'resume %s\n' "$name" >>"$calls" ;;
+      esac
       exit 1
     else
       # The hire and upgrade paths' staging and install execs. Logged rather
@@ -713,6 +720,18 @@ t reset-by-name-stops-a-paused-box-again-after-its-memory 1 \
   "$(awk '/^memory-unpack alpha/{m=NR} /^down alpha/{if(m && NR>m)d=NR} END{print (m && d) ? 1 : 0}' "$STATE/calls")"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again — it is paused"*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-the-paused-stop-is-said said "$r1"
+t reset-by-name-pauses-the-crontab-again 1 "$(calls_of 'pause alpha')"
+# ...and when a duty holds the lock at that moment, the crontab is STILL
+# paused — only the stop waits for the host tick (#763 round 3: the box was
+# left running with live cron, and its next `*/5` could start a session).
+: >"$STATE/calls"
+printf 'busy:30\n' >"$STATE/probe-alpha"
+capture reset alpha
+t reset-a-paused-box-under-a-held-lock-is-paused-anyway 1 "$(calls_of 'pause alpha')"
+t reset-a-paused-box-under-a-held-lock-is-not-stopped 0 "$(awk '/^memory-unpack alpha/{m=NR} /^down alpha/{if(m && NR>m)d=1} END{print d+0}' "$STATE/calls")"
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started; it is paused — its crontab is paused again, but a duty already holds its lock (busy), so the host tick stops it once idle"*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-the-held-lock-is-said-with-the-pause said "$r1"
+rm -f "$STATE/probe-alpha"
 rm -f "$CONF/store/paused/alpha"
 reset_case
 arm alpha "$BOX_STAMP_VERSION"

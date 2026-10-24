@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from floor import FLOOR_ENVELOPE
 from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
-from floor.roster import CONFIG_DIR, CREW_ROOT, box_states, read_roster, roster_set
+from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -113,6 +113,16 @@ def _paused_marker(box, on):
             os.remove(path)
         except FileNotFoundError:
             pass
+
+
+def _paused_marker_set(box):
+    """Is the host's pause marker standing for this box? `crew pause` on a
+    STOPPED box writes only the marker (there is no crontab to comment), so
+    the box's own `paused` flag — read off its crontab by the probe — says
+    nothing about it (#763 round 3)."""
+    return os.path.exists(os.path.join(CONFIG_DIR, "store", "paused", box))
+
+
 RESUME_SH = _host_shell_block("RESUME_SH")
 
 # The operator's message becomes a real session of the box's own vendor CLI,
@@ -292,9 +302,12 @@ def do_command(fleet, body, actor=""):
         # landed edit without its record is 500 with the result beside it. A
         # refresh IS asked for here, unlike a registry write: the roster is
         # exactly what the snapshot enumerates, so the next poll must read it.
-        result, err = roster_set(body.get("members"), actor)
+        result, err = roster_set(body.get("members"), actor, body.get("etag"))
         if result is None:
-            return 400, {"ok": False, "action": action, "error": err, "refused": True}
+            # 409 when the file moved under the editor (#486's code for "what
+            # you confirmed is no longer what is there"), 400 for a bad line.
+            code = 409 if isinstance(err, RosterChanged) else 400
+            return code, {"ok": False, "action": action, "error": str(err), "refused": True}
         fleet.request_refresh()
         if err:
             return 500, {"ok": False, "action": action, "error": err, "refused": False,
@@ -560,8 +573,11 @@ def do_command(fleet, body, actor=""):
             name = u["box"]
             # A wake of a PAUSED box is a resume, and the host's pause marker
             # is part of the pause (#759): left in place, the next host tick
-            # would drain and stop the box this action just woke.
-            if u["paused"]:
+            # would drain and stop the box this action just woke. The marker
+            # is read for itself, not through the box's crontab flag: a box
+            # paused while STOPPED has the marker and no commented line, and
+            # `u["paused"]` alone left it to be stopped again (#763 round 3).
+            if u["paused"] or _paused_marker_set(name):
                 _paused_marker(name, False)
             if states.get(name) == "stopped":
                 # FIRST, and before the wedge question. Starting a stopped box

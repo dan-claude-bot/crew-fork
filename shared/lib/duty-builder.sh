@@ -635,7 +635,7 @@ ROUND_CAP_NAMED="-"
 # PR that has rounds left.
 _round_cap_census() {
   local repo="$1" panel_json="$2" listing="$3"
-  local owner name num payload capjson rounds at_cap named="" items="" fresh measured cap_head
+  local owner name num payload capjson rounds at_cap named="" items="" fresh measured cap_head cap_round_head
   local issue record="" record_fresh
   ROUND_CAP_PRS=""
   ROUND_CAP_NAMED="-"
@@ -669,6 +669,19 @@ _round_cap_census() {
     # that reviewer's five rounds — counted against the whole roster it never
     # would, and the PR would cycle past five without the cut.
     cap_head="$(printf '%s' "$payload" | jq -r '.data.repository.pullRequest.headRefOid // ""' 2>/dev/null)"
+    # ...sized for the FIFTH ROUND's head where the engine remembers it (#763
+    # round 3): a push after round 5 that crosses the risk bound would widen
+    # the panel to reviewers who never sat that round, and the cap would never
+    # fire. The sized-panel cache keyed by head is that memory; when it does
+    # not hold the fifth round's head (an engine that was not running then),
+    # the current head's sizing is the best answer there is.
+    cap_round_head="$(printf '%s' "$payload" | jq -r -L "$DUTY_DIR/lib/jq" \
+      'include "rounds"; (.data.repository.pullRequest | round_verdicts | round_heads) as $r
+       | if ($r | length) >= 5 then $r[4].oid else "" end' 2>/dev/null || true)"
+    if [ -n "$cap_round_head" ] && [ -r "$DUTY_DIR/.panel-sized-${repo//\//_}-$num" ] \
+       && [ "$(cut -d' ' -f1 "$DUTY_DIR/.panel-sized-${repo//\//_}-$num" 2>/dev/null)" = "$cap_round_head" ]; then
+      cap_head="$cap_round_head"
+    fi
     _panel_effective "$repo" "$num" "$cap_head" "$panel_json"
     capjson="$(printf '%s' "$payload" \
       | jq -c -L "$DUTY_DIR/lib/jq" --argjson panel "$_PANEL_EFFECTIVE_JSON" \

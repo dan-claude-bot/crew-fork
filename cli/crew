@@ -1362,9 +1362,18 @@ login_hint() {
   printf '%s\n' "${h:-run the $1 CLI login}"
 }
 
-validate_profiles() {  # agent role
+validate_profiles() {  # agent roles(csv)
+  local r
   [ -f "$(agent_conf "$1")" ] || usage_error "unknown agent '$1' — see: crew profiles"
-  [ -f "$ROLES_DIR/$2.conf" ]  || usage_error "unknown role '$2' — see: crew profiles"
+  # The role column is comma-joined (`builder,reviewer`): load_conf sources
+  # every named profile in order, the host tick splits it the same way, and
+  # the floor's editor writes it. Checked one name at a time — read whole, a
+  # two-role line looked for roles/builder,reviewer.conf and usage_error
+  # stopped `crew up` for the entire fleet (#763 round 3).
+  [ -n "${2//,/}" ] || usage_error "no role named — see: crew profiles"
+  for r in ${2//,/ }; do
+    [ -f "$ROLES_DIR/$r.conf" ] || usage_error "unknown role '$r' — see: crew profiles"
+  done
 }
 
 # Can THIS host's box size a clone? box 0.10.0 made --cpu/--memory/--disk ride
@@ -1496,8 +1505,14 @@ create_box() {
     */"$RESET_LABEL")
       die "refusing to clone '$from': an $RESET_LABEL checkpoint contains ${from%%/*}'s live credentials and engine, so a box minted from it carries that box's identity. Gold images are the clone source (crew gold <box>)" ;;
   esac
-  # shellcheck disable=SC1090
-  source "$ROLES_DIR/$role.conf"
+  # Every role the line names, in its declared order — the order load_conf
+  # sources them in on the box, so the size a two-role box is minted at is the
+  # size its own conf will read (#763 round 3).
+  local one_role
+  for one_role in ${role//,/ }; do
+    # shellcheck disable=SC1090
+    source "$ROLES_DIR/$one_role.conf"
+  done
   if [ -z "$BOX_CPU" ] || [ -z "$BOX_MEMORY" ] || [ -z "$BOX_DISK" ]; then
     die "role '$role' declares no BOX_CPU/BOX_MEMORY/BOX_DISK"
   fi
@@ -3784,12 +3799,19 @@ restore_box() { # NAME
     echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started"
     return 0
   fi
+  # The crontab of a paused box is paused FIRST, whatever the lock says
+  # (#763 round 3): the restored disk's cron is live, and a duty holding the
+  # lock right now is no reason to let the next `*/5` start another session
+  # on a box the operator paused. Only the stop waits for idle.
+  [ "$why" != paused ] || bxn "$name" "$(host_pause_sh)" >/dev/null 2>&1 || true
   read -r pstate _ <<<"$(drain_probe "$name")"
   if [ "$pstate" != idle ]; then
-    echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is ${why%%:*}, but a duty already holds its lock ($pstate) — the host tick stops it once idle"
+    case "$why" in
+      paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is paused — its crontab is paused again, but a duty already holds its lock ($pstate), so the host tick stops it once idle" ;;
+      *) echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is ${why%%:*}, but a duty already holds its lock ($pstate) — the host tick stops it once idle" ;;
+    esac
     return 0
   fi
-  [ "$why" != paused ] || bxn "$name" "$(host_pause_sh)" >/dev/null 2>&1 || true
   if ! box down "$name" </dev/null; then
     echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its ${why%%:*} state asks for FAILED — the host tick will"
     return 1
@@ -4283,7 +4305,9 @@ tick_run() { # DRY_RUN
     # box that was woken for it IDLE_TICKS_BEFORE_STOP times and bought no
     # session each time has answered: the movement is not its work. The
     # precise reasons (an attention demand, a ready issue, a review request,
-    # a due wait or cut) are never set aside this way.
+    # an untriaged issue — `triage#`, #763 round 3 — a due wait or cut) are
+    # never set aside this way: a stopped box's stored count would otherwise
+    # be the last word, and a new needs-triage issue never a wake.
     if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] \
        && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
       echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"

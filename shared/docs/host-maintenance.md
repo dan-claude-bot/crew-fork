@@ -54,8 +54,10 @@ own rule applied to the one verb that could undo it:
   the archive. The box's own `*/5` cron can therefore never run a session
   with no ledgers ahead of the write-back, and the write-back never lands
   over what such a session wrote. The wait is bounded by
-  `MEMORY_PENDING_GRACE_S` (1800 s of uptime): past it the box runs
-  without its memory and says so once in `duty.log`. A write-back that
+  `MEMORY_PENDING_GRACE_S` (1800 s, counted from the later of boot and the
+  marker's own mtime — so the marker the cut touches into a long-running
+  box for the snapshot's duration is never expired by that box's uptime):
+  past it the box runs without its memory and says so once in `duty.log`. A write-back that
   fails is a failed reset (rc 1), said by name in the job log; a store that
   simply holds nothing for the box (its first reset) lifts the marker and
   is said as that. Checkpoints cut before `0.1.4` carry no marker: re-cut

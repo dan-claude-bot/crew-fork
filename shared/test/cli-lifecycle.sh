@@ -1001,6 +1001,7 @@ cat >"$CONF_NEW/fleet.roster" <<'EOF'
 gamma claude reviewer
 delta claude reviewer goldbox/gold
 epsilon claude builder
+zeta claude builder,reviewer
 EOF
 
 # The criterion in the issue's own words: a reviewer roster line with no 4th
@@ -1048,6 +1049,22 @@ t new-fresh-mint-bootstrap-names-no-user 0 \
 # mint is not the place to take a lottery ticket on another tool's release.
 t new-fresh-mint-pins-the-declared-rig 1 \
   "$(grep -c "RIG_REF=$CREW_PLATFORM_RIG_MIN" "$STATE/root-script-gamma" || true)"
+
+# A TWO-ROLE LINE is one line (#763 round 3): `builder,reviewer` is the column
+# load_conf sources in order on the box, the host tick splits, and the floor's
+# editor writes — so the profile check reads it one role at a time (read
+# whole, it looked for roles/builder,reviewer.conf and usage_error stopped
+# `crew up` for the entire fleet), and the mint is sized the way the box's
+# own conf will read it: every role sourced in order, the last one's figures.
+reset_case
+LIFE_CONF="$CONF_NEW" capture new zeta
+t new-a-two-role-line-is-accepted 0 "$RC"
+t new-a-two-role-line-is-sized-by-its-roles-in-order \
+  "new --name zeta --user claude --cpu $EXP_CPU --memory $EXP_MEM --disk $EXP_DISK" \
+  "$(grep '^new ' "$STATE/calls")"
+reset_case
+LIFE_CONF="$CONF_NEW" capture new --role builder,janitor --agent claude
+t new-a-two-role-line-names-the-unknown-role-alone 1 "$(grep -c "unknown role 'janitor'" <<<"$OUT")"
 
 # THE TWO SURFACES AN OPERATOR READS WITHOUT OPENING THE SOURCE (#679 D2, and
 # the fence triage widened onto them on 2026-09-05 upholding codex-bot's

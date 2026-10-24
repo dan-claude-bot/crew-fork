@@ -75,6 +75,21 @@ HOME="$BS_H" DUTY_DIR="$BS_H/duty" \
   > "$BS_TMP/probe.out" 2>"$BS_TMP/probe.err"
 t "probe.sh exits 0" 0 "$?"
 
+# The rotated log crosses ONCE per rotation (#763 re-review, round 3 asked
+# for the probe side to be pinned): the probe marks duty.log.1 by size+mtime,
+# ships it when the host's PROBE_LOG1_SEEN is not that mark, and skips the
+# body when it is. A full pull (PROBE_FULL=1), which is the pull that ships
+# the logs at all.
+printf '%s\n' "$BS_NOW rotated line one" "$BS_NOW rotated line two" >"$BS_H/duty/duty.log.1"
+HOME="$BS_H" DUTY_DIR="$BS_H/duty" PROBE_FULL=1 bash "$BS_FLOOR/server/probe.sh" <"$BS_ROOT/shared/conf/agents/claude.conf" >"$BS_TMP/probe-log1.out" 2>/dev/null
+BS_LOG1_MARK="$(sed -n 's/^::log1mark //p' "$BS_TMP/probe-log1.out")"
+t "probe.sh: a rotated log is marked by size and mtime" "$(stat -c '%s.%Y' "$BS_H/duty/duty.log.1")" "$BS_LOG1_MARK"
+t "probe.sh: a rotated log the host has not seen crosses whole" 1 "$(grep -c '^::filestart duty.log.1$' "$BS_TMP/probe-log1.out")"
+HOME="$BS_H" DUTY_DIR="$BS_H/duty" PROBE_FULL=1 PROBE_LOG1_SEEN="$BS_LOG1_MARK" bash "$BS_FLOOR/server/probe.sh" <"$BS_ROOT/shared/conf/agents/claude.conf" >"$BS_TMP/probe-log1-seen.out" 2>/dev/null
+t "probe.sh: a rotated log the host already holds is marked and not shipped" "1 0" \
+  "$(grep -c "^::log1mark $BS_LOG1_MARK\$" "$BS_TMP/probe-log1-seen.out") $(grep -c '^::filestart duty.log.1$' "$BS_TMP/probe-log1-seen.out")"
+rm -f "$BS_H/duty/duty.log.1"
+
 # The contract that matters is not the text — it is that floor.py's own parser
 # gets every key it later reads. A missing key is a TypeError several panels
 # deep, long after the poll that caused it.

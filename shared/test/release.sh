@@ -289,7 +289,8 @@ t an-off-track-merge-after-a-refusal-buys-nothing 0 "$(sessions)"
 printf 'w\n' >"$ORIGIN/apps/site/w.txt"; printf -- '- W (#4).\n' >"$ORIGIN/apps/site/changelog.d/4.md"; gq add -A; gq commit -q -m "feat(site): w (#4)"
 HEAD4="$(git -C "$ORIGIN" rev-parse HEAD)"
 : >"$SESSION_LOG"
-OUT="$(GH_PRS="" SIM_PR_AFTER="93 dan-claude-bot release/site-2.1.46" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+REL_93_AUTHORS=$'dan-claude-bot\ndan-claude-bot'
+OUT="$(GH_PRS="" GH_PR_AUTHORS="$REL_93_AUTHORS" SIM_PR_AFTER="93 dan-claude-bot release/site-2.1.46" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-new-merge-on-the-track-makes-a-new-cut 1 "$(grep -c "release: acme/site — cutting site-2.1.46 from ${HEAD4:0:7}" <<<"$OUT")"
 
 # ── stale: main moved past the engine's open cut on the track ───────────────
@@ -304,6 +305,11 @@ t withdrawal-checks-whose-commits-they-are 1 "$(grep -Fc -- '-F num=93 --jq [.da
 # never read as the engine's and no stale cut was ever withdrawn.
 t withdrawal-reads-the-git-author-not-the-trailers 1 "$(grep -Fc 'commits(first:100){nodes{commit{author{user{login}}}}}' "$GH_CALLS")"
 t withdrawal-closes-the-pr-and-its-branch 1 "$(grep -c '^GH pr close 93 -R acme/site --delete-branch --comment Withdrawn by dan-claude-bot: main moved past this cut' "$GH_CALLS")"
+# ...and the trailer is never the question: a release session's commits end
+# `Co-Authored-By: Claude …`, which GitHub's `authors` list carries as a second
+# person and the git author does not. The fixture above answers TWO commits,
+# both the bot's by git author, trailer and all — and the cut is withdrawn.
+t withdrawal-a-co-authored-cut-is-still-the-bots "dan-claude-bot|dan-claude-bot" "$(printf '%s' "$REL_93_AUTHORS" | tr '\n' '|')"
 t withdrawal-buys-nothing-this-tick 0 "$(sessions)"
 t withdrawal-forgets-the-cut 0 "$(cuts)"
 OUT="$(GH_PRS="" SIM_PR_AFTER="94 dan-claude-bot release/site-2.1.46" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"

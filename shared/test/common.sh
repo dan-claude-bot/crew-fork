@@ -7382,6 +7382,13 @@ t blockers-an-unclosed-parenthesis-runs-to-the-end-of-its-line '["5","7"]' \
   "$(bjq_set 'Blocked by #5 (the step; see logs and #7.')"
 t blockers-an-unclosed-parenthesis-does-not-swallow-the-next-line '["5"]' \
   "$(bjq_set $'Blocked by #5 (the step; see logs.\n\nUnrelated: #7 is closed.')"
+# ...nor the next SENTENCE: a full stop, a space and a capital inside an
+# unclosed aside is prose moving on, and the clause ends with the aside
+# (#763 round 3 — "Follow-up #7 tracks the docs" held the issue on #7).
+t blockers-an-unclosed-parenthesis-ends-at-a-sentence-break '["5"]' \
+  "$(bjq_set 'Blocked by #5 (lands soon. Follow-up #7 tracks the docs.')"
+t blockers-a-lowercase-continuation-inside-an-unclosed-aside-is-not-a-break '["5","7"]' \
+  "$(bjq_set 'Blocked by #5 (see the log. it is long, and #7 too.')"
 # shellcheck disable=SC2016  # the backticks are the fixture body's own prose
 t blockers-live-clause-beside-quote '["5"]' \
   "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"

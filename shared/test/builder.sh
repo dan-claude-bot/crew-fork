@@ -5866,6 +5866,31 @@ t roundcap-census-a-low-risk-pr-reaches-the-cap-on-its-one-reviewer \
   'prs=[owner/repo#8] named=[owner/repo#8 (5 rounds)]' \
   "$(RC_FILES='README.md 3' rc_census "$(rc_build 5)" '[{"number":8}]')"
 rm -f "$RC_DUTY/.seen-round-cap"
+# THE FIFTH ROUND'S PANEL, not the current head's (#763 round 3): PR #8 was
+# low-risk through five rounds, rev-a alone sat them, and the builder then
+# pushed a sixth commit that crosses the bound (the files read fails here, so
+# the current head sizes to the whole roster). Against the whole roster rev-b
+# never reviewed and the round never closed — the cap would never fire. The
+# sized-panel cache remembers the fifth round's head as low, and the census
+# counts against THAT panel.
+RC_ONE="$(rc_build 5 0 1 | jq -c '.data.repository.pullRequest.reviews.nodes |= map(select(.author.login == "rev-a"))')"
+rm -f "$RC_DUTY/.seen-round-cap" "$RC_DUTY/.panel-sized-owner_repo-8"
+t roundcap-census-a-push-past-round-five-widens-nothing-it-remembers-nothing-about \
+  'prs=[] named=[-]' \
+  "$(rc_census "$RC_ONE" '[{"number":8}]')"
+printf '%s low one small file\n' "$(printf 'c%039d' 5)" >"$RC_DUTY/.panel-sized-owner_repo-8"
+rm -f "$RC_DUTY/.seen-round-cap"
+t roundcap-census-counts-against-the-fifth-rounds-remembered-panel \
+  'prs=[owner/repo#8] named=[owner/repo#8 (5 rounds)]' \
+  "$(rc_census "$RC_ONE" '[{"number":8}]')"
+# A cache that remembers some OTHER head (neither the fifth round's nor the
+# current one) is no memory of the fifth round.
+printf '%s low one small file\n' "$(printf 'c%039d' 9)" >"$RC_DUTY/.panel-sized-owner_repo-8"
+rm -f "$RC_DUTY/.seen-round-cap"
+t roundcap-census-a-memory-of-another-head-is-not-the-fifth-rounds \
+  'prs=[] named=[-]' \
+  "$(rc_census "$RC_ONE" '[{"number":8}]')"
+rm -f "$RC_DUTY/.seen-round-cap" "$RC_DUTY/.panel-sized-owner_repo-8"
 # ...and no module of the engine opens or closes a pull request at all, which is
 # the same claim made where a later change would actually make it. Comment lines
 # are stripped first: duty-builder.sh's resume header names `gh pr create` while

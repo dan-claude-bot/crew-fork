@@ -54,8 +54,12 @@ wake_digest() { sha256sum | cut -c1-16; }
 #   builder     ready#…      a ready issue nobody is assigned to
 #               pr#…         an open pull request of mine (a round may be owed)
 #   reviewer    review#…     a pull request requesting my review
-#   triage      board#REPO   anything at all moved (needs-triage, strays, a
-#                            discussion — triage's signals read the whole board)
+#   triage      triage#…     an untriaged issue: needs-triage, or no queue label
+#                            and not an epic (the stray LABELS.md forbids) —
+#                            precise, so the ledger veto and the idle set-aside
+#                            both read it by item (#763 round 3)
+#               board#REPO   anything at all moved (a discussion, a comment —
+#                            triage's other signals read the whole board)
 wake_reasons() {
   local roles="$1" login="$2" repo="$3" rows="$4"
   local kind num ts a b c
@@ -66,6 +70,9 @@ wake_reasons() {
         case ",$a," in *",attention,"*) case ",$b," in *",$login,"*) [ -n "$login" ] && echo "attention#$repo#$num $ts" ;; esac ;; esac
         case " $roles " in *" builder "*)
           case ",$a," in *",ready,"*) [ "$b" = - ] && echo "ready#$repo#$num $ts" ;; esac ;;
+        esac
+        case " $roles " in *" triage "*)
+          wake_untriaged "$a" && echo "triage#$repo#$num $ts" ;;
         esac ;;
       P)
         case " $roles " in *" builder "*)
@@ -77,6 +84,20 @@ wake_reasons() {
     esac
   done <<<"$rows"
   case " $roles " in *" triage "*) [ -n "$rows" ] && echo "board#$repo -" ;; esac
+  return 0
+}
+
+# wake_untriaged LABELS — is an issue carrying these labels (csv, `-` for none)
+# triage's own work? needs-triage is; so is a stray — an open issue with none
+# of the queue labels and not an epic, the state LABELS.md forbids and
+# duty-triage.sh's signal (b) wakes a session for. The names are the conf's
+# (fleet.defaults.conf), read with the same defaults the engine ships.
+wake_untriaged() {
+  local l=",$1,"
+  case "$l" in *",${LABEL_NEEDS_TRIAGE:-needs-triage},"*) return 0 ;; esac
+  case "$l" in
+    *",${LABEL_READY:-ready},"*|*",${LABEL_CLAIMED:-claimed},"*|*",${LABEL_BLOCKED:-blocked},"*|*",${LABEL_EPIC:-epic},"*) return 1 ;;
+  esac
   return 0
 }
 

@@ -1861,7 +1861,7 @@ function cmd(action,extra){
     })
     .catch(function(e){setStatus(action+" failed: "+e.message,true);});
 }
-function esc(s){return String(s).replace(/[&<>]/g,function(c){return c==="&"?"&amp;":c==="<"?"&lt;":"&gt;";});}
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;";});}
 function stampVersion(s){var m=String(s||"").match(/^crew@([0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?)(?:\s|$)/);return m?m[1]:"unknown";}
 function clockStr(){var d=new Date();return pad2(d.getUTCHours())+":"+pad2(d.getUTCMinutes())+":"+pad2(d.getUTCSeconds());}
 /* The floor with nothing on it. #204 made an empty grid a state an operator
@@ -6747,7 +6747,10 @@ function openRoster(){
       ov.addEventListener("click",function(e){if(e.target===ov||e.target.id==="rosx")closeRoster();});
       document.getElementById("rosbody").addEventListener("click",onRosterClick);
     }
-    ROSTER_OPTS={agents:r.agents||[],roles:r.roles||[]};
+    /* The etag is what the file was when this overlay opened; the save hands
+       it back, and a roster edited since (by hand, another tab) is refused
+       rather than overwritten from this copy. */
+    ROSTER_OPTS={agents:r.agents||[],roles:r.roles||[],etag:r.etag||""};
     document.getElementById("rosttl").textContent="fleet roster · "+r.path;
     /* Each row's standing is read off the poll's own snapshot, never re-asked:
        a line with no box yet is the TARGET fleet (the roster deliberately names
@@ -6810,7 +6813,7 @@ function onRosterClick(e){
             roles:[].map.call(tr.querySelectorAll('.rossel input:checked'),function(i){return i.value;}),
             from:tr.querySelector('[data-k="from"]').value.trim()};
   });
-  return cmd("roster-set",{members:members}).then(function(r){if(r&&r.ok)openRoster();});
+  return cmd("roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});
 }
 document.getElementById("filters").addEventListener("click",function(e){var b=e.target.closest(".fchip");if(!b)return;var f=b.dataset.f;floorFilter[f]=b.dataset.v;[].forEach.call(this.querySelectorAll('.fchip[data-f="'+f+'"]'),function(x){x.classList.toggle("on",x===b);});});
 /* Pause/Resume is the box's crontab, not its power: the engine stops being

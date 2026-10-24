@@ -266,4 +266,51 @@ t restart-shape-has-one-emitter 1 \
 t first-tick-shape-has-one-emitter 1 \
   "$(grep -c 'boot gate: first tick on this box' "$DUTYSH" || true)"
 
+# --- the memory gate (#761, #763 round 3) -----------------------------------
+# Extracted the same way: the `.memory-pending` branch, from its `if` through
+# its `fi`, run with the real log/warn and a scratch DUTY_DIR. The gate is a
+# `exit 0` on hold, so the runner's rc is the verdict and its stdout the line.
+MGATE="$TMP/memory-gate.sh"
+awk '
+  /^if \[ -e "\$DUTY_DIR\/\.memory-pending" \]; then$/ { keep = 1 }
+  keep { print }
+  keep && /^fi$/ { exit }
+' "$DUTYSH" >"$MGATE"
+t memory-gate-extracted found "$(grep -q 'duty tick skipped: .memory-pending stands' "$MGATE" && echo found || echo MISSING)"
+run_mgate() {  # run_mgate <dir> [GRACE] -> stdout; $TMP/mgate.rc carries the rc
+  local dir="$1" runner="$TMP/run-mgate.sh"
+  {
+    printf '%s\n' '#!/usr/bin/env bash' 'set -uo pipefail'
+    # shellcheck disable=SC2016  # writing literal fixture source
+    printf '%s\n' 'source "$SHARED/lib/common.sh"'
+    cat "$MGATE"
+    printf '%s\n' 'echo RAN'
+  } >"$runner"
+  # Called inside a command substitution, so the rc goes through a file.
+  out="$(DUTY_DIR="$dir" WORK_DIR="$dir/work" SHARED="$SHARED" MEMORY_PENDING_GRACE_S="${2:-1800}" bash "$runner" 2>&1)"
+  printf '%s\n' "$?" >"$TMP/mgate.rc"
+  printf '%s' "$out"
+}
+D="$(mk_dir memory-pending)"
+touch "$D/.memory-pending"
+out="$(run_mgate "$D")"
+t memory-gate-a-standing-marker-skips-the-tick 1 "$(grep -c 'duty tick skipped: .memory-pending stands' <<<"$out")"
+t memory-gate-the-skip-is-exit-0-and-runs-nothing "0 0" "$(cat "$TMP/mgate.rc") $(grep -c '^RAN$' <<<"$out")"
+t memory-gate-the-skip-keeps-the-marker present "$([ -e "$D/.memory-pending" ] && echo present || echo absent)"
+# The grace counts from the marker, not from boot: a marker touched a moment
+# ago on a box up for hours (the cut's own touch) is NOT expired by a grace the
+# uptime already exceeds. This box has certainly been up more than two seconds.
+out="$(run_mgate "$D" 2)"
+t memory-gate-a-fresh-marker-is-not-aged-by-the-uptime 1 "$(grep -c 'duty tick skipped' <<<"$out")"
+t memory-gate-the-fresh-marker-is-kept present "$([ -e "$D/.memory-pending" ] && echo present || echo absent)"
+# A marker the checkpoint carried in predates the boot, so it ages with the
+# uptime — and past the grace the box says so once and runs without it.
+touch -d '2026-01-01T00:00:00Z' "$D/.memory-pending"
+out="$(run_mgate "$D" 1)"
+t memory-gate-a-carried-marker-past-the-grace-runs 1 "$(grep -c '^RAN$' <<<"$out")"
+t memory-gate-the-expiry-is-said-once-as-a-warning 1 "$(grep -c 'WARN: memory restore did not arrive within 1s; this box runs without its ledgers from here' <<<"$out")"
+t memory-gate-the-expired-marker-is-lifted absent "$([ -e "$D/.memory-pending" ] && echo present || echo absent)"
+out="$(run_mgate "$D" 1)"
+t memory-gate-without-the-marker-nothing-is-said "1 0" "$(grep -c '^RAN$' <<<"$out") $(grep -c 'memory' <<<"$out")"
+
 suite_finish

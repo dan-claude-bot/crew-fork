@@ -66,7 +66,7 @@ _triage_graph_edges() {  # _triage_graph_edges REPO ISSUES_JSON
     # deliberately recognize the same declaration grammar.
     def blockers:
       def mask: if test("\\([^()]*\\)") then gsub("\\((?<p>[^()]*)\\)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]") | mask else . end; mask
-      | gsub("\\((?<p>[^()\\n]*)(?=\\n|$)"; "[" + (.p | gsub("[.;](?=[ \\t])"; ",")) + "]")
+      | gsub("\\((?<p>[^()\\n]*?)(?=\\.[ \\t]+[A-Z]|\\n|$)"; "[" + (.p | gsub("[.;](?=[ \\t])"; ",")) + "]")
       | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
       | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
     [ .[] as $issue

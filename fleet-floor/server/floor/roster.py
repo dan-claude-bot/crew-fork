@@ -9,9 +9,11 @@ collector source, comments included, so the word after a literal "crew " in
 this file mints a console verb that does not exist. Say "the CLI".
 """
 
+import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import threading
 import time
@@ -203,10 +205,15 @@ _ROSTER_LOCK = threading.Lock()
 
 
 def profile_names(kind):
-    """The `agents` or `roles` a roster line may name: the shipped profiles
-    plus the operator's own (which win by name, as agent_conf_path says)."""
+    """The `agents` or `roles` a roster line may name — exactly the names the
+    CLI's validate_profiles accepts, so a roster the console saves is one
+    `crew up` takes whole. Agents: the shipped profiles plus the operator's
+    own (which win by name, as agent_conf_path says). Roles: the shipped set
+    only — the CLI reads `shared/conf/roles/` alone to size and install a
+    box, so an operator roles/ file is a name a line may NOT carry; offered
+    here it stopped `crew up` for the whole fleet (#763 round 3)."""
     dirs = [AGENTS_DIR if kind == "agents" else ROLES_DIR]
-    if CONFIG_IS_OPERATOR:
+    if CONFIG_IS_OPERATOR and kind == "agents":
         dirs.append(os.path.join(CONFIG_DIR, kind))
     names = set()
     for d in dirs:
@@ -219,17 +226,38 @@ def profile_names(kind):
     return sorted(names)
 
 
+def roster_etag(path=None):
+    """A short digest of the file as it is on disk: what the editor opened on,
+    and what a save must still find there (#763 round 3). Empty when the file
+    cannot be read."""
+    try:
+        with open(path or ROSTER, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+class RosterChanged(str):
+    """A refusal of its own kind: the file moved under the editor. actions.py
+    answers it 409, the code a confirmed action that no longer matches the
+    world already carries (#486), rather than the 400 of a bad line."""
+
+
 def roster_snapshot():
     """What the console's roster editor opens on: the file as it is on disk
-    right now, the names a line may use, and where a save lands."""
+    right now (and its etag, which the save hands back), the names a line may
+    use, and where a save lands."""
     return {"path": ROSTER, "config_dir": CONFIG_DIR, "operator": CONFIG_IS_OPERATOR,
+            "etag": roster_etag(),
             "agents": profile_names("agents"), "roles": profile_names("roles"),
             "members": read_roster()}
 
 
-def _roster_validate(members):
+def _roster_validate(members, before=None):
     """(clean, error) — every line checked before anything moves, each
-    refusal naming the line and what is wrong with it."""
+    refusal naming the line and what is wrong with it. With `before` (the
+    roster as it stands, by box), a NEW name is also checked against the
+    boxes the host already has."""
     if not isinstance(members, list):
         return None, "members must be a list"
     agents, roles = set(profile_names("agents")), set(profile_names("roles"))
@@ -263,42 +291,105 @@ def _roster_validate(members):
     if not clean:
         return None, ("a roster names at least one member — remove boxes one at a time; "
                       "an empty fleet is a definition to retire by hand")
+    # A NEW line must name a box that does not exist yet (#763 round 3). Put on
+    # the roster, an existing off-roster box — a gold source, a scratch box —
+    # is one `crew up` would hire, which is exactly what the CLI's off-roster
+    # guard on hiring exists to refuse. Adopting a box into the fleet is a
+    # hand edit of fleet.roster on the host, where that choice is visible.
+    # Fails closed: a host whose boxes cannot be listed adds nothing new.
+    if before is not None:
+        added = [m["box"] for m in clean if m["box"] not in before]
+        if added:
+            states, ok = box_states(strict=True)
+            if not ok:
+                return None, ("the host's boxes could not be listed, so a new line is not added "
+                              "blind (%s may name a box this host already has) — try again, or "
+                              "add it by hand" % ", ".join(added))
+            for b in added:
+                if b in states:
+                    return None, ("box %s already exists on this host and is not on the roster; "
+                                  "a roster line would make `crew up` hire it, skipping the "
+                                  "off-roster protection hiring has — a new box takes a new "
+                                  "name; an existing one joins the fleet by hand (fleet.roster "
+                                  "on the host)" % b)
     return clean, ""
 
 
-def roster_set(members, actor=""):
+def _roster_format(clean):
+    """The member lines, aligned."""
+    wb = max([len(m["box"]) for m in clean] + [12])
+    wa = max([len(m["agent"]) for m in clean] + [6])
+    return {m["box"]: "%-*s %-*s %s%s" % (wb, m["box"], wa, m["agent"], m["room"],
+                                          ("  " + m["from"]) if m["from"] else "")
+            for m in clean}
+
+
+def _roster_rewrite(old_text, clean):
+    """The file with its members replaced IN PLACE and everything else kept:
+    every comment and blank line stays where it was — the header, a note
+    between two members, a commented-out "parked" line, a trailing remark —
+    a removed member's line is dropped, a kept one is rewritten aligned, and
+    a new one lands after the last member (#763 round 3: the first cut kept
+    the header alone and lost every other comment on the first save)."""
+    fmt = _roster_format(clean)
+    lines = old_text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    out, emitted, pos = [], set(), None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or len(s.split()) < 3:
+            out.append(line)          # prose, blank, or a line the reader skips
+            continue
+        name = s.split()[0]
+        if name in fmt and name not in emitted:
+            out.append(fmt[name]); emitted.add(name)
+        # else: removed from the roster, or a duplicate of a line already
+        # written — dropped either way. A new member lands where the LAST
+        # member-shaped line stood, removed ones included, so a note that
+        # trailed the members still trails them.
+        pos = len(out)
+    new = [fmt[m["box"]] for m in clean if m["box"] not in emitted]
+    if pos is None:
+        pos = len(out)
+    out[pos:pos] = new
+    return "\n".join(out) + "\n"
+
+
+def roster_set(members, actor="", etag=None):
     """Rewrite fleet.roster. Returns (result, error) with the registry writers'
     three outcomes: `(result, "")` landed and recorded; `(None, error)` refused
-    with the file untouched; `(result, error)` landed but not recorded."""
+    with the file untouched; `(result, error)` landed but not recorded.
+
+    `etag` is the digest the editor opened on (GET /api/roster): a save is a
+    rewrite of the whole file from the browser's copy, so it must name the
+    file it edits — without one, or against a file that changed since (a hand
+    edit, another tab), the save is refused as RosterChanged and nothing
+    moves (#763 round 3: the first cut dropped the other edit silently and
+    journalled it as a removal)."""
     if not CONFIG_IS_OPERATOR:
         return None, ("the shipped example roster is not edited from the console: "
                       "scaffold your own fleet definition (crew init) and serve that")
-    clean, err = _roster_validate(members)
-    if err:
-        return None, err
+    if not etag or not isinstance(etag, str):
+        return None, RosterChanged("a save names the roster it edits (the etag GET /api/roster "
+                                   "answered); none came — reopen the roster and apply the "
+                                   "change again")
     with _ROSTER_LOCK:
+        current = roster_etag()
+        if etag != current:
+            return None, RosterChanged("the roster changed on disk since the editor opened it "
+                                       "(a hand edit, or another tab saved) — nothing was written; "
+                                       "reopen the roster and apply the change again")
         before = {u["box"]: u for u in read_roster()}
-        # The file's own header — every comment and blank line ahead of the
-        # first member — is kept word for word: it is the operator's prose
-        # about their fleet, and the format's own explanation in a scaffold.
-        header = []
+        clean, err = _roster_validate(members, before)
+        if err:
+            return None, err
         try:
             with open(ROSTER, encoding="utf-8") as f:
-                for line in f:
-                    s = line.strip()
-                    if s and not s.startswith("#"):
-                        break
-                    header.append(line.rstrip("\n"))
+                old_text = f.read()
         except OSError:
-            header = []
-        while header and not header[-1].strip():
-            header.pop()
-        wb = max([len(m["box"]) for m in clean] + [12])
-        wa = max([len(m["agent"]) for m in clean] + [6])
-        lines = ["%-*s %-*s %s%s" % (wb, m["box"], wa, m["agent"], m["room"],
-                                     ("  " + m["from"]) if m["from"] else "")
-                 for m in clean]
-        body = "\n".join(header + lines) + "\n"
+            old_text = ""
+        body = _roster_rewrite(old_text, clean)
         # The record is a precondition of the write (#488 D5): a roster that
         # could change with nothing durable saying who changed it is refused.
         try:
@@ -308,11 +399,34 @@ def roster_set(members, actor=""):
             return None, ("the write was refused because it could not be recorded: the "
                           "roster journal %s cannot be appended to (%s). Nothing was written."
                           % (ROSTER_JOURNAL, e))
-        tmp = ROSTER + ".tmp"
+        # Onto the file the path RESOLVES to, with its mode, durably: a roster
+        # kept as a symlink stays one (os.replace on the link itself swapped
+        # it for a copy), a 0600 roster stays 0600 (the temp file took the
+        # umask), and the bytes and the directory entry are fsynced before
+        # the journal says the edit landed (#763 round 3).
+        target = os.path.realpath(ROSTER)
+        tmp = target + ".tmp"
         try:
+            try:
+                st = os.stat(target)
+            except OSError:
+                st = None
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(body)
-            os.replace(tmp, ROSTER)
+                f.flush()
+                os.fsync(f.fileno())
+            if st is not None:
+                os.chmod(tmp, stat.S_IMODE(st.st_mode))
+                try:
+                    os.chown(tmp, st.st_uid, st.st_gid)
+                except OSError:
+                    pass          # another owner's file: the mode is kept, the owner is ours
+            os.replace(tmp, target)
+            dfd = os.open(os.path.dirname(target) or ".", os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
         except OSError as e:
             try:
                 os.remove(tmp)
@@ -342,8 +456,8 @@ def roster_set(members, actor=""):
                                      "durable record of it exists — reconcile the journal by hand."
                                      % (ROSTER_JOURNAL, e, ROSTER))
         log(line.strip())
-        return {"path": ROSTER, "members": clean, "added": added, "removed": removed,
-                "changed": changed, "recorded": recorded}, jerr
+        return {"path": ROSTER, "etag": roster_etag(), "members": clean, "added": added,
+                "removed": removed, "changed": changed, "recorded": recorded}, jerr
 
 
 def box_states(strict=False):
