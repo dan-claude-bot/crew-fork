@@ -3807,9 +3807,9 @@ reset_settle_why() {
   local name="$1" other running=0
   if [ -e "$(tick_paused_file "$name")" ]; then echo paused; return 0; fi
   while read -r other _; do
-    [ -n "$other" ] && [ "$other" != "$name" ] || continue
+    if [ -z "$other" ] || [ "$other" = "$name" ]; then continue; fi
     [ ! -e "$(tick_paused_file "$other")" ] || continue
-    [ "$(box_state "$other")" = running ] && running=$((running + 1))
+    [ "$(box_state "$other")" != running ] || running=$((running + 1))
   done <<<"$(read_roster)"
   [ "$running" -lt "${FLEET_MAX_RUNNING:-2}" ] || echo "held:$running"
   return 0
