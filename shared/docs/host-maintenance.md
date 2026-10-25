@@ -316,8 +316,11 @@ work its roles own (a ready issue nobody holds for a builder, a review request
 for a reviewer, anything at all for triage, an `attention` demand for anyone)
 **and** the store's memory of that member does not already answer it: an item
 its seen-ledgers hold at that timestamp, a lane whose breaker is tripped, a
-lane whose session budget is spent. Each refusal is logged by name
-(`veto <reason>:<why>`), so a wake that is missing is never silent.
+lane whose session budget is spent. A running box's ledgers are read live off
+the box for that veto (the store's copy is as old as its last drain or poll;
+a box that does not answer leaves the store's copy as the answer), and the
+labels are read by the names `fleet.conf` gives them. Each refusal is logged
+by name (`veto <reason>:<why>`), so a wake that is missing is never silent.
 
 At most `FLEET_MAX_RUNNING` boxes run at once; a member with work past the cap
 is `held`, by name, and re-evaluated next tick. A running box that bought no

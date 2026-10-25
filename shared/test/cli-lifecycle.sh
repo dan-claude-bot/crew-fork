@@ -1065,6 +1065,22 @@ t new-a-two-role-line-is-sized-by-its-roles-in-order \
 reset_case
 LIFE_CONF="$CONF_NEW" capture new --role builder,janitor --agent claude
 t new-a-two-role-line-names-the-unknown-role-alone 1 "$(grep -c "unknown role 'janitor'" <<<"$OUT")"
+# An ad-hoc two-role box with no --name is named by both roles, hyphenated: a
+# comma is outside incus's alphabet and failed at create, past validation
+# (#763 round 4).
+reset_case
+LIFE_CONF="$CONF_NEW" capture new --role builder,reviewer --agent claude
+t new-a-two-role-ad-hoc-box-is-named-by-both-roles "0 1" "$RC $(grep -c '^new --name claude-builder-reviewer ' "$STATE/calls")"
+# ...and `crew status` reads the memory of the LAST role, the one whose
+# figures the box was minted with (#763 round 4: it read the first's).
+# The function is read out of the CLI itself, over a roster_line of the
+# suite's, so the pin is on the shipped code.
+t status-a-two-role-boxs-memory-is-the-last-roles "8GiB 4GiB" "$(
+  CREW_ROOT="$ROOT" bash -c "
+    $(sed -n '/^box_memory_of()/,/^}/p' "$CLI")
+    roster_line() { case \$1 in a) echo 'claude triage,builder' ;; b) echo 'claude builder,triage' ;; esac; }
+    printf '%s %s' \"\$(box_memory_of a)\" \"\$(box_memory_of b)\""
+)"
 
 # THE TWO SURFACES AN OPERATOR READS WITHOUT OPENING THE SOURCE (#679 D2, and
 # the fence triage widened onto them on 2026-09-05 upholding codex-bot's

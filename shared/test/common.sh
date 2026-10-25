@@ -7389,6 +7389,10 @@ t blockers-an-unclosed-parenthesis-ends-at-a-sentence-break '["5"]' \
   "$(bjq_set 'Blocked by #5 (lands soon. Follow-up #7 tracks the docs.')"
 t blockers-a-lowercase-continuation-inside-an-unclosed-aside-is-not-a-break '["5","7"]' \
   "$(bjq_set 'Blocked by #5 (see the log. it is long, and #7 too.')"
+# A sentence may open on a reference: "#7 is the follow-up" after the stop is
+# the next sentence, not the aside going on (#763 round 4).
+t blockers-a-sentence-opening-on-a-reference-is-a-break '["5"]' \
+  "$(bjq_set 'Blocked by #5 (pending CI. #7 is the follow-up.')"
 # shellcheck disable=SC2016  # the backticks are the fixture body's own prose
 t blockers-live-clause-beside-quote '["5"]' \
   "$(bjq_set 'Blocked by #5. The sibling declares `Blocked by #7` and holds.')"

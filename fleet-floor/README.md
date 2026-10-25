@@ -243,13 +243,19 @@ is not already a box on the host (adopting an existing box into the fleet is
 a hand edit, where that choice is visible) — refused with the line and the
 reason. The save names the file it edits: `GET /api/roster` answers an
 `etag`, the save hands it back, and a roster edited since the overlay opened
-(by hand, from another tab) is refused `409` with nothing written. The write
-replaces the members in place and keeps every other line where it was — the
-header, a note between members, a commented-out parked member, a trailing
-remark — through a symlink if the roster is one, with the file's own mode,
-fsynced, and journalled in `.roster-journal.log` (who, the state the write
-applied, the deltas). It is refused under the shipped examples fallback, as
-every writer is.
+(by hand, from another tab) is refused `409` with nothing written — checked
+before the validation, so a stale save costs no `box list`, and again on the
+very bytes the write is built from, so an edit that lands during that list
+is caught too. A line's roles are saved in the order the line was written
+(the box sources them in that order, and the last one's figures are its); a
+newly ticked role is appended, and a role the overlay cannot show (not a
+shipped one) is kept as written and refused by name rather than dropped. The
+write replaces the members in place and keeps every other line where it was
+— the header, a note between members, a commented-out parked member, a
+trailing remark — through a symlink if the roster is one, with the file's
+own mode, fsynced, and journalled in `.roster-journal.log` (who, the state
+the write applied, the deltas). It is refused under the shipped examples
+fallback, as every writer is.
 
 Saving writes the definition and nothing else. A new line becomes a box when
 the operator runs `crew up` on the host (it creates, starts and hires every

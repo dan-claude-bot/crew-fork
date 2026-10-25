@@ -552,6 +552,10 @@ case "${1:-}" in
     ;;
 
   list)
+    # A test may land a hand edit WHILE the list is out: a file under the
+    # state dir that runs once, here, before the answer — the window a save
+    # that costs a `box list` leaves open (#763 round 4).
+    if [ -f "$STATEDIR/on-list" ]; then mv "$STATEDIR/on-list" "$STATEDIR/on-list.ran"; bash "$STATEDIR/on-list.ran"; fi
     printf '['
     first=1
     while read -r name _st _sc; do

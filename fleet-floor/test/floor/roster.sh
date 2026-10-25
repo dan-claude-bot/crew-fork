@@ -160,6 +160,42 @@ t "roster-set: reopened, the hand edit is a member and the save lands" 200 "$(rs
 RS_ADOPT="${RS_MEMBERS4%]*},{\"box\":\"rs-stopped\",\"agent\":\"codex\",\"roles\":[\"triage\"],\"from\":\"\"}]"
 t "roster-set: a new line naming an existing off-roster box is refused" "400 1" \
   "$(rs_set_status "$RS_ADOPT") $(rs_set_body "$RS_ADOPT" | jqf "d['error']" | grep -c 'box rs-stopped already exists on this host and is not on the roster')"
+# ...and a hand edit that lands WHILE the save is being checked — during the
+# `box list` a new name costs — is caught on the bytes the rewrite reads, not
+# only on the etag the editor opened with (#763 round 4: that window was the
+# list's whole timeout, and the edit was rewritten away and journalled as a
+# removal). The stub lands the edit from inside its own `list`.
+printf '#!/usr/bin/env bash\nprintf "rs-late        kimi    reviewer\\n" >>"%s"\n' "$RS_ROSTER" >"$RS_STATE/on-list"
+RS_FRESH="${RS_MEMBERS4%]*},{\"box\":\"rs-fresh\",\"agent\":\"claude\",\"roles\":[\"builder\"],\"from\":\"\"}]"
+RS_JOURNAL_N="$(wc -l <"$RS_JOURNAL")"
+RS_LATE="$(rs_set "$RS_FRESH")"
+t "roster-set: a hand edit landing during the box list is caught before the write" "ran 409" \
+  "$([ -f "$RS_STATE/on-list.ran" ] && echo ran || echo not-run) $(printf '%s\n' "$RS_LATE" | tail -1)"
+t "roster-set: the late edit is still in the file and nothing was journalled" "1 $RS_JOURNAL_N" \
+  "$(grep -c '^rs-late ' "$RS_ROSTER") $(wc -l <"$RS_JOURNAL")"
+t "roster-set: the refusal names the moment" 1 \
+  "$(printf '%s\n' "$RS_LATE" | sed '$d' | jqf "d['error']" | grep -c 'while the save was being checked')"
+sed -i '/^rs-late /d' "$RS_ROSTER"; rm -f "$RS_STATE/on-list.ran"
+# The editor saves a line's roles in the order the LINE was written — the box
+# sources them in that order and the last one's figures win — appends a newly
+# ticked one, drops an unticked one, and keeps one it cannot show (#763 round
+# 4: checkbox order re-wrote `triage,builder` as `builder,triage` on any save).
+# The function is read out of app.js itself, so the pin is on the shipped code.
+t "roster: each row carries the order its line was written in, and the save reads it" "1 1" \
+  "$(grep -c '<tr class="rosrow" data-room=' "$FLOOR/src/app.js") $(grep -c 'roles:rosterRoles((tr.dataset.room' "$FLOOR/src/app.js")"
+if command -v node >/dev/null 2>&1; then
+  RS_ORDER="$(node -e "$(sed -n '/^function rosterRoles(/,/^}/p' "$FLOOR/src/app.js")
+var o=['builder','reviewer','triage'];
+console.log([rosterRoles(['triage','builder'],o,['builder','triage']).join(','),
+  rosterRoles(['triage','builder'],o,['builder','reviewer','triage']).join(','),
+  rosterRoles(['triage','builder'],o,['triage']).join(','),
+  rosterRoles(['janitor','builder'],o,['builder']).join(','),
+  rosterRoles([],o,['reviewer']).join(',')].join('|'));")"
+  t "roster: the editor keeps the written role order, appends a new one, keeps one it cannot show" \
+    "triage,builder|triage,builder,reviewer|triage|janitor,builder|reviewer" "$RS_ORDER"
+else
+  skip "roster: the written role order" "node is not installed"
+fi
 # The roles a line may name are the SHIPPED profiles — what the CLI's
 # validate_profiles accepts — never an operator roles/ file (#763 round 3).
 mkdir -p "$CREW_CONFIG_DIR/roles"; printf 'BOX_CPU=1\n' >"$CREW_CONFIG_DIR/roles/janitor.conf"

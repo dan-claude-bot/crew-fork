@@ -38,13 +38,14 @@
 # Parentheses are an ASIDE, not a clause boundary: every level is folded
 # innermost-out into brackets with its `.`/`;` softened, and a parenthesis
 # never closed is folded to the end of its line — or to the first sentence
-# break inside it (`. ` and a capital), since "Blocked by #5 (lands soon.
-# Follow-up #7 tracks the docs." is prose about #7, not a blocker (#763
-# rounds 2 and 3). The same text is copied into duty-triage.sh, byte for
-# byte, and the triage suite compares the two.
+# break inside it (`. ` and a capital, or a `#`: the next sentence may open
+# on a reference), since "Blocked by #5 (lands soon. Follow-up #7 tracks the
+# docs." is prose about #7, not a blocker, and so is "(pending CI. #7 is the
+# follow-up" (#763 rounds 2 to 4). The same text is copied into
+# duty-triage.sh, byte for byte, and the triage suite compares the two.
 def blockers:
   def mask: if test("\\([^()]*\\)") then gsub("\\((?<p>[^()]*)\\)"; "[" + (.p | gsub("[.;](?=\\s|$)"; ",")) + "]") | mask else . end; mask
-  | gsub("\\((?<p>[^()\\n]*?)(?=\\.[ \\t]+[A-Z]|\\n|$)"; "[" + (.p | gsub("[.;](?=[ \\t])"; ",")) + "]")
+  | gsub("\\((?<p>[^()\\n]*?)(?=\\.[ \\t]+[A-Z#]|\\n|$)"; "[" + (.p | gsub("[.;](?=[ \\t])"; ",")) + "]")
   | [ match("(?<![`\"])[Bb]locked by((?:[^.;]|[.;](?=[A-Za-z0-9]))*)"; "g").captures[0].string ] | join(" ")
   | [ scan("(?:^|[^A-Za-z0-9_/.-])((?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[0-9]+|#([0-9]+))") | .[1] // .[0] ];
 [ .[]

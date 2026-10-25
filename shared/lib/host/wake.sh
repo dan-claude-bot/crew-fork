@@ -69,7 +69,7 @@ wake_reasons() {
       I)
         case ",$a," in *",attention,"*) case ",$b," in *",$login,"*) [ -n "$login" ] && echo "attention#$repo#$num $ts" ;; esac ;; esac
         case " $roles " in *" builder "*)
-          case ",$a," in *",ready,"*) [ "$b" = - ] && echo "ready#$repo#$num $ts" ;; esac ;;
+          case ",$a," in *",${LABEL_READY:-ready},"*) [ "$b" = - ] && echo "ready#$repo#$num $ts" ;; esac ;;
         esac
         case " $roles " in *" triage "*)
           wake_untriaged "$a" && echo "triage#$repo#$num $ts" ;;
@@ -103,13 +103,18 @@ wake_untriaged() {
 
 # wake_ledger_seen BOX ITEM TS — has this member already handled ITEM
 # (repo#num) at or past TS? Read from every ledger the store holds for the
-# box: the engine's seen-ledgers are `id ts` rows and ids are `repo#num`.
+# box — the engine's seen-ledgers are `id ts` rows and ids are `repo#num` —
+# and, for a RUNNING box, from the ledgers the tick read live off the box in
+# WAKE_LEDGER_LIVE: the store's copy is as old as the last drain or floor
+# poll, and a running triage box on a busy board would otherwise carry an
+# unvetoed `triage#` for an issue its session already left for a person,
+# woken every tick and never idle-stopped (#763 round 4).
 wake_ledger_seen() {
   local box="$1" item="$2" ts="$3" id seen_ts
   while read -r id seen_ts; do
     [ "$id" = "$item" ] || continue
     [ "$seen_ts" \< "$ts" ] || return 0
-  done < <(wake_store ledger --box "$box" 2>/dev/null)
+  done < <(wake_store ledger --box "$box" 2>/dev/null; [ -z "${WAKE_LEDGER_LIVE:-}" ] || printf '%s\n' "$WAKE_LEDGER_LIVE")
   return 1
 }
 

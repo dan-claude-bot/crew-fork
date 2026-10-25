@@ -6777,15 +6777,29 @@ function rosterStanding(u){
 function rosterRow(m,u){
   var chosen={};(m.room||"").split(",").forEach(function(x){if(x)chosen[x]=1;});
   var st=rosterStanding(u);
-  return '<tr class="rosrow">'
+  var kept=(m.room||"").split(",").filter(function(x){return x&&ROSTER_OPTS.roles.indexOf(x)<0;});
+  return '<tr class="rosrow" data-room="'+esc(m.room||"")+'">'
     +'<td><input class="rosin" data-k="box" value="'+esc(m.box||"")+'" placeholder="box-name" spellcheck="false"'+(u?' readonly title="an existing box keeps its name — a renamed line would be a second box"':'')+'>'
     +(st?'<div class="rosst'+(st==="new"?" new":"")+'">'+esc(st)+'</div>':'')+'</td>'
     +'<td><select class="rosin" data-k="agent">'+ROSTER_OPTS.agents.map(function(a){return '<option'+(a===m.agent?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></td>'
-    +'<td><div class="regsel rossel">'+ROSTER_OPTS.roles.map(function(x){return '<label class="regopt"><input type="checkbox" value="'+esc(x)+'"'+(chosen[x]?' checked':'')+'><span>'+esc(x)+'</span></label>';}).join('')+'</div></td>'
+    +'<td><div class="regsel rossel">'+ROSTER_OPTS.roles.map(function(x){return '<label class="regopt"><input type="checkbox" value="'+esc(x)+'"'+(chosen[x]?' checked':'')+'><span>'+esc(x)+'</span></label>';}).join('')+'</div>'
+    +(kept.length?'<div class="rosst">'+esc(kept.join(","))+' · kept as written, not editable here</div>':'')+'</td>'
     +'<td><input class="rosin" data-k="from" value="'+esc(m.from||"")+'" placeholder="(blank mint)" spellcheck="false"></td>'
     +'<td><button class="lbtn rosdrop" data-ros="drop" title="remove this line (the box itself is left alone)">✕</button></td></tr>';
 }
 function closeRoster(){var ov=document.getElementById("rosov");if(ov)ov.style.display="none";}
+/* The roles a row saves, in the order the LINE was written: the box sources
+   its roles in that order and the last one's figures win, so a hand-written
+   `triage,builder` saved back as `builder,triage` on an unrelated save would
+   re-size the box (#763 round 4). A newly ticked role is appended; an unticked
+   one is dropped; one the editor cannot show (not a shipped role) is kept as
+   written, for the collector to refuse by name rather than drop silently. */
+function rosterRoles(written,offered,checked){
+  var on={},shown={};checked.forEach(function(x){on[x]=1;});offered.forEach(function(x){shown[x]=1;});
+  var out=written.filter(function(x){return on[x]||!shown[x];});
+  checked.forEach(function(x){if(out.indexOf(x)<0)out.push(x);});
+  return out;
+}
 function onRosterClick(e){
   var b=e.target.closest("[data-ros]");if(!b)return;
   var list=document.getElementById("roslist");
@@ -6810,7 +6824,8 @@ function onRosterClick(e){
   var members=[].map.call(list.querySelectorAll("tr.rosrow"),function(tr){
     return {box:tr.querySelector('[data-k="box"]').value.trim(),
             agent:tr.querySelector('[data-k="agent"]').value,
-            roles:[].map.call(tr.querySelectorAll('.rossel input:checked'),function(i){return i.value;}),
+            roles:rosterRoles((tr.dataset.room||"").split(",").filter(Boolean),ROSTER_OPTS.roles,
+                              [].map.call(tr.querySelectorAll('.rossel input:checked'),function(i){return i.value;})),
             from:tr.querySelector('[data-k="from"]').value.trim()};
   });
   return cmd("roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});

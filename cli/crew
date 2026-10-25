@@ -2504,9 +2504,11 @@ cmd_new() {
   validate_profiles "$agent" "$role"
   require_operator_config "crew new"
   if [ -z "$name" ]; then
-    name="$agent-$role"
+    # A two-role line names the box by both, hyphenated: a comma is outside
+    # incus's alphabet and would fail at create, past validation (#763 round 4).
+    name="$agent-${role//,/-}"
     local i=2
-    while box_exists "$name"; do name="$agent-$role-$i"; i=$((i + 1)); done
+    while box_exists "$name"; do name="$agent-${role//,/-}-$i"; i=$((i + 1)); done
   fi
   box_exists "$name" && die "'$name' already exists (crew hire $name to put it on duty)"
 
@@ -3847,7 +3849,9 @@ box_memory_of() {
   local _agent role _rest
   read -r _agent role _rest <<<"$(roster_line "$1")"
   [ -n "$role" ] || { printf 'unknown'; return 0; }
-  sed -n 's/^BOX_MEMORY="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$CREW_ROOT/shared/conf/roles/${role%%,*}.conf" 2>/dev/null | head -1 | grep . || printf 'unknown'
+  # The LAST role of a two-role line: create_box sources them in order and the
+  # last one's figures are the box's (#763 round 4).
+  sed -n 's/^BOX_MEMORY="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$CREW_ROOT/shared/conf/roles/${role##*,}.conf" 2>/dev/null | head -1 | grep . || printf 'unknown'
 }
 
 reset_restore_memory() {
@@ -4153,10 +4157,15 @@ tick_unreadable_count() {
 # host-side numbers and nothing else from those files is read here.
 tick_conf_knobs() {
   local line
-  for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW TICK_BLIND_TICKS; do
+  # The label names too: wake_reasons reads an issue's labels by the conf's
+  # names (a renamed `ready` is still the builder's queue, and not a stray for
+  # triage), with the defaults the engine ships (#763 round 4).
+  for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW TICK_BLIND_TICKS \
+              LABEL_NEEDS_TRIAGE LABEL_READY LABEL_CLAIMED LABEL_BLOCKED LABEL_EPIC; do
     eval "$line=\"\$(tick_conf_value $line)\""
   done
   : "${FLEET_MAX_RUNNING:=2}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}" "${TICK_BLIND_TICKS:=3}"
+  : "${LABEL_NEEDS_TRIAGE:=needs-triage}" "${LABEL_READY:=ready}" "${LABEL_CLAIMED:=claimed}" "${LABEL_BLOCKED:=blocked}" "${LABEL_EPIC:=epic}"
 }
 tick_conf_value() { # KEY — the last assignment wins, fleet.conf after defaults
   { sed -n "s/^$1=//p" "$CREW_ROOT/shared/conf/fleet.defaults.conf"
@@ -4206,7 +4215,7 @@ tick_wake() {
 }
 
 tick_run() { # DRY_RUN
-  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss
+  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4283,12 +4292,20 @@ tick_run() { # DRY_RUN
     reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
     reasons="$reasons$(wake_release_reasons "$name")"$'\n'
     reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
-    surviving="$(tick_veto "$name" "$roles" "$reasons" "$(box_state "$name")")"
+    state="$(box_state "$name")"
+    # A running box's ledgers, live: the store's copy is as old as its last
+    # drain or floor poll, so a triage box on a busy board would keep an
+    # unvetoed `triage#` for an issue its session already left for a person —
+    # woken every tick, never idle-stopped (#763 round 4). A box that does
+    # not answer leaves the store's copy as the answer.
+    WAKE_LEDGER_LIVE=""
+    [ "$state" != running ] || [ -z "$reasons" ] \
+      || WAKE_LEDGER_LIVE="$(bxn "$name" 'cat ~/duty/.seen-* 2>/dev/null' 2>/dev/null | tr -d '\r')"
+    surviving="$(tick_veto "$name" "$roles" "$reasons" "$state")"
     while IFS= read -r line; do
       case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
     done <<<"$surviving"
     why="$(wake_why "$surviving")"
-    state="$(box_state "$name")"
     idle=0
     if [ "$state" = running ]; then
       idle="$(bxn "$name" 'cat ~/duty/.idle-ticks 2>/dev/null' 2>/dev/null | tr -d '\r' | head -1)"

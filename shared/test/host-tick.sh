@@ -181,6 +181,8 @@ case "$cmd" in
       *'echo "::logstart"'*) echo "drain $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.record" ;;
       *'.wake-reason'*) echo "wake $name $(printf '%s' "$script" | sed -n "s/.*printf '%s\\\\n' '\([^']*\)'.*/\1/p")" >>"$HT_STATE/calls" ;;
       *'.idle-ticks'*) cat "$HT_STATE/$name.idle" 2>/dev/null || echo 0 ;;
+      # The live ledger read a running box answers (#763 round 4).
+      *'.seen-'*) echo "ledger $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.ledger" 2>/dev/null ;;
       # The busy probe the stop path makes: `<box>.lock` names a held lock.
       *'flock -n "$lock" true'*) echo "probe $name" >>"$HT_STATE/calls"; if [ -s "$HT_STATE/$name.lock" ]; then echo "busy $(cat "$HT_STATE/$name.lock")"; else echo "idle 0"; fi ;;
       *'CREW-FLOOR-PAUSED'*) echo "crontab $name" >>"$HT_STATE/calls"; echo "paused 1" ;;
@@ -452,5 +454,39 @@ rm -f "$CONF/store/wake"/gamma.*; : >"$STATE/calls"
 capture tick
 t triage-an-issue-its-ledger-holds-does-not-boot-it 0 "$(calls 'start gamma')"
 t triage-the-ledger-veto-is-said 1 "$(grep -c 'gamma: veto triage#o/r#17:seen' <<<"$OUT")"
+# A RUNNING box's ledgers are read live off the box: the store's copy is as
+# old as its last drain or poll, so with the store's copy alone a running
+# triage box on a busy board kept an unvetoed triage# for an issue its session
+# had already left for a person — woken every tick, never idle-stopped (#763
+# round 4). First the store's stale copy alone (the box answers no ledger)...
+echo running >"$STATE/gamma.state"; printf '2\n' >"$STATE/gamma.idle"
+ht_record gamma triage-bot '' 2
+rm -f "$STATE/gamma.ledger" "$CONF/store/wake"/gamma.* "$STATE/gamma.lock"; : >"$STATE/calls"
+ht_board $'I 16 2026-10-23T16:00:00Z ready -\nI 17 2026-10-23T17:30:00Z needs-triage -' '' 'D 8 2026-10-23T18:00:00Z'
+capture tick
+t triage-with-no-live-ledger-the-running-box-is-woken 1 "$(grep -c 'gamma: woke (running) why=triage#o/r#17,board#o/r' <<<"$OUT")"
+t triage-the-ledger-was-asked-of-the-box 1 "$(calls 'ledger gamma')"
+# ...then the box's own ledger names the issue: vetoed, the coarse reason set
+# aside on the idle count, and the box stopped as idle.
+printf 'o/r#17 2026-10-23T17:30:00Z\n' >"$STATE/gamma.ledger"
+ht_board $'I 16 2026-10-23T16:00:00Z ready -\nI 17 2026-10-23T17:30:00Z needs-triage -' '' 'D 9 2026-10-23T18:30:00Z'
+rm -f "$CONF/store/wake"/gamma.*; : >"$STATE/calls"
+capture tick
+t triage-a-running-boxs-live-ledger-vetoes-the-item 1 "$(grep -c 'gamma: veto triage#o/r#17:seen' <<<"$OUT")"
+t triage-the-stale-store-copy-does-not-keep-it-awake 0 "$(calls 'wake gamma')"
+t triage-the-box-is-then-stopped-as-idle "drain gamma|down gamma" "$(grep -E '^(drain|down) gamma' "$STATE/calls" | paste -sd'|' -)"
+# The label names are the conf's, loaded by the tick (#763 round 4: the tick
+# read five numeric knobs and wake_untriaged fell back to the defaults, so a
+# fleet that renamed `ready` saw every ready issue as a stray for triage and
+# woke the triage box on every tick). A renamed `ready` is the builder's
+# queue and nobody's stray.
+printf 'LABEL_READY=lista\n' >>"$CONF/fleet.conf"
+echo stopped >"$STATE/gamma.state"; echo stopped >"$STATE/alpha.state"
+ht_board 'I 18 2026-10-23T19:00:00Z lista -' '' ''
+rm -f "$CONF/store/wake"/gamma.* "$CONF/store/wake"/alpha.*; : >"$STATE/calls"
+capture tick
+t labels-a-renamed-ready-is-not-a-stray-for-triage 0 "$(grep -c 'triage#o/r#18' <<<"$OUT")"
+t labels-the-triage-box-is-not-started-for-it 0 "$(calls 'start gamma')"
+t labels-a-renamed-ready-is-the-builders-queue 1 "$(grep -c 'alpha: starting why=ready#o/r#18' <<<"$OUT")"
 
 suite_finish

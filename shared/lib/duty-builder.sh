@@ -674,12 +674,14 @@ _round_cap_census() {
     # the panel to reviewers who never sat that round, and the cap would never
     # fire. The sized-panel cache keyed by head is that memory; when it does
     # not hold the fifth round's head (an engine that was not running then),
-    # the current head's sizing is the best answer there is.
+    # the current head's sizing is the best answer there is. The cache holds
+    # one line per head it ever sized, so a sixth head read since does not
+    # evict the fifth round's (#763 round 4).
     cap_round_head="$(printf '%s' "$payload" | jq -r -L "$DUTY_DIR/lib/jq" \
       'include "rounds"; (.data.repository.pullRequest | round_verdicts | round_heads) as $r
        | if ($r | length) >= 5 then $r[4].oid else "" end' 2>/dev/null || true)"
     if [ -n "$cap_round_head" ] && [ -r "$DUTY_DIR/.panel-sized-${repo//\//_}-$num" ] \
-       && [ "$(cut -d' ' -f1 "$DUTY_DIR/.panel-sized-${repo//\//_}-$num" 2>/dev/null)" = "$cap_round_head" ]; then
+       && grep -q -- "^$cap_round_head " "$DUTY_DIR/.panel-sized-${repo//\//_}-$num" 2>/dev/null; then
       cap_head="$cap_round_head"
     fi
     _panel_effective "$repo" "$num" "$cap_head" "$panel_json"
@@ -830,22 +832,26 @@ _panel_sized() {
 # converged.jq counts approvals AGAINST, so a low-risk head is reviewed by one
 # reviewer and hands off on that one approval — sizing the panel, not the
 # order it is asked in. The reading is cached per head in
-# `.panel-sized-<repo>-<num>` (`<head> <tier> <why>`), so every tick of the
-# same head sizes the same way and the files read is one per head, not one per
-# tick; a new head reads again.
+# `.panel-sized-<repo>-<num>`, ONE LINE PER HEAD (`<head> <tier> <why>`,
+# appended), so every tick of the same head sizes the same way and the files
+# read is one per head, not one per tick; a new head reads again and is
+# remembered beside the others — the round-cap census reads the FIFTH
+# round's head out of it after a sixth has been sized (#763 round 4: a
+# one-line cache forgot it the moment the next head was read).
 _PANEL_EFFECTIVE_JSON="[]"
 _panel_effective() {
   local repo="$1" num="$2" head="$3" panel_json="$4" cache c_head tier why sized
   cache="$DUTY_DIR/.panel-sized-${repo//\//_}-$num"
-  if [ -n "$head" ] && [ -r "$cache" ] && read -r c_head tier why <"$cache" \
-      && [ "$c_head" = "$head" ] && [ -n "$tier" ]; then
+  tier=""
+  [ -z "$head" ] || [ ! -r "$cache" ] || read -r c_head tier why < <(grep -m1 -- "^$head " "$cache" 2>/dev/null; true)
+  if [ -n "$tier" ]; then
     _PANEL_RISK_TIER="$tier"; _PANEL_RISK_WHY="$why"
   else
     _panel_risk "$repo" "$num"
     # PANEL_SIZED_CACHE=off is for a harness that runs the engine out of its
     # own tree: it reads the same way and leaves no file behind.
     [ -z "$head" ] || [ "${PANEL_SIZED_CACHE:-on}" = off ] \
-      || { printf '%s %s %s\n' "$head" "$_PANEL_RISK_TIER" "$_PANEL_RISK_WHY" >"$cache.tmp" && mv -f "$cache.tmp" "$cache"; }
+      || printf '%s %s %s\n' "$head" "$_PANEL_RISK_TIER" "$_PANEL_RISK_WHY" >>"$cache"
   fi
   sized="$(_panel_sized "$_PANEL_RISK_TIER" "$num" "$(printf '%s' "$panel_json" | jq -r '.[]' 2>/dev/null)")"
   _PANEL_EFFECTIVE_JSON="$(printf '%s\n' "$sized" | awk 'NF' | jq -R . | jq -cs .)"

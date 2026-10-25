@@ -5890,6 +5890,16 @@ rm -f "$RC_DUTY/.seen-round-cap"
 t roundcap-census-a-memory-of-another-head-is-not-the-fifth-rounds \
   'prs=[] named=[-]' \
   "$(rc_census "$RC_ONE" '[{"number":8}]')"
+# ...and the memory SURVIVES the sixth head being sized: the cache holds one
+# line per head, so the line the sixth push appended sits beside the fifth
+# round's, and the census still finds it (#763 round 4: one line per file,
+# and the cap never fired once the next head was read).
+printf '%s low one small file\n%s high 1 risky path(s): shared/lib/duty-builder.sh\n' \
+  "$(printf 'c%039d' 5)" "$(printf 'c%039d' 6)" >"$RC_DUTY/.panel-sized-owner_repo-8"
+rm -f "$RC_DUTY/.seen-round-cap"
+t roundcap-census-still-counts-against-the-fifth-round-after-a-sixth-head-was-sized \
+  'prs=[owner/repo#8] named=[owner/repo#8 (5 rounds)]' \
+  "$(rc_census "$RC_ONE" '[{"number":8}]')"
 rm -f "$RC_DUTY/.seen-round-cap" "$RC_DUTY/.panel-sized-owner_repo-8"
 # ...and no module of the engine opens or closes a pull request at all, which is
 # the same claim made where a later change would actually make it. Comment lines
@@ -6623,6 +6633,11 @@ t effective-panel-low-is-one-reviewer 'low|["rev-b"]' "$(p761_eff $'docs/a.md 2'
 t effective-panel-same-head-is-cached-not-re-read 'low|["rev-b"]' "$(p761_eff FAIL h1)"
 t effective-panel-new-head-re-reads 'high|["rev-a","rev-b","rev-c"]' "$(p761_eff FAIL h2)"
 t effective-panel-cache-names-the-head-and-tier 1 "$(grep -c '^h2 high ' "$TMP/.panel-sized-o_r-7")"
+# One line per head: the first head's sizing is still there after the second
+# was read, and is what the first head reads back (#763 round 4).
+t effective-panel-cache-keeps-every-head-it-sized "h1 low|h2 high" "$(cut -d' ' -f1,2 "$TMP/.panel-sized-o_r-7" | paste -sd'|' -)"
+t effective-panel-an-earlier-head-is-still-remembered 'low|["rev-b"]' "$(p761_eff FAIL h1)"
+t effective-panel-a-remembered-head-is-not-appended-again 2 "$(wc -l <"$TMP/.panel-sized-o_r-7" | tr -d ' ')"
 rm -f "$TMP"/.panel-sized-*
 unset -f p761_risk
 

@@ -366,7 +366,9 @@ def roster_set(members, actor="", etag=None):
     file it edits — without one, or against a file that changed since (a hand
     edit, another tab), the save is refused as RosterChanged and nothing
     moves (#763 round 3: the first cut dropped the other edit silently and
-    journalled it as a removal)."""
+    journalled it as a removal). It is compared twice: once before the slow
+    validation, so a stale save costs no `box list`, and once more on the
+    bytes the rewrite is built from (#763 round 4)."""
     if not CONFIG_IS_OPERATOR:
         return None, ("the shipped example roster is not edited from the console: "
                       "scaffold your own fleet definition (crew init) and serve that")
@@ -384,11 +386,22 @@ def roster_set(members, actor="", etag=None):
         clean, err = _roster_validate(members, before)
         if err:
             return None, err
+        # The etag is checked AGAIN on the very bytes the rewrite reads, after
+        # the slow step: _roster_validate may spend `box list`'s whole timeout
+        # on a new name, and a hand edit that landed meanwhile was rewritten
+        # away from the stale copy, journalled as a removal (#763 round 4).
+        # _ROSTER_LOCK is this process's; the window that remains is the one
+        # between this read and os.replace.
         try:
-            with open(ROSTER, encoding="utf-8") as f:
-                old_text = f.read()
+            with open(ROSTER, "rb") as f:
+                raw = f.read()
         except OSError:
-            old_text = ""
+            raw = b""
+        if hashlib.sha256(raw).hexdigest()[:16] != etag:
+            return None, RosterChanged("the roster changed on disk while the save was being checked "
+                                       "(a hand edit, or another tab saved) — nothing was written; "
+                                       "reopen the roster and apply the change again")
+        old_text = raw.decode("utf-8", "replace")
         body = _roster_rewrite(old_text, clean)
         # The record is a precondition of the write (#488 D5): a roster that
         # could change with nothing durable saying who changed it is refused.
