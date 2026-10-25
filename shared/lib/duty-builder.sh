@@ -840,10 +840,10 @@ _panel_sized() {
 # one-line cache forgot it the moment the next head was read).
 _PANEL_EFFECTIVE_JSON="[]"
 _panel_effective() {
-  local repo="$1" num="$2" head="$3" panel_json="$4" cache c_head tier why sized
+  local repo="$1" num="$2" head="$3" panel_json="$4" cache tier why sized
   cache="$DUTY_DIR/.panel-sized-${repo//\//_}-$num"
   tier=""
-  [ -z "$head" ] || [ ! -r "$cache" ] || read -r c_head tier why < <(grep -m1 -- "^$head " "$cache" 2>/dev/null; true)
+  [ -z "$head" ] || [ ! -r "$cache" ] || read -r _ tier why < <(grep -m1 -- "^$head " "$cache" 2>/dev/null; true)
   if [ -n "$tier" ]; then
     _PANEL_RISK_TIER="$tier"; _PANEL_RISK_WHY="$why"
   else
