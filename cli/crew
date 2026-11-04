@@ -3694,7 +3694,7 @@ cut_box() { # NAME
 # reason: a stop that does not take must never be followed by anything, and
 # here "anything" includes rolling a running box's disk out from under it.
 restore_box() { # NAME
-  local name="$1" recorded stale live state why pstate
+  local name="$1" recorded stale live state why pstate hold_rc
   case "$(has_reset_checkpoint "$name"; echo $?)" in
     2)
       echo "  $name: REFUSED — could not read its snapshot labels; a reset is not performed on an unverified box"
@@ -3772,10 +3772,24 @@ restore_box() { # NAME
       return 1
     fi
   fi
+  # The store HOLDS the member's memory from here until it is written back
+  # (#763 round 6): the box's own `.memory-pending` expires after its grace,
+  # and a full pull of the restored disk past that — a retried reset's drain,
+  # the tick's stop, a floor poll — would prune the store to the checkpoint's
+  # week-old copy, which the retry would then write back as "restored".
+  # No store at all (3) holds nothing and is said where the export fails.
+  hold_rc=0
+  store_py memory-hold --box "$name" >/dev/null 2>&1 || hold_rc=$?
+  if [ "$hold_rc" -ne 0 ] && [ "$hold_rc" -ne 3 ]; then
+    echo "  $name: REFUSED — the store could not hold its memory across the restore; nothing restored"
+    return 1
+  fi
   # --force because there is no terminal here to confirm on: `box restore` is
   # a confirm row and refuses outright without one.
   if ! box restore "$name" "$RESET_LABEL" --force </dev/null; then
     echo "  $name: FAILED — restore failed; the box is stopped and NOT started"
+    # The disk did not go back: its files are still the truth.
+    store_py memory-release --box "$name" >/dev/null 2>&1 || true
     return 1
   fi
   if ! box start "$name" </dev/null; then
@@ -3881,6 +3895,7 @@ reset_restore_memory() {
     rm -rf "$dir"
     bxn "$name" 'rm -f ~/duty/.memory-pending' >/dev/null 2>&1 \
       || echo "  $name: NOTE — .memory-pending could not be lifted; the box ticks once its grace passes"
+    store_py memory-release --box "$name" >/dev/null 2>&1 || true
     return 0
   fi
   # One archive, shipped through bxput (the stdin-shipping exec site the
@@ -3899,6 +3914,9 @@ reset_restore_memory() {
     echo "  $name: memory restore FAILED — the archive did not unpack under the duty lock (${out:-no answer}); its first tick runs without its ledgers"
     return 1
   fi
+  # Written back: the box's files are the truth again, and its pulls land.
+  store_py memory-release --box "$name" >/dev/null 2>&1 \
+    || echo "  $name: NOTE — the store's hold on its memory could not be lifted; its full pulls land only the log until it is (store.py memory-release --box $name)"
   echo "  $name: memory restored from the store under the duty lock — $count file(s)"
 }
 
@@ -4173,12 +4191,20 @@ tick_conf_knobs() {
   : "${LABEL_NEEDS_TRIAGE:=needs-triage}" "${LABEL_READY:=ready}" "${LABEL_CLAIMED:=claimed}" "${LABEL_BLOCKED:=blocked}" "${LABEL_EPIC:=epic}" "${LABEL_ATTENTION:=attention}"
 }
 # tick_woken_file MEMBER — what the host woke this member for, one
-# `reason ts idle` line per reason: the reason as wake_reasons named it, the
-# board's timestamp it carried, the member's idle count at the wake.
+# `reason ts idle ctx` line per reason: the reason as wake_reasons named it,
+# the board's timestamp it carried, the member's idle count at the wake, and
+# what else its answer rested on (wake_reason_ctx).
 tick_woken_file() { printf '%s/%s.woken' "$(TICK_DIGEST_DIR)" "$1"; }
 
-# tick_woken_record MEMBER SURVIVING IDLE — remember the reasons this wake
-# was for (the newest line per reason wins; the file stays bounded).
+# tick_reason_ctx LOGIN REASON — wake_reason_ctx against the board this
+# tick read for the reason's repository (ROWS, tick_run's).
+tick_reason_ctx() {
+  local item="${2#*#}"
+  wake_reason_ctx "$1" "${ROWS[${item%#*}]:-}" "$2"
+}
+
+# tick_woken_record MEMBER SURVIVING IDLE LOGIN — remember the reasons this
+# wake was for (the newest line per reason wins; the file stays bounded).
 tick_woken_record() {
   local f reason ts tmp
   f="$(tick_woken_file "$1")"; tmp="$f.tmp"
@@ -4186,34 +4212,38 @@ tick_woken_record() {
     while read -r reason ts; do
       case "$reason" in ''|veto:*) continue ;; esac
       [ "$ts" != - ] || continue
-      printf '%s %s %s\n' "$reason" "$ts" "$3"
+      printf '%s %s %s %s\n' "$reason" "$ts" "$3" "$(tick_reason_ctx "$4" "$reason")"
     done <<<"$2"
   } | awk '{ last[$1] = $0; order[$1] = NR } END { for (k in last) print order[k] "\t" last[k] }' \
     | sort -n | cut -f2- | tail -n 500 >"$tmp" && mv -f "$tmp" "$f"
 }
 
-# tick_passed MEMBER SURVIVING IDLE — the surviving reasons, with the ones the
+# tick_passed MEMBER SURVIVING IDLE LOGIN — the surviving reasons, with the ones the
 # member was ALREADY woken for at this very timestamp and idled through since
 # turned into `veto:<reason>:passed`. The builder's `pr#` (its open PR, no
 # round owed) and `ready#` (an issue it cannot take while a PR holds its
 # slot) are coarse — no ledger answers them — so without this a builder with
 # an open PR was woken every tick and never idle-stopped, and a stopped one
 # restarted on every unrelated board move (#763 round 5). Passed means: the
-# host woke the member for exactly this (reason, timestamp), and the member's
-# idle count has grown past what it was at that wake and reached
+# host woke the member for exactly this (reason, timestamp, context), and the
+# member's idle count has grown past what it was at that wake and reached
 # IDLE_TICKS_BEFORE_STOP — its own precise tick looked and bought nothing. A
-# newer timestamp (a review posted, a label moved) is a new reason. Waits and
-# due cuts carry no timestamp and are never set aside this way.
+# newer timestamp (a review posted, a label moved) is a new reason, and so is
+# a changed context (#763 round 6): the PR conflicting or its head going red,
+# or — for a ready issue — the member's own PR merging or closing, which frees
+# the slot the builder passed on it for. Waits and due cuts carry no
+# timestamp and are never set aside this way.
 tick_passed() {
-  local f="" line reason ts wts widle
+  local f="" line reason ts wts widle wctx
   [ "$3" -lt "$IDLE_TICKS_BEFORE_STOP" ] || f="$(tick_woken_file "$1")"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     read -r reason ts <<<"$line"
     if [ -n "$f" ] && [ -f "$f" ] && [ "${reason#veto:}" = "$reason" ] && [ "$ts" != - ]; then
-      wts=""; widle=""
-      read -r wts widle < <(awk -v r="$reason" '$1 == r { print $2, $3 }' "$f" | tail -1)
-      if [ -n "${wts:-}" ] && ! [ "$wts" \< "$ts" ] && [ "$3" -gt "${widle:-0}" ] 2>/dev/null; then
+      wts=""; widle=""; wctx=""
+      read -r wts widle wctx < <(awk -v r="$reason" '$1 == r { print $2, $3, $4 }' "$f" | tail -1)
+      if [ -n "${wts:-}" ] && ! [ "$wts" \< "$ts" ] && [ "$3" -gt "${widle:-0}" ] 2>/dev/null \
+         && [ "${wctx:-}" = "$(tick_reason_ctx "$4" "$reason")" ]; then
         echo "veto:$reason:passed"; continue
       fi
     fi
@@ -4388,7 +4418,7 @@ tick_run() { # DRY_RUN
       idle="$(store_py state --box "$name" --name .idle-ticks 2>/dev/null | head -1 | tr -d '\r')"
     fi
     case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
-    surviving="$(tick_passed "$name" "$surviving" "$idle")"
+    surviving="$(tick_passed "$name" "$surviving" "$idle" "$login")"
     held_repos="$(tick_held_repos "$surviving")"
     while IFS= read -r line; do
       case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
@@ -4410,7 +4440,7 @@ tick_run() { # DRY_RUN
       case "$state" in
         running)
           echo "  $name: woke (running) why=$why"
-          [ "$dry" -eq 1 ] || { tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle"; }
+          [ "$dry" -eq 1 ] || { tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle" "$login"; }
           woke=$((woke + 1)) ;;
         stopped)
           if [ "$running" -ge "$FLEET_MAX_RUNNING" ]; then
@@ -4432,7 +4462,7 @@ tick_run() { # DRY_RUN
             # stopped, comes back live here; "nothing to resume" is the
             # ordinary answer and costs nothing.
             bxn "$name" "$(host_resume_sh)" >/dev/null 2>&1 || true
-            tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle"
+            tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle" "$login"
           fi ;;
         *) echo "  $name: state '$state' — left alone; why=$why"; continue ;;
       esac

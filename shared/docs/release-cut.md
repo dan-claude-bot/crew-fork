@@ -107,8 +107,11 @@ refusal, a leftover fork branch) never spends the lane's whole budget.
   `--delete-branch` only warns for a fork's head) and cuts the new head on
   the tick after — but only when every commit on it is the engine's; a cut
   somebody pushed to is held and said, never closed. A branch that cannot be
-  deleted holds the track, and every tick retries it: the next cut of the
-  same version pushes to the same name. Nothing is force-pushed onto an open
+  deleted holds the track, and every tick retries it — first reading the
+  PR, so a cut a person reopened meanwhile is an open cut again and keeps its
+  branch: the next cut of the same version pushes to the same name. Commits
+  that cannot be read are neither the engine's nor somebody else's: the
+  track holds and asks again. Nothing is force-pushed onto an open
   release PR, ever.
 - **Refused** — a person closed the PR without merging: the tree the cut
   was made FROM stays in `.seen-release` and is never cut again (a newer

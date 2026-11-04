@@ -711,7 +711,16 @@ def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="
         # tick's stop, a floor poll between `box start` and the export) lands
         # duty.log and nothing else — no state file written, none pruned
         # (#763 round 5).
-        pending = "statefiles" in meta and ".memory-pending" in meta["statefiles"].split()
+        #
+        # The HOST holds it too (`store.py memory-hold`, set by the reset verb
+        # before the disk goes back and lifted only when the memory is
+        # written back): the box's own marker expires after its grace, and a
+        # write-back retried past that must still find the store as it was
+        # (#763 round 6).
+        held = conn.execute("SELECT 1 FROM meta WHERE key=?",
+                            ("memory-hold:%s" % box,)).fetchone() is not None
+        pending = "statefiles" in meta and (
+            held or ".memory-pending" in meta["statefiles"].split())
         for name, lines in files.items():
             if name == "duty.log":
                 continue
@@ -1036,6 +1045,29 @@ def main(argv=None):
                             _arg(argv, "--pool"), state=_arg(argv, "--state", "running"))
         print("%s: %s%s" % (box, "" if res["ok"] else "pull FAILED — ", res["note"]))
         return 0 if res["ok"] else 1
+    if verb in ("memory-hold", "memory-release"):
+        # The host's own hold on a member's memory across a reset (#763
+        # round 6): while it stands, a full pull lands duty.log and nothing
+        # else (see ingest).
+        box = _arg(argv, "--box")
+        if not box:
+            raise SystemExit("store.py %s: --box is required" % verb)
+        if not os.path.exists(store_path()):
+            # No store, nothing to hold: never created by a hold (3, said).
+            sys.stderr.write("store.py %s: no store at %s\n" % (verb, store_path()))
+            return 3
+        conn = connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if verb == "memory-hold":
+                conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+                             ("memory-hold:%s" % box, now_iso()))
+            else:
+                conn.execute("DELETE FROM meta WHERE key=?", ("memory-hold:%s" % box,))
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        return 0
     if verb == "fail":
         box = _arg(argv, "--box")
         if not box:

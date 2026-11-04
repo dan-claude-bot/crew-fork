@@ -64,7 +64,10 @@ gh() {
     "pr view"*"--json state,mergedAt"*)
       printf '%s\n' "${GH_PR_STATE:-OPEN }" ;;
     "api graphql"*"commits(first:100)"*)
+      [ -z "${GH_AUTHORS_FAIL:-}" ] || return 1
       printf '%s\n' "${GH_PR_AUTHORS:-dan-claude-bot}" ;;
+    "pr view"*"--json state --jq"*)
+      printf '%s\n' "${GH_PR_STATE_ONLY:-CLOSED}" ;;
     "pr close"*)
       return "${GH_CLOSE_RC:-0}" ;;
     "pr view"*"headRepositoryOwner"*)
@@ -346,14 +349,27 @@ OUT="$(SIM_PR_AFTER="96 dan-claude-bot release/site-2.1.46" GH_PRS="" RELEASE_QU
 printf 'p\n' >"$ORIGIN/apps/site/p.txt"; gq add -A; gq commit -q -m "feat(site): p (#11)"
 HEADP="$(git -C "$ORIGIN" rev-parse HEAD)"
 : >"$SESSION_LOG"
-OUT="$(GH_DELETE_ERR="HTTP 403: Resource not accessible" GH_PRS="96 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+OUT="$(GH_DELETE_ERR="gh: Resource not accessible by integration (HTTP 403)" GH_PRS="96 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t an-undeleted-branch-is-said 1 "$(grep -c "WARN: release: acme/site#96 withdrawn, but its branch release/site-2.1.46 could not be deleted on the fork; it holds the track" <<<"$OUT")"
 t an-undeleted-branch-is-marked "96 release/site-2.1.46 $HEADQ withdrawn" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
 t an-undeleted-branch-buys-nothing 0 "$(sessions)"
 : >"$SESSION_LOG"; : >"$GH_CALLS"
-OUT="$(GH_DELETE_ERR="HTTP 404: Not Found" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+# A person reopened it meanwhile: an open cut again, its branch kept (#763
+# round 6: deleting the head would close the PR under them).
+OUT="$(GH_PR_STATE_ONLY=OPEN GH_PRS="96 dan-claude-bot release/site-2.1.46" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-reopened-cut-is-said 1 "$(grep -c "release: acme/site#96 was reopened (release/site-2.1.46) — an open cut again; its branch is kept" <<<"$OUT")"
+t a-reopened-cuts-branch-is-not-deleted 0 "$(grep -c '^GH api -X DELETE' "$GH_CALLS")"
+t a-reopened-cut-is-unmarked "96 release/site-2.1.46 $HEADQ" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+# Withdrawn again, the delete refused again: marked again.
+OUT="$(GH_DELETE_ERR="gh: Resource not accessible by integration (HTTP 403)" GH_PRS="96 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-rewithdrawn-cut-is-marked-again "96 release/site-2.1.46 $HEADQ withdrawn" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+: >"$SESSION_LOG"; : >"$GH_CALLS"
+# A branch already gone — gh's own shape, the message first (#763 round 6).
+OUT="$(GH_DELETE_ERR="gh: Reference does not exist (HTTP 422)" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-branch-already-gone-frees-the-track 1 "$(grep -c "release: acme/site#96's branch release/site-2.1.46 is deleted on the fork — the track is free" <<<"$OUT")"
-t a-marked-cut-is-not-read-again 0 "$(grep -c '^GH pr view 96 -R acme/site --json state' "$GH_CALLS")"
+t a-marked-cut-is-not-read-again 0 "$(grep -c '^GH pr view 96 -R acme/site --json state,mergedAt' "$GH_CALLS")"
+t delete-a-404-is-gone 0 "$(GH_DELETE_ERR="gh: Not Found (HTTP 404)" _release_delete_head acme/site 96 release/x; echo $?)"
+t delete-a-403-is-a-failure 1 "$(GH_DELETE_ERR="gh: Resource not accessible by integration (HTTP 403)" _release_delete_head acme/site 96 release/x; echo $?)"
 t a-freed-track-buys-nothing-the-same-tick 0 "$(sessions)"
 OUT="$(SIM_PR_AFTER="97 dan-claude-bot release/site-2.1.46" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-freed-track-is-cut-at-the-new-head 1 "$(grep -c "release: acme/site — cutting site-2.1.46 from ${HEADP:0:7}" <<<"$OUT")"
@@ -367,6 +383,17 @@ t a-closed-cut-refuses-its-own-tree 1 "$(grep -c "^acme/site:apps/site#$(git -C 
 t a-closed-cuts-branch-is-deleted-on-the-fork 1 "$(grep -c '^GH api -X DELETE repos/dan-claude-bot/site-fork/git/refs/heads/release/site-2.1.46$' "$GH_CALLS")"
 t mains-newer-tree-is-cut-after-a-closed-cut 1 "$(grep -c "release: acme/site — cutting site-2.1.46 from ${HEADO:0:7}" <<<"$OUT")"
 t the-closed-cut-is-replaced-by-the-new-one "98 release/site-2.1.46 $HEADO" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+# A closed cut whose commits cannot be read is not "not the engine's" (#763
+# round 6): marked and held, its branch deleted once they read as the bot's.
+: >"$SESSION_LOG"; : >"$GH_CALLS"
+OUT="$(GH_AUTHORS_FAIL=1 GH_PRS="" GH_PR_STATE="CLOSED " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t unread-commits-are-said 1 "$(grep -c "WARN: release: acme/site#98's commits could not be read; its branch release/site-2.1.46 is deleted once they can" <<<"$OUT")"
+t unread-commits-do-not-read-as-another-persons 0 "$(grep -c "carries commits that are not" <<<"$OUT")"
+t unread-commits-mark-the-refusal "98 release/site-2.1.46 $HEADO refused" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+t unread-commits-delete-nothing 0 "$(grep -c '^GH api -X DELETE' "$GH_CALLS")"
+OUT="$(GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t read-commits-then-delete-the-branch 1 "$(grep -c "release: acme/site#98's branch release/site-2.1.46 is deleted on the fork — the track is free" <<<"$OUT")"
+t read-commits-leave-no-memory 0 "$(cuts)"
 
 # ── a session that opened nothing: counted, then refused at the cap ─────────
 rel_reset

@@ -667,6 +667,11 @@ case "$OUT" in *"alpha: memory restored from the store"*) r1=reported ;; *) r1="
 t reset-memory-restore-is-reported reported "$r1"
 t reset-memory-carries-the-ledgers 1 "$(tar -tf "$STATE/memory-alpha.tar" 2>/dev/null | grep -c 'seen-build$')"
 t reset-memory-leaves-continuations-out 0 "$(tar -tf "$STATE/memory-alpha.tar" 2>/dev/null | grep -c 'session-continue')"
+# The store's own hold (#763 round 6): set before the disk goes back, lifted
+# once the memory is written — so a full pull of the restored disk after the
+# box's marker expired cannot prune the store to the checkpoint's copy.
+reset_hold() { CREW_CONFIG_DIR="$CONF" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import store; c = store.connect(readonly=True); print(c.execute("SELECT COUNT(*) FROM meta WHERE key=?", ("memory-hold:" + sys.argv[2],)).fetchone()[0])' "$ROOT/fleet-floor/server/floor" "$1"; }
+t reset-a-written-back-memory-lifts-the-stores-hold 0 "$(reset_hold alpha)"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-restore-is-reported reported "$r1"
 # The memory's return lifts `.memory-pending` in the same locked step that
@@ -695,6 +700,17 @@ t reset-a-store-with-no-memory-for-the-box-is-not-a-failure 0 "$RC"
 case "$OUT" in *'alpha: the store holds no memory file to restore (first reset, or never drained)'*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-no-memory-is-said-as-that said "$r1"
 t reset-no-memory-lifts-the-marker-so-the-box-ticks 1 "$(calls_of 'pending-off alpha')"
+# An unpack that fails keeps the store's hold: the restored disk's files are
+# a week old until a retried reset writes the memory back.
+reset_case
+arm alpha
+capture reset --cut alpha
+: >"$STATE/calls"
+RST_UNPACK_FAIL=alpha capture reset alpha
+t reset-a-failed-write-back-fails 1 "$RC"
+t reset-a-failed-write-back-keeps-the-stores-hold 1 "$(reset_hold alpha)"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
+t reset-the-hold-is-released-by-its-verb 0 "$(reset_hold alpha)"
 # The checkpoint carries the marker: set before the snapshot, lifted after it.
 reset_case
 arm alpha

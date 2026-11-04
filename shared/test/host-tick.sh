@@ -145,6 +145,15 @@ t live-an-empty-live-read-is-no-wait "" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_L
 t live-the-boxs-own-due-cut-is-a-reason "release#o/r -" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_LIVE=".release-due-o_r	o/r 1" wake_release_reasons alpha)"
 t live-the-prefix-picks-only-its-files "" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_LIVE=".release-due-o_r	o/r 1" wake_wait_reasons alpha)"
 t live-no-live-read-falls-back-to-the-store "release#o/r -" "$(WAKE_STATES_LIVE="" wake_release_reasons alpha)"
+# What a passed reason rests on (#763 round 6).
+HT_CTX_ROWS=$'I 5 2026-10-23T10:00:00Z ready -\nP 7 2026-10-23T10:00:00Z me 0 - conflict red\nP 8 2026-10-23T10:00:00Z me 0 -\nP 9 2026-10-23T10:00:00Z other 0 - ok green'
+t ctx-a-pr-rests-on-its-merge-state-and-checks "conflict/red" "$(wake_reason_ctx me "$HT_CTX_ROWS" 'pr#o/r#7')"
+t ctx-a-short-row-reads-as-unknown "-/-" "$(wake_reason_ctx me "$HT_CTX_ROWS" 'pr#o/r#8')"
+t ctx-a-ready-issue-rests-on-the-members-own-prs "7,8" "$(wake_reason_ctx me "$HT_CTX_ROWS" 'ready#o/r#5')"
+t ctx-no-pr-of-mine-is-nothing "-" "$(wake_reason_ctx nobody "$HT_CTX_ROWS" 'ready#o/r#5')"
+t ctx-other-reasons-rest-on-nothing "-" "$(wake_reason_ctx me "$HT_CTX_ROWS" 'review#o/r#9')"
+# The board read carries both, from gh's own fields.
+t board-read-asks-for-merge-state-and-checks 1 "$(grep -c 'json number,updatedAt,author,isDraft,reviewRequests,mergeable,statusCheckRollup' "$ROOT/shared/lib/host/wake.sh")"
 # The attention label is the conf's too.
 t attention-a-renamed-label-is-read 1 "$(LABEL_ATTENTION=atencion wake_reasons builder me o/r 'I 9 2026-10-23T10:00:00Z atencion me' | grep -c '^attention#o/r#9 ')"
 t attention-the-default-name-is-not-read-when-renamed 0 "$(LABEL_ATTENTION=atencion wake_reasons builder me o/r 'I 9 2026-10-23T10:00:00Z attention me' | grep -c '^attention#')"
@@ -379,6 +388,19 @@ t store-a-pending-pull-says-so 1 "$(grep -c 'memory pending' <<<"$HT_PENDING_OUT
 t store-a-pending-pull-prunes-no-park ".wait-o_r-7	o/r 7 h1 2026-10-23T10:00:00Z" "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" states --box alpha --prefix .wait-)"
 t store-a-pending-pull-writes-no-state-file dan-claude-bot "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" state --box alpha --name .identity)"
 t store-the-marker-itself-is-never-stored 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" state --box alpha --name .memory-pending >/dev/null 2>&1; echo $?)"
+# The host's own hold does the same with no marker on the box (#763 round
+# 6: the box's marker expires after its grace; a retried reset's hold does not).
+sed 's/^::statefiles .identity .memory-pending$/::statefiles .identity/; /^::filestart .memory-pending$/{N;d}' "$STATE/alpha.pending.record" >"$STATE/alpha.held.record"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha
+HT_HELD_OUT="$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box alpha <"$STATE/alpha.held.record")"
+t store-a-held-pull-says-so 1 "$(grep -c 'memory pending' <<<"$HT_HELD_OUT")"
+t store-a-held-pull-prunes-no-park 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" states --box alpha --prefix .wait- | grep -c .)"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
+HT_HELD_OUT="$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box alpha <"$STATE/alpha.held.record")"
+t store-a-released-pull-lands-again 0 "$(grep -c 'memory pending' <<<"$HT_HELD_OUT")"
+t store-a-released-pull-is-the-truth-again old-login "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" state --box alpha --name .identity)"
+t store-a-hold-without-a-store-is-3 3 "$(CREW_CONFIG_DIR="$CONF" CREW_FLOOR_STORE="$TMP/no-store/fleet.sqlite" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha 2>/dev/null; echo $?)"
+t store-a-hold-never-creates-a-store 0 "$([ -e "$TMP/no-store/fleet.sqlite" ] && echo 1 || echo 0)"
 t probe-ships-the-marker 1 "$(grep -cF '/.memory-pending; do' "$ROOT/fleet-floor/server/probe.sh")"
 t store-peaks-without-sessions-is-1 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" peaks --box alpha >/dev/null 2>&1; echo $?)"
 
@@ -533,7 +555,7 @@ rm -f "$CONF/store/wake"/alpha.* "$STATE/alpha.lock" "$STATE/alpha.ledger"; : >"
 ht_board 'I 18 2026-10-23T19:00:00Z lista -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
 capture tick
 t passed-the-first-wake-is-for-the-pr 1 "$(grep -c 'alpha: woke (running) why=ready#o/r#18,pr#o/r#30' <<<"$OUT")"
-t passed-the-wake-is-remembered-with-its-idle-count 1 "$(grep -c '^pr#o/r#30 2026-10-23T19:10:00Z 0$' "$CONF/store/wake/alpha.woken")"
+t passed-the-wake-is-remembered-with-its-idle-count 1 "$(grep -c '^pr#o/r#30 2026-10-23T19:10:00Z 0 -/-$' "$CONF/store/wake/alpha.woken")"
 t passed-the-running-boxs-states-are-read-live 1 "$(calls 'states alpha')"
 # The box's ticks buy nothing; an unrelated issue moves.
 printf '2\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 2
@@ -554,6 +576,34 @@ ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked 
 : >"$STATE/calls"
 capture tick
 t passed-the-pr-moving-starts-it 1 "$(grep -c 'alpha: starting why=pr#o/r#30' <<<"$OUT")"
+# The PR MERGES with the ready issue set aside (#763 round 6): the issue's
+# timestamp never moved, but the slot the builder passed on it for is free —
+# the context it was passed in changed, so it starts the box.
+printf '3\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 3
+: >"$STATE/calls"
+capture tick
+t passed-idle-again-the-builder-stops "drain alpha|down alpha" "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' '' ''
+: >"$STATE/calls"
+capture tick
+t passed-a-merged-pr-frees-the-ready-issue 1 "$(grep -c 'alpha: starting why=ready#o/r#18$' <<<"$OUT")"
+# A PR that turns CONFLICTING (main moved: a rebase owed) at the same
+# updatedAt is new work too: its row carries the merge state and checks.
+printf '0\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 0
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - ok green' ''
+: >"$STATE/calls"
+capture tick
+t passed-a-new-pr-wakes-the-builder 1 "$(grep -c 'alpha: woke (running) why=ready#o/r#18,pr#o/r#32' <<<"$OUT")"
+t passed-the-ctx-is-remembered 1 "$(grep -c '^pr#o/r#32 2026-10-23T21:00:00Z 0 ok/green$' "$CONF/store/wake/alpha.woken")"
+printf '3\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 3
+: >"$STATE/calls"
+capture tick
+t passed-idle-the-builder-stops-once-more 1 "$(calls 'down alpha')"
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - conflict green' ''
+: >"$STATE/calls"
+capture tick
+t passed-a-conflicting-pr-starts-the-builder 1 "$(grep -c 'alpha: starting why=pr#o/r#32$' <<<"$OUT")"
+t passed-the-ready-issue-stays-passed-while-the-pr-holds-the-slot 1 "$(grep -c 'alpha: veto ready#o/r#18:passed' <<<"$OUT")"
 
 # (6) a breaker veto leaves the board unread-as-seen (#763 round 5): the
 # reason is read again on a quiet board once the breaker clears, instead of

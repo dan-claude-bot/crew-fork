@@ -24,7 +24,11 @@ wake_store() { store_py "$@"; }
 # and 1 when any read failed (an unreadable board is "no change": the next
 # tick reads again, and nothing starts on a guess).
 #   I <num> <updatedAt> <labels,csv|-> <assignees,csv|->
-#   P <num> <updatedAt> <author> <draft 0|1> <requested,csv|->
+#   P <num> <updatedAt> <author> <draft 0|1> <requested,csv|-> <conflict|ok> <red|pending|green|->
+# A PR's merge state and its checks' summary ride its row (#763 round 6): a
+# rebase owed (main moved, the PR conflicts) or a head gone red changes no
+# `updatedAt`, so without them the board would not move for the builder. Only
+# CONFLICTING is said — UNKNOWN, while GitHub computes, would flip the row.
 #   D <num> <updatedAt>
 wake_board_rows() {
   local repo="$1" owner name issues prs discs
@@ -33,8 +37,8 @@ wake_board_rows() {
     --json number,updatedAt,labels,assignees \
     --jq '.[] | "I \(.number) \(.updatedAt) \(([.labels[].name] | join(",")) | if . == "" then "-" else . end) \(([.assignees[].login] | join(",")) | if . == "" then "-" else . end)"' 2>/dev/null)" || return 1
   prs="$(wake_gh pr list -R "$repo" --state open --limit 100 \
-    --json number,updatedAt,author,isDraft,reviewRequests \
-    --jq '.[] | "P \(.number) \(.updatedAt) \(.author.login // "-") \(if .isDraft then 1 else 0 end) \(([.reviewRequests[]?.login // .reviewRequests[]?.name // empty] | join(",")) | if . == "" then "-" else . end)"' 2>/dev/null)" || return 1
+    --json number,updatedAt,author,isDraft,reviewRequests,mergeable,statusCheckRollup \
+    --jq '.[] | "P \(.number) \(.updatedAt) \(.author.login // "-") \(if .isDraft then 1 else 0 end) \(([.reviewRequests[]?.login // .reviewRequests[]?.name // empty] | join(",")) | if . == "" then "-" else . end) \(if .mergeable == "CONFLICTING" then "conflict" else "ok" end) \([.statusCheckRollup[]? | ((.conclusion // .state // "") | ascii_upcase)] as $c | if ($c | length) == 0 then "-" elif any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE") then "red" elif any($c[]; . == "" or . == "PENDING" or . == "EXPECTED") then "pending" else "green" end)"' 2>/dev/null)" || return 1
   discs="$(wake_gh api graphql -f owner="$owner" -f name="$name" -f query='
     query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){
       discussions(first:50,states:OPEN){ nodes{ number updatedAt } } } }' \
@@ -63,8 +67,8 @@ wake_digest() { sha256sum | cut -c1-16; }
 #                            triage's other signals read the whole board)
 wake_reasons() {
   local roles="$1" login="$2" repo="$3" rows="$4"
-  local kind num ts a b c
-  while read -r kind num ts a b c; do
+  local kind num ts a b c _merge _ci
+  while read -r kind num ts a b c _merge _ci; do
     [ -n "$kind" ] || continue
     case "$kind" in
       I)
@@ -86,6 +90,24 @@ wake_reasons() {
   done <<<"$rows"
   case " $roles " in *" triage "*) [ -n "$rows" ] && echo "board#$repo -" ;; esac
   return 0
+}
+
+# wake_reason_ctx LOGIN ROWS REASON — what else a reason's answer rests on,
+# beside its timestamp, as one token: the host's `passed` set-aside
+# (cli/crew tick_passed) holds a reason only while this is unchanged (#763
+# round 6). A `pr#` rests on the PR's merge state and checks — a rebase owed
+# or a red head is new work at the same `updatedAt`. A `ready#` rests on the
+# member's own open PRs on that board: the builder passes on a ready issue
+# because a PR holds its slot, and that PR merging or closing frees it. Every
+# other reason rests on nothing more: `-`.
+wake_reason_ctx() {
+  local login="$1" rows="$2" reason="$3" kind item num
+  kind="${reason%%#*}"; item="${reason#*#}"; num="${item##*#}"
+  case "$kind" in
+    pr) awk -v n="$num" '$1 == "P" && $2 == n { print ($7 == "" ? "-" : $7) "/" ($8 == "" ? "-" : $8); f = 1 } END { if (!f) print "-" }' <<<"$rows" ;;
+    ready) awk -v me="$login" '$1 == "P" && me != "" && $4 == me { printf "%s%s", (n++ ? "," : ""), $2 } END { print (n ? "" : "-") }' <<<"$rows" ;;
+    *) echo - ;;
+  esac
 }
 
 # wake_untriaged LABELS — is an issue carrying these labels (csv, `-` for none)

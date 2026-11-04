@@ -58,9 +58,11 @@ own rule applied to the one verb that could undo it:
   marker's own mtime — so the marker the cut touches into a long-running
   box for the snapshot's duration is never expired by that box's uptime):
   past it the box runs without its memory and says so once in `duty.log`.
-  While the marker stands the probe names it, and a full pull of the box (a
-  retried reset's drain, the tick's stop, a floor poll) lands its duty.log
-  and nothing else: the store's state files and ledgers are the truth, and
+  While the marker stands the probe names it, and from the moment the disk
+  goes back until the write-back succeeds the store holds the member's memory
+  itself (`store.py memory-hold`, which outlives the marker's grace and a
+  failed write-back): a full pull of the box (a retried reset's drain, the
+  tick's stop, a floor poll) lands its duty.log and nothing else: the store's state files and ledgers are the truth, and
   neither the checkpoint's week-old copies nor their absence touches them.
   Continuation stubs are not written back — the transcripts they name went
   with the restore; the handoff note is the memory that crosses a reset. A write-back that
@@ -347,7 +349,10 @@ host remembers what it woke a member for (`<config>/store/wake/<box>.woken`),
 and a reason it woke the member for at that very timestamp, which the member
 then idled through to `IDLE_TICKS_BEFORE_STOP`, is `passed` — the builder's
 own open PR with no round owed, a ready issue it cannot take while that PR
-holds its slot. The item moving (a review posted) is a new reason. A running
+holds its slot. The item moving (a review posted) is a new reason, and so is
+what it rested on changing: the PR turning conflicting or its checks red
+(the board's PR row carries both), or the member's own PR merging or closing
+for a ready issue it passed on. A running
 box's waits and due cuts are read live off the box, not from the store's
 copy, and a reason a budget or a breaker vetoed leaves that board unmarked,
 so it is read again once the lane opens even if nothing moves. A breaker tripped in the store's copy vetoes a

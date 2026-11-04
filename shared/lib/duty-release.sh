@@ -251,9 +251,11 @@ _release_refuse() {
   printf '%s:%s#%s 0\n' "$3" "$2" "$tree" | ledger_commit "$DUTY_DIR/.seen-release"
 }
 
-# _release_mine BRANCH REPO NUM — true when every commit on the engine's own
-# cut is the engine's: a branch somebody else pushed to is not withdrawn (its
-# branch is not deleted, its PR not closed) — it is held, and said.
+# _release_mine BRANCH REPO NUM — 0 when every commit on the engine's own
+# cut is the engine's, 1 when one is not: a branch somebody else pushed to is
+# not withdrawn (its branch is not deleted, its PR not closed) — it is held,
+# and said. 2 when the commits could not be read: neither answer, so the
+# caller holds and asks again next tick (#763 round 6).
 _release_mine() {
   local authors owner name
   owner="${2%%/*}"; name="${2##*/}"
@@ -267,8 +269,8 @@ _release_mine() {
     repository(owner:$owner,name:$name){ pullRequest(number:$num){
       commits(first:100){nodes{commit{author{user{login}}}}}
     } } }' -f owner="$owner" -f name="$name" -F num="$3" \
-    --jq '[.data.repository.pullRequest.commits.nodes[].commit.author.user.login // "unknown"] | unique | join(" ")' 2>/dev/null)" || return 1
-  [ -n "$authors" ] || return 1
+    --jq '[.data.repository.pullRequest.commits.nodes[].commit.author.user.login // "unknown"] | unique | join(" ")' 2>/dev/null)" || return 2
+  [ -n "$authors" ] || return 2
   [ "$authors" = "$ME" ]
 }
 
@@ -284,7 +286,9 @@ _release_delete_head() {
     --jq '"\(.headRepositoryOwner.login // "")/\(.headRepository.name // "")"' 2>/dev/null)" || return 1
   case "$head_repo" in /*|*/|'') return 1 ;; esac
   err="$(gh api -X DELETE "repos/$head_repo/git/refs/heads/$branch" 2>&1 >/dev/null)" && return 0
-  case "$err" in *"HTTP 404"*|*"HTTP 422"*"Reference does not exist"*) return 0 ;; esac
+  # gh says it as `gh: Not Found (HTTP 404)` and `gh: Reference does not
+  # exist (HTTP 422)` — the message first (#763 round 6).
+  case "$err" in *"(HTTP 404)"*|*"Reference does not exist"*) return 0 ;; esac
   return 1
 }
 
@@ -298,7 +302,7 @@ _release_delete_head() {
 # and not stdout, because the function logs on the way.
 RELEASE_SETTLED=none
 _release_settle_cut() {
-  local slug="$1" repo="$2" path="$3" dir="$4" f num branch head mark state ahead
+  local slug="$1" repo="$2" path="$3" dir="$4" f num branch head mark state ahead mine
   RELEASE_SETTLED=none
   f="$DUTY_DIR/.release-cut-$slug"
   [ -f "$f" ] || return 0
@@ -307,6 +311,28 @@ _release_settle_cut() {
     withdrawn|refused)
       # Closed already; its fork branch was owed deleting. The track holds
       # until it is gone, or the next cut of the same VERSION would collide.
+      # A cut a person REOPENED meanwhile is an open cut again — deleting its
+      # head would close it under them (#763 round 6) — and a state that
+      # cannot be read holds.
+      state="$(gh pr view "$num" -R "$repo" --json state --jq .state 2>/dev/null)" || { RELEASE_SETTLED=open; return 0; }
+      if [ "$state" = OPEN ]; then
+        printf '%s %s %s\n' "$num" "$branch" "$head" >"$f.tmp" && mv -f "$f.tmp" "$f"
+        log "release: $repo#$num was reopened ($branch) — an open cut again; its branch is kept"
+        RELEASE_SETTLED=open; return 0
+      fi
+      # A refusal's branch goes only when it is the engine's alone (a
+      # withdrawal was asked that before it closed the PR).
+      if [ "$mark" = refused ]; then
+        mine=0; _release_mine "$branch" "$repo" "$num" || mine=$?
+        if [ "$mine" -eq 2 ]; then
+          warn "release: $repo#$num's commits could not be read; its branch $branch is deleted once they can (it holds the track until then)"
+          RELEASE_SETTLED=open; return 0
+        elif [ "$mine" -ne 0 ]; then
+          rm -f "$f"
+          warn "release: $repo#$num's branch $branch carries commits that are not $ME's — left on the fork; a cut of the same version would push to the same name, so delete it once it is settled"
+          RELEASE_SETTLED=refused; return 0
+        fi
+      fi
       if _release_delete_head "$repo" "$num" "$branch"; then
         rm -f "$f"
         log "release: $repo#$num's branch $branch is deleted on the fork — the track is free"
@@ -326,7 +352,14 @@ _release_settle_cut() {
       # Its branch goes too when it is the engine's alone (a person's commits
       # on it are theirs to keep): the next cut of the same VERSION pushes to
       # the same name.
-      if ! _release_mine "$branch" "$repo" "$num"; then
+      mine=0; _release_mine "$branch" "$repo" "$num" || mine=$?
+      if [ "$mine" -eq 2 ]; then
+        # Not read is not "not mine": marked, and the mark's path deletes it
+        # once the PR reads as closed and the commits can be asked again.
+        printf '%s %s %s refused\n' "$num" "$branch" "$head" >"$f.tmp" && mv -f "$f.tmp" "$f"
+        warn "release: $repo#$num's commits could not be read; its branch $branch is deleted once they can (it holds the track until then)"
+        RELEASE_SETTLED=open
+      elif [ "$mine" -ne 0 ]; then
         rm -f "$f"
         warn "release: $repo#$num's branch $branch carries commits that are not $ME's — left on the fork; a cut of the same version would push to the same name, so delete it once it is settled"
       elif _release_delete_head "$repo" "$num" "$branch"; then
@@ -341,7 +374,12 @@ _release_settle_cut() {
   _release_pathspec "$path"
   ahead="$(git -C "$dir" rev-list --count "$head..origin/main" "${_RELEASE_PATHSPEC[@]}" 2>/dev/null || echo 0)"
   if [ "${ahead:-0}" -gt 0 ]; then
-    if ! _release_mine "$branch" "$repo" "$num"; then
+    mine=0; _release_mine "$branch" "$repo" "$num" || mine=$?
+    if [ "$mine" -eq 2 ]; then
+      warn "release: $repo#$num is stale (main moved past ${head:0:7}) but its commits could not be read — not withdrawn this tick; it holds the track until they can"
+      RELEASE_SETTLED=open; return 0
+    fi
+    if [ "$mine" -ne 0 ]; then
       warn "release: $repo#$num is stale (main moved past ${head:0:7}) but carries commits that are not $ME's — not withdrawn; it holds the track until a person settles it"
       RELEASE_SETTLED=open; return 0
     fi

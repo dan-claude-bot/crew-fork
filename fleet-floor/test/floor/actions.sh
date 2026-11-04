@@ -663,6 +663,17 @@ for _ in $(seq 1 60); do
   [ "$(uf ff-paused "u['paused']")" = "True" ] && break
   sleep 0.5
 done
+# The wedged half rests on the PING tier's verdict in the same snapshot, and
+# the restarts above stop and start ff-wedged: a ping round that saw it
+# stopped clears its heartbeat, and on a loaded runner wake-silent could run
+# before three failed pings made it wedged again — the box was woken, and the
+# row below red on timing (ci-floor at 38672d7). Wait for the fact, as above.
+for _ in $(seq 1 240); do
+  [ "$(uf ff-wedged "u['ping']['wedged'] and u['ping']['age'] <= $FS_PING_FRESH_MAX")" = "True" ] && break
+  sleep 0.25
+done
+t "wake-silent: the fixture is wedged when the wake runs" True \
+  "$(uf ff-wedged "u['ping']['wedged'] and u['ping']['age'] <= $FS_PING_FRESH_MAX")"
 FS_M=$(fs_mark)
 WS_T0=$(date +%s)
 WS_R="$(api POST /api/command '{"action":"wake-silent"}')"
