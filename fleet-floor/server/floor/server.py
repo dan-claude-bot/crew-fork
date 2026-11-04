@@ -19,6 +19,7 @@ from floor.ping import PING_INTERVAL_S, log, run
 from floor.registry import snapshot as registry_snapshot
 from floor.roster import CONFIG_DIR, read_roster, require_operator_config, roster_snapshot
 from floor.credentials import credentials_snapshot
+from floor.inflight import INFLIGHT
 
 # --------------------------------------------------------------------------
 # HTTP
@@ -105,6 +106,13 @@ class Handler(BaseHTTPRequestHandler):
             # visible with no floor restart (#488 D4).
             return self.send_json(200, registry_snapshot(
                 [u["box"] for u in read_roster()]))
+
+        if path == "/api/actions":
+            # What the console is doing right now (#766): per box, the action
+            # holding it and its step; for the fleet, the action and its
+            # progress. Cheap — one dict under a lock — so the page polls it
+            # every second while anything is in flight, in every tab.
+            return self.send_json(200, INFLIGHT.snapshot())
 
         if path == "/api/credentials":
             # Which kinds each member's agent takes (#765) — never a

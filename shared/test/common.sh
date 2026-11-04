@@ -10025,7 +10025,7 @@ BOX_LIST='[]' FAIL_NAME=''
 if ca_all_out="$(ca_run 2>&1)"; then ca_all_rc=0; else ca_all_rc=$?; fi
 t cli-create-all-all-pass-is-zero 0 "$ca_all_rc"
 case "$ca_all_out" in
-  *"7 created. Next: log each new box in (crew login <box> gh and crew login <box> agent"*) r1=unchanged ;;
+  *"7 created. Next: log each new box into GitHub (crew login <box> gh"*) r1=unchanged ;;
   *) r1="$ca_all_out" ;;
 esac
 t cli-create-all-all-pass-summary-unchanged unchanged "$r1"

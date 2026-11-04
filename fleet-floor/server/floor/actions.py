@@ -14,6 +14,7 @@ from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
 from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
 from floor.credentials import credentials_set
+from floor.inflight import INFLIGHT, busy_reply
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -273,7 +274,51 @@ def registry_command(action, box, body, actor):
                  "results": []}
 
 
+# What claims what (#766). A box action holds its box for its duration; a
+# fleet action holds the fleet slot, and each box only while its own call runs.
+BOX_CLAIMED = {"pause", "resume", "restart", "power-on", "power-off", "force-stop",
+               "credentials-set"}
+# A message does not hold its box — concurrent messages are each their own
+# session, by design (a token per prompt file) — but it is refused while an
+# action that changes the box holds it: a prompt fired into a restart lands
+# nowhere anyone can see.
+BOX_RESPECTED = {"message"}
+FLEET_CLAIMED = {"start-all", "stop-all", "wake-silent"}
+
+
 def do_command(fleet, body, actor=""):
+    """One operator action under its claim (#766): a second action on a box
+    that one is already changing — or a second fleet action — is refused 409
+    `busy`, naming the first, and fires nothing. See floor/inflight.py."""
+    action = str(body.get("action", ""))
+    box = str(body.get("box", ""))
+    if action in BOX_CLAIMED and box in {u["box"] for u in read_roster()}:
+        ok, holder = INFLIGHT.claim_box(box, action, actor)
+        if not ok:
+            log("%s %s refused: busy (%s)" % (action, box, holder.get("action")))
+            return busy_reply(action, box, holder)
+        try:
+            return _do_command(fleet, body, actor)
+        finally:
+            INFLIGHT.release_box(box)
+    if action in BOX_RESPECTED:
+        holder = INFLIGHT.snapshot()["boxes"].get(box)
+        if holder is not None:
+            return busy_reply(action, box, holder)
+        return _do_command(fleet, body, actor)
+    if action in FLEET_CLAIMED:
+        ok, holder = INFLIGHT.claim_fleet(action, actor)
+        if not ok:
+            log("%s refused: busy (%s)" % (action, holder.get("action")))
+            return busy_reply(action, "", holder)
+        try:
+            return _do_command(fleet, body, actor)
+        finally:
+            INFLIGHT.release_fleet()
+    return _do_command(fleet, body, actor)
+
+
+def _do_command(fleet, body, actor=""):
     """Apply one operator action. Returns (http_status, result dict).
 
     `actor` is the authenticated operator, carried only as far as the registry
@@ -325,6 +370,9 @@ def do_command(fleet, body, actor=""):
         return 200, {"ok": True, "action": action, "roster": result, "results": []}
 
     def one(name, argv, timeout=ACTION_TIMEOUT_S, stdin_data=None, step=None):
+        # The step it is on, for every tab watching (#766): a restart reads
+        # `down`, then `start`, while it runs.
+        INFLIGHT.step(name, step or "")
         rc, out, err = run(argv, timeout, stdin_data)
         ok = rc == 0
         # `step` names WHICH call this row is, for the actions that now have
@@ -348,11 +396,35 @@ def do_command(fleet, body, actor=""):
         return fleet.operator_conf(unit["agent"], unit["room"])
 
     def concurrently(tasks):
-        """Run per-box calls together and return results in submission order."""
+        """Run per-box calls together and return results in submission order.
+
+        Under a fleet action each box call claims its box first (#766): a box
+        another action holds is left alone and its row says so, `ok: None` —
+        named, not a failure — and the fleet's progress counts every row."""
         if not tasks:
             return []
+        INFLIGHT.fleet_total(len(tasks))
+
+        def guarded(fn, args):
+            if fn is done:
+                try:
+                    return fn(*args)
+                finally:
+                    INFLIGHT.fleet_done()
+            name = args[0]
+            claimed, holder = INFLIGHT.claim_box(name, action, actor)
+            if not claimed:
+                INFLIGHT.fleet_done()
+                return {"box": name, "ok": None, "step": "busy",
+                        "out": "busy — %s in flight on it; left alone" % holder.get("action", "?")}
+            try:
+                return fn(*args)
+            finally:
+                INFLIGHT.release_box(name)
+                INFLIGHT.fleet_done()
+
         with ThreadPoolExecutor(max_workers=min(len(tasks), ACTION_WORKERS)) as pool:
-            futures = [pool.submit(fn, *args) for fn, args in tasks]
+            futures = [pool.submit(guarded, fn, args) for fn, args in tasks]
             return [future.result() for future in futures]
 
     def done(result):

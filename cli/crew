@@ -584,7 +584,7 @@ THE LIFECYCLE — two verbs around one human step in the middle
   login   Once per box, and again whenever a credential expires or
           rotates — set, never read back (#765). A token or key on stdin:
               crew login <box> gh                 # a PAT — one identity per box
-              crew login <box> agent [<kind>]     # the kinds its profile takes
+              crew login <box> agent [<kind>]     # once hired: its profile's kinds
           or the floor's Credentials overlay, which runs the same shell.
           The interactive way still works: box shell <box>, then
           gh auth login and <the agent profile's login hint>.
@@ -594,8 +594,8 @@ THE LIFECYCLE — two verbs around one human step in the middle
           five-minute boundary. An idempotent upsert.
 
   A fleet from scratch: install box and crew, 'crew create-all', log each box
-  in ('crew login', or the floor), 'crew hire-all'. Steady state afterwards is
-  just 'crew up'.
+  into GitHub ('crew login <box> gh', or the floor), 'crew hire-all', then each
+  agent ('crew login <box> agent'). Steady state afterwards is just 'crew up'.
 
 ENVIRONMENT
   CREW_CONFIG_DIR   Select one fleet definition directory. An invalid value
@@ -2548,12 +2548,12 @@ cmd_new() {
   cat <<EOF
 
 $name is created — $minted.
-No engine, no cron: it does nothing until hired. Next, once per box, ever:
+No engine, no cron: it does nothing until hired. Next:
 
-  box shell $name        # then, inside the box:
-                         #   gh auth login
-                         #   $(login_hint "$agent")
-  crew hire $name        # joins the crew; on duty at the next 5-min boundary
+  crew login $name gh      # a token on stdin, never read back (or the floor's Credentials)
+  crew hire $name          # joins the crew; on duty at the next 5-min boundary
+  crew login $name agent   # its agent's login, once hired
+                           #   (or by hand: box shell $name, then $(login_hint "$agent"))
 
 (a NEW GitHub identity per box; for a reviewer decide the panel= changes first)
 EOF
@@ -2581,12 +2581,12 @@ cmd_create_all() {
   done < <(read_roster)
   echo
   if [ "$failed" -eq 0 ] && [ "$existing" -eq 0 ]; then
-    echo "$made created. Next: log each new box in (crew login <box> gh and crew login <box> agent, or the floor's Credentials;"
+    echo "$made created. Next: log each new box into GitHub (crew login <box> gh, or the floor's Credentials;"
   else
     echo "create-all: $made created, $existing existing, $failed failed${failed_names:+ ($failed_names)}."
-    echo "Next: log each new box in (crew login <box> gh and crew login <box> agent, or the floor's Credentials;"
+    echo "Next: log each new box into GitHub (crew login <box> gh, or the floor's Credentials;"
   fi
-  echo "a token or key on stdin, never read back), then 'crew hire-all'."
+  echo "a token on stdin, never read back), then 'crew hire-all', then each agent: crew login <box> agent."
   if [ "$failed" -ne 0 ]; then return 1; fi
 }
 
@@ -3563,7 +3563,7 @@ cut_box() { # NAME
   # hired, is worse than none: the restore that uses it comes back looking
   # like it worked and the box cannot do a minute's work.
   if ! bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then
-    echo "  $name: REFUSED — not logged in to GitHub (an $RESET_LABEL checkpoint of a box without credentials restores to a box that cannot work); log it in with: box shell $name"
+    echo "  $name: REFUSED — not logged in to GitHub (an $RESET_LABEL checkpoint of a box without credentials restores to a box that cannot work); log it in with: crew login $name gh (or box shell $name)"
     return 1
   fi
   stamp="$(hired_at "$name")"
@@ -3594,7 +3594,7 @@ cut_box() { # NAME
     return 1
   fi
   if ! vendor_probe "$name" "$agent"; then
-    echo "  $name: REFUSED — its $agent CLI is not logged in (an $RESET_LABEL checkpoint of a box that cannot reach its model restores to a box that cannot work); log it in with: box shell $name"
+    echo "  $name: REFUSED — its $agent CLI is not logged in (an $RESET_LABEL checkpoint of a box that cannot reach its model restores to a box that cannot work); log it in with: crew login $name agent (or box shell $name)"
     return 1
   fi
   # AN UNPARSEABLE STAMP IS NOT A VERSION TO RECORD. This coerced to the
@@ -3824,12 +3824,17 @@ restore_box() { # NAME
     store_py memory-release --box "$name" >/dev/null 2>&1 || true
     return 1
   fi
+  # What a failure from here on leaves behind (round 10): the credentials read
+  # before the restore exist only in this shell, and the box has the
+  # checkpoint's — a re-run would carry THOSE as if they were live.
+  local creds_lost=""
+  [ -z "$creds" ] || creds_lost=" — and its live credentials, read before the restore, did not go back: it holds the checkpoint's (set them again with crew login $name gh|agent once it answers)"
   if ! box start "$name" </dev/null; then
-    echo "  $name: FAILED — restored to $RESET_LABEL but the start failed; start it with: box start $name — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
+    echo "  $name: FAILED — restored to $RESET_LABEL but the start failed; start it with: box start $name${creds_lost} — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   if ! wait_box_free_kb "$name" >/dev/null; then
-    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
+    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name${creds_lost} — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   if [ "$creds_read" -eq 1 ] && [ -n "$creds" ]; then
@@ -4680,6 +4685,10 @@ cmd_login() {
     secret="$(cat)"
   fi
   [ -n "$secret" ] || die "nothing read — nothing set"
+  # The agent half reads the box's own profile, which `crew hire` installs:
+  # before it there is nothing to set it against (round 10).
+  [ "$svc" != agent ] || bxn "$b" 'test -r ~/duty/conf/instance.conf' 2>/dev/null \
+    || die "$b is not hired yet — its agent credential is set against the profile hire installs: crew hire $b, then crew login $b agent"
   verdict="$(bxpipe "$b" "$(host_credentials_set_sh)" "$(printf '%s %s\n%s\n' "$svc" "$kind" "$secret")" 2>&1 \
     | tr -d '\r' | tail -1)" || rc=$?
   secret=""
@@ -5130,7 +5139,7 @@ cmd_status() {
       esac
     fi
     if [ "$ghs" = missing ] || [ "$vs" = missing ]; then
-      note="⚠ log in: box shell $name${note:+; $note}"
+      note="⚠ log in: crew login $name gh|agent${note:+; $note}"
       # A failing vendor probe has two very different causes, and they were
       # indistinguishable: the box is genuinely logged out, OR the ROSTER named
       # the wrong agent and we just probed with the wrong vendor profile. The
@@ -5356,6 +5365,12 @@ cmd_gold() {
   if bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then
     [ "$force" = "--force" ] || die "$name has live gh credentials — golds are cut PRE-login (--force to override)"
   fi
+  # ...and any credential the host can set (#765, round 10): an agent's env
+  # kind or login file is a credential before gh is, and the carry's own
+  # export is the one list of where they live.
+  if [ -n "$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r\n')" ]; then
+    [ "$force" = "--force" ] || die "$name holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login (--force to override)"
+  fi
   local stamp ver
   stamp="$(hired_at "$name")"
   stamp="${stamp:-crew@unknown}"
@@ -5482,7 +5497,7 @@ cmd_init() {
   echo
   echo "static login obligations from fleet.roster (definition only; not a live auth check):"
   while read -r name _agent _role _from; do
-    echo "  $name — by hand: box shell $name; gh auth login; then the agent login"
+    echo "  $name — crew login $name gh, then once hired crew login $name agent (or the floor's Credentials)"
   done < <(grep -vE '^[[:space:]]*(#|$)' "$target/fleet.roster")
 }
 

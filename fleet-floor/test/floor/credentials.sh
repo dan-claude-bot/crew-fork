@@ -26,6 +26,18 @@ t "credentials: a codex member takes codex's" "api-key auth-json" \
 t "credentials: the snapshot carries no value of any kind" 0 \
   "$(grep -ciE 'secret|token\"[[:space:]]*:' <<<"$CR_SNAP")"
 
+# An operator's own profile is what the console offers (round 10): the path
+# agent_conf_path resolves, not the shipped file.
+mkdir -p "$TMP/cr-op"; printf 'AGENT_CRED_KINDS="api-key:env:OPUS_KEY"\n' >"$TMP/cr-op/claude-opus.conf"
+t "credentials: an operator profile's kinds are offered" "api-key" "$(python3 - "$FLOOR/server" "$TMP/cr-op" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from floor import credentials
+credentials.agent_conf_path = lambda a: os.path.join(sys.argv[2], "%s.conf" % a)
+print(" ".join(credentials.agent_kinds("claude-opus")))
+PY
+)"
+
 # A set that takes: 200, the box's verdict, the secret only where it belongs.
 CR_M=$(fs_mark)
 CR_R="$(api POST /api/command "{\"action\":\"credentials-set\",\"box\":\"ff-idle\",\"service\":\"gh\",\"kind\":\"token\",\"secret\":\"$CR_SECRET\"}")"
@@ -66,5 +78,5 @@ t "credentials: ...journalled as not taken" 1 "$(grep -c ' box=ff-unreach servic
 # The page: the overlay exists and clears its field before the reply.
 t "credentials: the page has the button" 1 "$(grep -c 'id="g-creds"' "$FLOOR/index.html")"
 t "credentials: the field is cleared before the request resolves" 1 \
-  "$(awk '/^function onCredsClick/{f=1} f&&/inp\.value="";/{c=NR} f&&/cmd\("credentials-set"/{print (c&&c<NR)?1:0; exit}' "$FLOOR/src/app.js")"
+  "$(awk '/^function onCredsClick/{f=1} f&&/inp\.value="";/{c=NR} f&&/"credentials-set",\{box:box,service/{print (c&&c<NR)?1:0; exit}' "$FLOOR/src/app.js")"
 t "credentials: the input is a password field" 1 "$(grep -c 'data-k="secret" type="password"' "$FLOOR/src/app.js")"

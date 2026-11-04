@@ -1028,6 +1028,9 @@ case "${1:-}" in
     [ "$_dst" = "stopped" ] && {
       echo "Error: The instance is already stopped" >&2; exit 1; }
     [ "$(scenario_of "$2")" = "wedged" ] && { sleep 120; exit 1; }
+    # A stop that takes a while, on request (#766): `<box>.slow` holds the
+    # seconds, so a suite can watch an action while it is in flight.
+    [ ! -s "$STATEDIR/$2.slow" ] || sleep "$(cat "$STATEDIR/$2.slow")"
     echo stopped > "$STATEDIR/$2.state"; echo "stopped $2" ;;
   # `box incus <box> -- <argv>` — box's non-interactive passthrough, and the
   # way through to a force stop (#486 D2: the flag belongs to incus, not to a

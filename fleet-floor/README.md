@@ -221,6 +221,7 @@ no build step, no dependencies.
 | `/` | GET | the page |
 | `/api/fleet` | GET | latest telemetry snapshot |
 | `/api/roster` | GET | the fleet's definition as it is on disk: members, the agent and role profiles a line may name, the path, and the `etag` a save hands back (#764) |
+| `/api/actions` | GET | what is in flight right now: per box the action holding it, its step and age; for the fleet the action and its progress (#766) |
 | `/api/credentials` | GET | per member, the credential kinds its gh and its agent take — never a credential (#765) |
 | `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set`, `credentials-set` |
 | `/api/logs` | GET | tail `duty.log` or one session log |
@@ -229,6 +230,23 @@ no build step, no dependencies.
 **Two things the page still cannot do.** "Open box terminal" copies `box shell
 <name>` for you — a browser cannot attach a shell. And a box that is not running
 cannot be messaged; the request is refused rather than queued.
+
+### Actions are claimed while in flight (#766)
+
+**Box actions.** These are pause, resume, restart, power, force-stop, a message and a credential set. Each one **claims its box** for its duration. A second action on that box, whether from another click, another tab or another operator, is refused `409` with `busy: true`. The reply names the first action, its step, its age and who started it, and nothing is fired.
+
+**Fleet actions.** Start all, stop all and wake silent **claim the fleet**, one at a time. Each box is claimed only while its own call runs. A box another action holds is left alone and its row says so (`ok: null`, `step: busy`).
+
+**Claims never block.** Busy is an answer, not a queue.
+
+**What every tab sees.** The page reads `GET /api/actions`: every second while anything is in flight, every few seconds otherwise. So in every tab:
+
+- a control that would act on something held is disabled, dimmed and not clickable;
+- the control doing the work spins;
+- the status line names the step (a restart reads `down`, then `start`) and counts its seconds;
+- a fleet action draws a progress bar of boxes done out of boxes asked.
+
+**A refused click loses nothing.** A message prompt or a credential value refused for a busy box stays in its field.
 
 ### Credentials are settable, never readable (#765)
 

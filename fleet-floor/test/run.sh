@@ -279,6 +279,8 @@ source "$HERE/floor/server.sh"
 source "$HERE/floor/actions.sh"
 # shellcheck source=floor/credentials.sh
 source "$HERE/floor/credentials.sh"
+# shellcheck source=floor/inflight.sh
+source "$HERE/floor/inflight.sh"
 # shellcheck source=floor/ping.sh
 source "$HERE/floor/ping.sh"
 # Reachability transitions ride the ping tier and are asserted last, after the

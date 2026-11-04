@@ -201,6 +201,7 @@ case "$cmd" in
       true) exit 0 ;;
       # The credentials shell (#765): the header is logged, the secret kept
       # apart — it must arrive as stdin and nowhere else.
+      *'---CREDENTIALS_EXPORT_SH---'*) cat "$HT_STATE/$name.creds-export" 2>/dev/null; exit 0 ;;
       *'---CREDENTIALS_SH---'*)
         IFS= read -r header; cat >"$HT_STATE/$name.secret"
         echo "login $name $header" >>"$HT_STATE/calls"
@@ -209,6 +210,8 @@ case "$cmd" in
           "agent oauth-token") echo "agent: oauth-token set (claude) — it cannot be checked locally; the next session is the test" ;;
           *) echo "credentials: nothing set" >&2; exit 2 ;;
         esac ;;
+      # Is it hired (the agent half of crew login asks first)?
+      *'test -r ~/duty/conf/instance.conf'*) [ ! -e "$HT_STATE/$name.unhired" ] ;;
       # The probe first: its file list names .idle-ticks and .wake-reason too.
       *'echo "::logstart"'*) echo "drain $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.record" ;;
       *'.wake-reason'*) echo "wake $name $(printf '%s' "$script" | sed -n "s/.*printf '%s\\\\n' '\([^']*\)'.*/\1/p")" >>"$HT_STATE/calls" ;;
@@ -427,6 +430,11 @@ t login-the-journal-never-holds-the-secret 0 "$(grep -c SECRETTOKEN "$CONF/.cred
 OUT="$(printf 'sk-ant-oat01-SECRETAGENT\n' | run_crew login alpha agent 2>&1)"; RC=$?
 t login-an-agent-defaults-to-its-first-kind 1 "$(grep -c '^login alpha agent oauth-token$' "$STATE/calls")"
 t login-an-agent-verdict-is-said 0 "$RC"
+touch "$STATE/alpha.unhired"
+OUT="$(printf 'sk-x\n' | run_crew login alpha agent 2>&1)"; RC=$?
+t login-an-unhired-box-is-told-the-order 1 "$(grep -c 'alpha is not hired yet — its agent credential is set against the profile hire installs: crew hire alpha, then crew login alpha agent' <<<"$OUT")"
+t login-an-unhired-box-sets-nothing 1 "$RC"
+rm -f "$STATE/alpha.unhired"
 OUT="$(printf 'x\n' | run_crew login alpha agent cookie 2>&1)"; RC=$?
 t login-a-kind-the-agent-does-not-take-is-a-usage-error 2 "$RC"
 t login-the-refusal-lists-the-kinds 1 "$(grep -c 'agent on alpha takes: oauth-token api-key credentials-json' <<<"$OUT")"
@@ -435,6 +443,13 @@ t login-a-stopped-box-is-refused 1 "$RC"
 t login-a-stopped-box-is-said 1 "$(grep -c 'beta is not running — start it first' <<<"$OUT")"
 OUT="$(printf '\n' | run_crew login alpha gh 2>&1)"; RC=$?
 t login-nothing-read-sets-nothing 1 "$RC"
+# A gold is cut credential-free: an agent login refuses it as gh's does
+# (round 10) — the carry's export is the list of where credentials live.
+echo running >"$STATE/alpha.state"; printf 'Q1JFRFM=\n' >"$STATE/alpha.creds-export"
+OUT="$(run_crew gold alpha 2>&1)"; RC=$?
+t gold-an-agent-credential-refuses-the-cut 1 "$RC"
+t gold-the-refusal-names-it 1 "$(grep -c 'alpha holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login' <<<"$OUT")"
+rm -f "$STATE/alpha.creds-export"
 t help-names-login 1 "$(run_crew help 2>&1 | grep -c "^  login  *Set a member's GitHub or agent credential")"
 
 # --- wiring pins ----------------------------------------------------------------

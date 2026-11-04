@@ -18,7 +18,7 @@ import threading
 import time
 
 from floor.ping import log, run
-from floor.roster import CONFIG_DIR, CONFIG_IS_OPERATOR, CREW_ROOT, read_roster
+from floor.roster import CONFIG_DIR, CONFIG_IS_OPERATOR, CREW_ROOT, agent_conf_path, read_roster
 
 CREDENTIALS_JOURNAL = os.path.join(CONFIG_DIR, ".credentials-journal.log")
 SET_TIMEOUT_S = 60
@@ -41,9 +41,11 @@ CREDENTIALS_SH = _shell_block("CREDENTIALS_SH")
 
 
 def agent_kinds(agent):
-    """The kinds a member of this agent takes, from the host's copy of its
-    profile — what the console offers. The box decides against its own."""
-    path = os.path.join(CREW_ROOT, "shared", "conf", "agents", "%s.conf" % agent)
+    """The kinds a member of this agent takes, from the profile the box is
+    given — an operator's agents/<agent>.conf wins over the shipped one, as
+    `agent_conf_path` resolves it (#75, round 10). What the console offers;
+    the box decides against its own copy."""
+    path = agent_conf_path(agent)
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()

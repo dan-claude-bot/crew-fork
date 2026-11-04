@@ -49,6 +49,14 @@ def wedged(ping, now):
 # poller
 # --------------------------------------------------------------------------
 
+def stale_for_down(ping, unit, states_at):
+    """A heartbeat taken before the poll that saw this box stopped or absent:
+    it describes a box that is no longer up, and is neither served nor
+    decided on (#763 round 9/10)."""
+    note = unit.get("note", "") or ""
+    return ping["ts"] < states_at and (note.startswith("stopped") or note.startswith("not created"))
+
+
 class Fleet:
     """The telemetry snapshot, refreshed by one background thread."""
 
@@ -127,6 +135,16 @@ class Fleet:
         """
         with self._ping_lock:
             p = self.pings.get(name)
+        with self.lock:
+            snap = self.snapshot
+        unit = next((u for u in snap.get("units", []) if u.get("box") == name), None)
+        # ONE FACT: the heartbeat the page is served is the one this decides
+        # on. A box the last poll saw stopped drops an older heartbeat from the
+        # page (`get`), so it is dropped here too — otherwise the page offers a
+        # graceful restart while this answers force, and the restart is
+        # refused as a mismatch nobody can see (#763 round 10, ci-floor).
+        if p is not None and unit is not None and stale_for_down(p, unit, snap.get("states_at") or 0):
+            p = None
         return wedged(p, time.time())
 
     def request_refresh(self):
@@ -336,9 +354,7 @@ class Fleet:
         states_at = snap.get("states_at") or 0
         for u in snap.get("units", []):
             p = pings.get(u["box"])
-            if p is not None and p["ts"] < states_at and (
-                    u.get("note", "").startswith("stopped")
-                    or u.get("note", "").startswith("not created")):
+            if p is not None and stale_for_down(p, u, states_at):
                 p = None
             if p is None:
                 units.append(u)

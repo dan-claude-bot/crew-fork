@@ -81,8 +81,16 @@ t "ping: consecutive misses are counted, not just the last one" True \
 # ff-stopped by name: the control cases above run start-all, so by this point
 # the fixture's stopped box is running, and a by-name check here passed or
 # failed on test ordering rather than on behaviour.
-t "ping: stopped and absent boxes are skipped, not counted as wedged" "" \
-  "$(body GET /api/fleet | jqf "','.join(u['box'] for u in d['units'] if (u['note'].startswith('stopped') or u['note'].startswith('not created')) and u['ping'] is not None)")"
+#
+# And asserted once the snapshot has CAUGHT UP: a box started since the last
+# poll answers the ping tier at once while the snapshot still reads it stopped
+# until the refresh that start asked for lands — the newer heartbeat is the
+# truer one (an older one is dropped, see fleet.stale_for_down), so the row
+# waits, bounded, for the poll rather than racing it.
+PG_Q="','.join(u['box'] for u in d['units'] if (u['note'].startswith('stopped') or u['note'].startswith('not created')) and u['ping'] is not None)"
+PG_DL=$(( $(date +%s) + 60 ))
+while [ -n "$(body GET /api/fleet | jqf "$PG_Q")" ] && [ "$(date +%s)" -lt "$PG_DL" ]; do sleep 1; done
+t "ping: stopped and absent boxes are skipped, not counted as wedged" "" "$(body GET /api/fleet | jqf "$PG_Q")"
 
 # The wedge the SILENT rule cannot see: cron ticking, duty.log fresh, lock held
 # for 47 minutes. It stays `working` — it genuinely is — and says so loudly.

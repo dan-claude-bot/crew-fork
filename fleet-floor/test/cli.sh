@@ -2949,7 +2949,7 @@ else
 fi
 
 CL_ROSTER_NAMES="$(grep -vE '^[[:space:]]*(#|$)' "$CL_INIT_DIR/fleet.roster" | awk '{print $1}')"
-CL_REPORTED_NAMES="$(sed -n 's/^  \([^ ]*\) — by hand:.*/\1/p' "$CL_TMP/init-out")"
+CL_REPORTED_NAMES="$(sed -n 's/^  \([^ ]*\) — crew login .*/\1/p' "$CL_TMP/init-out")"
 t "crew init: names every static login obligation" "$CL_ROSTER_NAMES" "$CL_REPORTED_NAMES"
 if grep -q 'definition only; not a live auth check' "$CL_TMP/init-out"; then
   ok "crew init: labels the roster reading as static"

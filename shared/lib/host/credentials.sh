@@ -18,11 +18,14 @@
 # shellcheck shell=bash
 
 # credentials_kinds AGENT — the kinds a member of this agent takes, by name,
-# space-separated, from the host's copy of the profile (what the floor offers;
-# the box decides against its own).
+# space-separated, from the profile the box is given: cli/crew's agent_conf
+# when it is loaded (an operator's agents/<agent>.conf wins over the shipped
+# one, #75 — round 10), the shipped profile otherwise. The box decides
+# against its own copy.
 credentials_kinds() {
-  local spec s out=""
-  spec="$(sed -n 's/^AGENT_CRED_KINDS="\(.*\)"$/\1/p' "$CREW_ROOT/shared/conf/agents/$1.conf" 2>/dev/null | tail -1)"
+  local spec s out="" conf="$CREW_ROOT/shared/conf/agents/$1.conf"
+  if declare -F agent_conf >/dev/null; then conf="$(agent_conf "$1")"; fi
+  spec="$(sed -n 's/^AGENT_CRED_KINDS="\(.*\)"$/\1/p' "$conf" 2>/dev/null | tail -1)"
   for s in $spec; do out="$out ${s%%:*}"; done
   printf '%s' "${out# }"
 }
@@ -61,7 +64,11 @@ case "$svc" in
   gh)
     [ "$kind" = token ] || { echo "gh: the one kind is 'token' (a personal access token) — nothing set" >&2; exit 2; }
     case "$secret" in *[[:space:]]*) echo "gh: a token is one word — nothing set" >&2; exit 2 ;; esac
-    if ! printf '%s\n' "$secret" | gh auth login --hostname github.com --with-token >/dev/null 2>&1; then
+    # In plain text (0600, hosts.yml), never a keyring: the file is what the
+    # weekly reset carries across, and a headless box has no keyring to keep
+    # it in. A gh too old for the flag takes the token the old way.
+    if ! printf '%s\n' "$secret" | gh auth login --hostname github.com --with-token --insecure-storage >/dev/null 2>&1 \
+       && ! printf '%s\n' "$secret" | gh auth login --hostname github.com --with-token >/dev/null 2>&1; then
       echo "gh: the token was refused by gh auth login — the previous login stands"; exit 1
     fi
     gh auth setup-git >/dev/null 2>&1 || true
@@ -162,13 +169,54 @@ CREDENTIALS_EXPORT_SH
 
 # host_credentials_import_sh — stdin: what the export printed. Unpacked over
 # the restored disk, 0600, and the login-shell hook put back when the env file
-# came across. Prints `carried N`.
+# came across. Prints `carried N`. ONLY the credential files come across, and
+# only as regular files: the archive is listed first against the same list
+# the export reads, and one entry outside it — another path, a link, a
+# directory — refuses the whole import before anything is written (round 10).
 host_credentials_import_sh() {
   cat <<'CREDENTIALS_IMPORT_SH'
 # ---CREDENTIALS_IMPORT_SH---
 umask 077
-list="$(base64 -d 2>/dev/null | tar -C / -xzvf - 2>/dev/null)" || { echo "credentials: the archive did not unpack" >&2; exit 1; }
-n="$(printf '%s\n' "$list" | grep -c . || true)"
+DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
+set -- "$HOME/.config/gh/hosts.yml" "$HOME/.config/crew/credentials.env"
+# shellcheck disable=SC1091
+[ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf"
+conf="$DUTY_DIR/conf/agents/${BOT_AGENT:-}.conf"
+if [ -n "${BOT_AGENT:-}" ] && [ -r "$conf" ]; then
+  # shellcheck disable=SC1090
+  . "$conf"
+  for s in ${AGENT_CRED_KINDS:-}; do
+    how="${s#*:}"; where="${how#*:}"; how="${how%%:*}"
+    case "$how" in
+      file) set -- "$@" "$HOME/$where" ;;
+      file-fn) set -- "$@" "$("$where")" ;;
+    esac
+  done
+fi
+allow=" "; for f in "$@"; do allow="$allow${f#/} "; done
+arc="$(mktemp "$HOME/.crew-carry.XXXXXX")" || { echo "credentials: no room to stage the archive" >&2; exit 1; }
+trap 'rm -f "$arc"' EXIT
+base64 -d >"$arc" 2>/dev/null || { echo "credentials: the archive did not decode" >&2; exit 1; }
+entries="$(tar -tzvf "$arc" 2>/dev/null)" || { echo "credentials: the archive did not list" >&2; exit 1; }
+names=()
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  name="$(printf '%s\n' "$line" | awk '{ $1 = $2 = $3 = $4 = $5 = ""; sub(/^ +/, ""); print }')"
+  case "$line" in -*) ;; *) echo "credentials: '$name' is not a regular file — nothing carried" >&2; exit 1 ;; esac
+  case "$allow" in *" $name "*) names+=("$name") ;; *) echo "credentials: '$name' is not a credential file — nothing carried" >&2; exit 1 ;; esac
+done <<<"$entries"
+[ "${#names[@]}" -gt 0 ] || { echo "carried 0"; exit 0; }
+# credentials.env is SOURCED by every tick: it crosses as `export NAME=…`
+# lines and comments, or not at all.
+envname="${HOME#/}/.config/crew/credentials.env"
+case " ${names[*]} " in *" $envname "*)
+  bad="$(tar -xzOf "$arc" -- "$envname" 2>/dev/null | grep -cvE '^(export [A-Z_][A-Z0-9_]*=.*|#.*|)$' || true)"
+  if [ "${bad:-0}" -ne 0 ]; then
+    echo "credentials: credentials.env carries a line that is not an export — nothing carried" >&2; exit 1
+  fi ;;
+esac
+tar -C / -xzf "$arc" -- "${names[@]}" 2>/dev/null || { echo "credentials: the archive did not unpack" >&2; exit 1; }
+n="${#names[@]}"
 if [ -f "$HOME/.config/crew/credentials.env" ]; then
   for p in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do [ -f "$p" ] && break; done
   [ -f "$p" ] || p="$HOME/.profile"

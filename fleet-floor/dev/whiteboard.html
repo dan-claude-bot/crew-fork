@@ -148,6 +148,18 @@ body.room .rail,body.room .console2{display:flex}
    fleet. Red, because a frozen console that looks calm is the dangerous one. */
 .demo-badge.stale,.demo-badge.live.stale{color:#ff5147;background:rgba(255,81,71,.12);border-color:rgba(255,81,71,.45)}
 .livestat{font-family:var(--mono);font-size:10px;color:#5fce9b;align-self:center;white-space:nowrap;max-width:38vw;overflow:hidden;text-overflow:ellipsis}
+/* Actions in flight (#766): a control that cannot be used right now SAYS so
+   (dimmed, not-allowed), and the one doing the work spins until it is done. */
+.gbtn[disabled],.act2[disabled],.lbtn[disabled],.rosin[disabled]{opacity:.42;cursor:not-allowed;color:#5a6a80;border-color:#142230}
+.gbtn[disabled]:hover,.act2[disabled]:hover,.lbtn[disabled]:hover{color:#5a6a80;border-color:#142230}
+.busy[disabled],.busy{opacity:1;cursor:progress;color:var(--cyan);border-color:#1d5772}
+.busy::after{content:"";display:inline-block;width:.75em;height:.75em;margin-left:.5em;vertical-align:-.12em;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:actspin .8s linear infinite}
+@keyframes actspin{to{transform:rotate(360deg)}}
+.actprog{display:none;align-self:center;width:90px;height:4px;border-radius:2px;background:#0c1420;overflow:hidden;position:relative;margin-left:8px}
+.actprog.on{display:inline-block}
+.actprog i{position:absolute;left:0;top:0;height:100%;background:var(--cyan);border-radius:2px;transition:width .3s}
+.actprog.indet i{width:40%;background:linear-gradient(90deg,rgba(79,216,255,0),var(--cyan),rgba(79,216,255,0));animation:pbarrun 1.5s linear infinite}
+@media (prefers-reduced-motion: reduce){.busy::after{animation:none;border-right-color:currentColor}.actprog.indet i{animation:none}}
 /* Raw session logs, in-page (a popup would be blocked — it opens after a fetch). */
 #logov{display:none;position:fixed;inset:0;z-index:60;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
 #logov .logbox{display:flex;flex-direction:column;width:min(1100px,92vw);height:min(760px,86vh);background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
@@ -283,6 +295,8 @@ body { margin: 0; background: #05080f; color: #cfe0f2; font-family: var(--mono);
     <!-- Result of the last operator action, and the reason a live page stopped
          being live. Empty in DEMO mode. -->
     <span class="livestat" id="livestat"></span>
+    <!-- A fleet-wide action's progress (#766): boxes done of boxes asked. -->
+    <span class="actprog" id="actprog" role="progressbar" aria-label="fleet action progress"><i></i></span>
     <div class="sp"></div>
     <div class="tiles" id="tiles"></div>
     <div class="filters" id="filters">
@@ -2261,6 +2275,108 @@ function cmd(action,extra){
     })
     .catch(function(e){setStatus(action+" failed: "+e.message,true);});
 }
+/* ---- Actions in flight (#766) -------------------------------------------------
+   One model for every control that changes something. A key names what an
+   action holds — "fleet", "box:<name>", "ov:roster", "ov:reg" — and while it is
+   held the controls that would act on the same thing are DISABLED (dimmed,
+   not-allowed), the one doing the work SPINS, and the status line counts its
+   seconds and names its step. Two sources, merged: what THIS tab asked for
+   (INFL.local, set before the request leaves) and what the collector is doing
+   for anyone (INFL.server, /api/actions — another tab, another operator). The
+   collector refuses a second action on a held box or fleet `409 busy` either
+   way; this is what keeps the button from offering it. */
+var INFL={local:{},server:{boxes:{},fleet:null},last:0};
+var ACT_BTN={"start-all":"g-start","stop-all":"g-stop","wake-silent":"g-wake",
+  "pause":"a-pause","resume":"a-pause","restart":"a-restart","message":"c-send"};
+function inflightOf(key){
+  if(INFL.local[key])return INFL.local[key];
+  if(key==="fleet")return INFL.server.fleet||null;
+  if(key.indexOf("box:")===0)return (INFL.server.boxes||{})[key.slice(4)]||null;
+  return null;
+}
+function boxBusy(box){
+  /* A box the FLEET action is on right now is held for it too — the collector
+     claims each box while its own call runs, and says so in `boxes`. */
+  return inflightOf("box:"+box);
+}
+function busyWhat(e){return e.action+(e.step?" ("+e.step+")":"");}
+function act(key,action,extra){
+  var held=inflightOf(key);
+  if(held){
+    setStatus((key==="fleet"?"the fleet":key.replace(/^(box|ov):/,""))+" is busy: "+busyWhat(held)+" — wait for it to finish",true);
+    return Promise.resolve(null);
+  }
+  INFL.local[key]={action:action,since:Date.now()/1000,step:"",box:(extra&&extra.box)||""};
+  applyBusy();pollActions();
+  var clear=function(){delete INFL.local[key];applyBusy();};
+  return cmd(action,extra).then(function(r){clear();return r;},function(e){clear();throw e;});
+}
+function setBusy(el,disabled,spinning){
+  if(!el)return;
+  el.disabled=!!disabled;
+  el.classList.toggle("busy",!!spinning);
+  if(spinning)el.setAttribute("aria-busy","true");else el.removeAttribute("aria-busy");
+}
+function applyBusy(){
+  if(!LIVE)return;
+  var fb=inflightOf("fleet");
+  ["g-start","g-stop","g-wake"].forEach(function(id){setBusy(document.getElementById(id),!!fb,!!fb&&ACT_BTN[fb.action]===id);});
+  /* The console of the box on screen: every control that changes it. */
+  var bb=BOX?boxBusy(BOX):null,a=bb&&bb.action;
+  setBusy(document.getElementById("a-pause"),!!bb,a==="pause"||a==="resume");
+  setBusy(document.getElementById("a-restart"),!!bb,a==="restart");
+  setBusy(document.getElementById("c-send"),!!bb,a==="message");
+  var ci=document.getElementById("c-in");if(ci)ci.disabled=!!bb;
+  setBusy(document.getElementById("ac-restart"),!!bb,a==="restart");
+  setBusy(document.getElementById("ac-force"),!!bb,a==="force-stop");
+  [].forEach.call(document.querySelectorAll(".rail-l .pw"),function(b){
+    setBusy(b,!!bb,(a==="power-on"&&b.dataset.pw==="on")||(a==="power-off"&&b.dataset.pw==="off"));
+  });
+  /* The overlays: each credentials row by its box, the two editors by theirs. */
+  [].forEach.call(document.querySelectorAll("#credlist tr.credrow"),function(tr){
+    var e=boxBusy(tr.dataset.box);
+    setBusy(tr.querySelector('[data-cred="set"]'),!!e,!!e&&e.action==="credentials-set");
+  });
+  var rs=inflightOf("ov:roster");
+  [].forEach.call(document.querySelectorAll('#rosbody [data-ros]'),function(b){setBusy(b,!!rs,!!rs&&b.dataset.ros==="save");});
+  var rg=inflightOf("ov:reg");
+  [].forEach.call(document.querySelectorAll('#regbody [data-reg]'),function(b){setBusy(b,!!rg,!!rg&&b.dataset.spin==="1");});
+  /* The fleet action's progress: boxes done of boxes asked, indeterminate
+     until the collector has counted them. */
+  var pg=document.getElementById("actprog");
+  if(pg){
+    pg.classList.toggle("on",!!fb);
+    var tot=fb&&fb.total,done=fb&&fb.done;
+    pg.classList.toggle("indet",!!fb&&!tot);
+    pg.firstChild.style.width=(fb&&tot)?Math.round(100*done/tot)+"%":"";
+    pg.title=fb?(fb.action+(tot?" · "+done+"/"+tot+" boxes":"")):"";
+  }
+  busyStatus();
+}
+/* While THIS tab waits, the status line says what it is waiting for, with the
+   step the collector reports and the seconds so far — never a bare "…" that
+   reads the same at second one and minute three. */
+function busyStatus(){
+  var keys=Object.keys(INFL.local);if(!keys.length)return;
+  var now=Date.now()/1000,k=keys[keys.length-1],l=INFL.local[k];
+  var srv=k==="fleet"?INFL.server.fleet:(l.box?(INFL.server.boxes||{})[l.box]:null);
+  var step=(srv&&srv.step)||"",prog=(k==="fleet"&&srv&&srv.total)?" · "+srv.done+"/"+srv.total+" boxes":"";
+  setStatus("⟳ "+l.action+(l.box?" "+l.box:"")+(step?" · "+step:"")+prog+" · "+Math.max(0,Math.round(now-l.since))+"s…",false);
+}
+function pollActions(){
+  if(!LIVE)return;
+  INFL.last=Date.now();
+  api("/api/actions").then(function(r){if(r&&r.boxes){INFL.server=r;applyBusy();}}).catch(function(){});
+}
+/* Every second while anything is in flight anywhere, every few seconds
+   otherwise — so an action another operator started shows up here as fast as
+   it would on their screen. */
+setInterval(function(){
+  if(!LIVE)return;
+  var hot=Object.keys(INFL.local).length||INFL.server.fleet||Object.keys(INFL.server.boxes||{}).length;
+  if(hot||Date.now()-INFL.last>5000)pollActions();
+  if(hot)applyBusy();
+},1000);
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":c==='"'?"&quot;":"&#39;";});}
 function stampVersion(s){var m=String(s||"").match(/^crew@([0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?)(?:\s|$)/);return m?m[1]:"unknown";}
 function clockStr(){var d=new Date();return pad2(d.getUTCHours())+":"+pad2(d.getUTCMinutes())+":"+pad2(d.getUTCSeconds());}
@@ -2433,6 +2549,8 @@ function populateDash(){
   /* Follows d.paused, not the working state: an idle but unpaused box was
      offering "Resume" while its click correctly sent `pause`. */
   document.getElementById("a-pause").textContent=(LIVE&&d.paused)||(!LIVE&&!work)?"▶ Resume":"⏸ Pause";
+  /* The rail was just repainted: its controls take the in-flight state again. */
+  applyBusy();
 }
 function updateCurrent(){if(VIEW!=="room"||STATE!=="working")return;var d=dataOf(BOX,ROOM);var el=document.getElementById("cur-el");if(!el)return;
   /* A stuck box is still STATE==="working" and may still have a d.cur, so
@@ -2580,7 +2698,7 @@ function restartPlan(box,d){var u=unreachableBox(d);return{mode:u?"force":"grace
   :"Restart "+box+"? It is stopped and started again."};}
 /* Ask, then fire what was asked. One helper so both entry points — the access
    panel and the detail view — cannot drift into posting different bodies. */
-function restartClick(box,d){var p=restartPlan(box,d);if(confirm(p.ask))cmd("restart",{box:box,mode:p.mode});}
+function restartClick(box,d){if(boxBusy(box))return act("box:"+box,"restart",{});var p=restartPlan(box,d);if(confirm(p.ask))act("box:"+box,"restart",{box:box,mode:p.mode});}
 function buildOps(){var list=document.getElementById("opslist");if(!list)return;var working=ROSTER.filter(function(u){return u.state==="working"&&dataOf(UNITID(u),u.room).cur;});
   var cc=document.getElementById("ops-count");if(cc)cc.textContent="· "+working.length;
   list.innerHTML=working.length?working.map(function(u){var d=dataOf(UNITID(u),u.room),vc=VENDORCOL(u.agent),kc=u.room==="builder"?"#f7bd4e":u.room==="reviewer"?"#5cb4ff":"#c98bff";
@@ -6898,12 +7016,12 @@ if(!LIVE){["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","a-pause","a
    power the roster's boxes up and down. "Wake silent" resumes a paused crontab
    and starts a stopped box — it does NOT start a model session, because a box
    whose cron is dead has no evidence anyone asked for one. */
-document.getElementById("g-start").addEventListener("click",function(){if(!LIVE)return;if(confirm("Start every roster box?"))cmd("start-all");});
-document.getElementById("g-stop").addEventListener("click",function(){if(!LIVE)return;if(confirm("Stop every roster box? Running sessions are lost."))cmd("stop-all");});
+document.getElementById("g-start").addEventListener("click",function(){if(!LIVE)return;if(confirm("Start every roster box?"))act("fleet","start-all");});
+document.getElementById("g-stop").addEventListener("click",function(){if(!LIVE)return;if(confirm("Stop every roster box? Running sessions are lost."))act("fleet","stop-all");});
 document.getElementById("g-reg").addEventListener("click",function(){openRegistries("");});
 document.getElementById("g-roster").addEventListener("click",function(){openRoster();});
 document.getElementById("g-creds").addEventListener("click",function(){openCreds();});
-document.getElementById("g-wake").addEventListener("click",function(){if(!LIVE)return;cmd("wake-silent");});
+document.getElementById("g-wake").addEventListener("click",function(){if(!LIVE)return;act("fleet","wake-silent");});
 setInterval(tickOps,1000);setInterval(updateCurrent,1000);
 /* The access panel is re-rendered on every poll, so its buttons are handled by
    delegation on the rail rather than bound per render. */
@@ -6914,14 +7032,15 @@ if(_railL)_railL.addEventListener("click",function(e){
   var pw=e.target.closest(".pw");
   if(pw){
     var on=pw.dataset.pw==="on";
+    if(boxBusy(box))return act("box:"+box,on?"power-on":"power-off",{});
     if(!on&&!confirm("Power off "+box+"? Any running session is lost."))return;
-    cmd(on?"power-on":"power-off",{box:box});return;
+    act("box:"+box,on?"power-on":"power-off",{box:box});return;
   }
   var b=e.target.closest(".lbtn");if(!b)return;
   if(b.id==="ac-restart"){restartClick(box,d);}
   /* Its own verb on the wire too, not a flag on power-off: the collector must
      never be able to reach a force stop except by being asked for one. */
-  else if(b.id==="ac-force"){if(confirm("Force stop "+box+"? The guest is KILLED where it stands — this is `incus stop --force`, not a shutdown, and any running session is lost. Use it when a graceful stop has hung."))cmd("force-stop",{box:box});}
+  else if(b.id==="ac-force"){if(confirm("Force stop "+box+"? The guest is KILLED where it stands — this is `incus stop --force`, not a shutdown, and any running session is lost. Use it when a graceful stop has hung."))act("box:"+box,"force-stop",{box:box});}
   else if(b.id==="ac-repo"){if(d.repo)window.open(repoURL(d.repo),"_blank","noopener");}
   else if(b.id==="ac-term"){
     /* A browser cannot open a shell into a box. Hand over the command the
@@ -7097,7 +7216,8 @@ function onRegistryClick(e){
        cleared box follows a later widening and a pinned one does not — so the
        question names the consequence rather than the file. */
     if(!confirm("Clear "+box+"'s "+kind+" selection? It goes back to following the fleet-wide list, including any later widening."))return;
-    return cmd("registry-inherit",{box:box,kind:kind}).then(function(){openRegistries(box);});
+    b.dataset.spin="1";
+    return act("ov:reg","registry-inherit",{box:box,kind:kind}).then(function(r){delete b.dataset.spin;if(r)openRegistries(box);});
   }
   /* Two editors, one submission shape: the switches when this is a box's
      selection, the free list when it is the fleet-wide registry itself. An
@@ -7111,7 +7231,9 @@ function onRegistryClick(e){
   }
   var extra={kind:kind,entries:entries};
   if(box)extra.box=box;
-  return cmd(box?"registry-override":"registry-set",extra).then(function(r){
+  b.dataset.spin="1";
+  return act("ov:reg",box?"registry-override":"registry-set",extra).then(function(r){
+    delete b.dataset.spin;
     /* Re-open on SUCCESS only. A refusal leaves the operator's text exactly as
        they typed it, beside the reason the collector gave in the status line —
        repainting from disk there would throw away the edit they now have to
@@ -7229,7 +7351,7 @@ function onRosterClick(e){
                               [].map.call(tr.querySelectorAll('.rossel input:checked'),function(i){return i.value;})),
             from:tr.querySelector('[data-k="from"]').value.trim()};
   });
-  return cmd("roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});
+  return act("ov:roster","roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});
 }
 /* ---- Credentials (#765) ------------------------------------------------------
    SET, NEVER READ. A member's GitHub login and its agent's login are written
@@ -7267,6 +7389,7 @@ function openCreds(){
       +'</tbody></table>';
     ov.style.display="flex";
     setStatus("credentials: "+r.members.length+" member"+(r.members.length===1?"":"s"),false);
+    applyBusy();
   }).catch(function(){setStatus("could not read the credential kinds",true);});
 }
 function credsKinds(m,svc){return (m.services&&m.services[svc])||[];}
@@ -7277,7 +7400,9 @@ function credsRow(m,u){
   return '<tr class="credrow" data-box="'+esc(m.box)+'">'
     +'<td>'+esc(m.box)+'<div class="rosst">'+esc(m.agent)+'</div></td>'
     +'<td><div class="rosst">gh: '+esc(gh)+'</div><div class="rosst">'+esc(m.agent)+': '+esc(ven)+'</div></td>'
-    +'<td><select class="rosin" data-k="service"><option value="gh">gh</option>'+(agentKinds.length?'<option value="agent">'+esc(m.agent)+'</option>':'')+'</select>'
+    /* The agent half is set against the profile hire installs on the box:
+       an unhired box offers gh alone, and says why (round 10). */
+    +'<td><select class="rosin" data-k="service"><option value="gh">gh</option>'+(agentKinds.length?'<option value="agent"'+(u&&u.hired==="yes"?'':' disabled title="hire it first — the agent credential is set against the profile hire installs"')+'>'+esc(m.agent)+(u&&u.hired==="yes"?'':' (after hire)')+'</option>':'')+'</select>'
     +'<select class="rosin" data-k="kind">'+credsKindOptions(m,"gh")+'</select>'
     +'<input class="rosin" data-k="secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="paste — never shown again">'
     +'<div class="rosst credverdict"></div></td>'
@@ -7301,11 +7426,13 @@ function onCredsClick(e){
   var svc=tr.querySelector('[data-k="service"]').value,kind=tr.querySelector('[data-k="kind"]').value;
   var secret=inp.value,out=tr.querySelector(".credverdict");
   if(!secret.trim()){setStatus("credentials-set: paste the value first — nothing set",true);return;}
+  /* A box another action holds keeps the value in its field: refused here. */
+  if(boxBusy(box)){act("box:"+box,"credentials-set",{});return;}
   /* Cleared BEFORE the request resolves: whatever the box answers, the value
      is not on this page any more. */
   inp.value="";
   out.textContent="setting…";
-  return cmd("credentials-set",{box:box,service:svc,kind:kind,secret:secret}).then(function(r){
+  return act("box:"+box,"credentials-set",{box:box,service:svc,kind:kind,secret:secret}).then(function(r){
     secret="";
     out.textContent=(r&&(r.verdict||r.error))||"no answer";
     out.classList.toggle("bad",!(r&&r.ok));
@@ -7316,7 +7443,7 @@ document.getElementById("filters").addEventListener("click",function(e){var b=e.
    woken, the box stays up and reachable. That is the reversible control an
    operator actually wants mid-incident. */
 document.getElementById("a-pause").addEventListener("click",function(){
-  if(!LIVE)return;var d=dataOf(BOX,ROOM);cmd(d.paused?"resume":"pause",{box:BOX});
+  if(!LIVE)return;var d=dataOf(BOX,ROOM);act("box:"+BOX,d.paused?"resume":"pause",{box:BOX});
 });
 document.getElementById("a-restart").addEventListener("click",function(){
   if(!LIVE)return;var box=BOX;
@@ -7334,10 +7461,12 @@ function sendMsg(){
   var inp=document.getElementById("c-in"),v=inp.value.trim();if(!v)return;
   var box=BOX;
   if(STATE==="offline"){setStatus("cannot message "+box+" — it is not running",true);return;}
+  /* Busy keeps the prompt where it was typed: refused here, nothing is lost. */
+  if(boxBusy(box))return act("box:"+box,"message",{});
   inp.value="";
   var f=document.getElementById("dfeed");
   if(f){var el=document.createElement("div");el.className="fev";el.innerHTML='<span class="ago">now</span><span style="color:#5fd6ff">📨 prompt</span><span style="color:#c7d4e4">'+esc(v.slice(0,42))+'</span>';f.insertBefore(el,f.firstChild);}
-  cmd("message",{box:box,prompt:v});
+  act("box:"+box,"message",{box:box,prompt:v});
 }
 document.getElementById("c-send").addEventListener("click",sendMsg);
 document.getElementById("c-in").addEventListener("keydown",function(e){if(e.key==="Enter")sendMsg();e.stopPropagation();});

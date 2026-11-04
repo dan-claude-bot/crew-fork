@@ -501,4 +501,97 @@ assert stream.peak == 1, ("overlapping log writes", stream.peak)
 assert len(stream.writes) == len(threads), ("torn log writes", stream.writes)
 assert all(line.endswith(" complete\n") for line in stream.writes), stream.writes
 
+# #766 — claims. A second action on a box one is already changing is refused
+# 409 busy and fires nothing; a fleet action leaves a held box alone; the
+# registry the page polls names the action and its step while it runs.
+from floor.inflight import INFLIGHT  # noqa: E402
+CLAIM_CALLS = []
+CLAIM_GATE = threading.Event()
+
+
+def gated_run(argv, _timeout, _stdin_data=None):
+    CLAIM_CALLS.append(" ".join(argv[:3]))
+    if argv[1] == "down" and argv[2] == "box-a":
+        CLAIM_GATE.wait(5)
+    return 0, "done", ""
+
+
+floor.read_roster = lambda: [{"box": n, "agent": "claude", "room": "builder"} for n in BOXES]
+floor.box_states = lambda: {n: "running" for n in BOXES}
+floor.run = gated_run
+
+
+class ClaimFleet(Fleet):
+    def box_unreachable(self, _box):
+        return False
+
+
+cf = ClaimFleet()
+first = {}
+t1 = threading.Thread(target=lambda: first.update(
+    r=floor.do_command(cf, {"action": "restart", "box": "box-a", "mode": "graceful"}, actor="op1")))
+t1.start()
+for _ in range(200):
+    if INFLIGHT.snapshot()["boxes"].get("box-a", {}).get("step") == "down":
+        break
+    time.sleep(0.01)
+snap = INFLIGHT.snapshot()
+assert snap["boxes"]["box-a"]["action"] == "restart", snap
+assert snap["boxes"]["box-a"]["step"] == "down", snap
+assert snap["boxes"]["box-a"]["actor"] == "op1", snap
+# The second operator's restart, and a power-off, on the held box: refused.
+code, reply = floor.do_command(cf, {"action": "restart", "box": "box-a", "mode": "graceful"}, actor="op2")
+assert code == 409 and reply["busy"] and reply["refused"], (code, reply)
+assert "restart (down)" in reply["error"] and "by op1" in reply["error"], reply
+code, reply = floor.do_command(cf, {"action": "power-off", "box": "box-a"}, actor="op2")
+assert code == 409 and reply["busy"], (code, reply)
+# Another box is not held by it.
+code, reply = floor.do_command(cf, {"action": "pause", "box": "box-b"}, actor="op2")
+assert code == 200, (code, reply)
+# A fleet action meanwhile: it runs, and leaves the held box alone, named.
+code, reply = floor.do_command(cf, {"action": "stop-all"}, actor="op2")
+rows = {r["box"]: r for r in reply["results"]}
+assert rows["box-a"]["ok"] is None and rows["box-a"]["step"] == "busy", rows
+assert rows["box-b"]["ok"] and rows["box-c"]["ok"], rows
+CLAIM_GATE.set()
+t1.join(5)
+assert first["r"][0] == 200, first
+# Fired exactly once at box-a: the first restart's down and start, nothing else.
+assert [c for c in CLAIM_CALLS if c.endswith("box-a")] == ["box down box-a", "box start box-a"], CLAIM_CALLS
+assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
+
+# Two fleet actions at once: the second is refused and fires nothing.
+FLEET_GATE = threading.Event()
+FLEET_CALLS = []
+
+
+def fleet_gated(argv, _timeout, _stdin_data=None):
+    FLEET_CALLS.append(" ".join(argv[:3]))
+    FLEET_GATE.wait(5)
+    return 0, "done", ""
+
+
+floor.run = fleet_gated
+floor.box_states = lambda: {n: "stopped" for n in BOXES}
+held = {}
+t2 = threading.Thread(target=lambda: held.update(r=floor.do_command(cf, {"action": "start-all"}, actor="op1")))
+t2.start()
+for _ in range(200):
+    f = INFLIGHT.snapshot()
+    if f["fleet"] and f["fleet"]["total"] == 3 and len(f["boxes"]) == 3:
+        break
+    time.sleep(0.01)
+f = INFLIGHT.snapshot()["fleet"]
+assert f["action"] == "start-all" and f["total"] == 3 and f["done"] == 0, f
+code, reply = floor.do_command(cf, {"action": "stop-all"}, actor="op2")
+assert code == 409 and reply["busy"] and "start-all" in reply["error"], (code, reply)
+# A box the fleet action is on right now is held for it, too.
+code, reply = floor.do_command(cf, {"action": "power-off", "box": "box-c"}, actor="op2")
+assert code == 409, (code, reply)
+FLEET_GATE.set()
+t2.join(5)
+assert held["r"][0] == 200, held
+assert sorted(FLEET_CALLS) == ["box start box-a", "box start box-b", "box start box-c"], FLEET_CALLS
+assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
+
 print("concurrent fleet actions: ok")

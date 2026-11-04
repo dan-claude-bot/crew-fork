@@ -49,7 +49,7 @@ shared/host-crontab.example	cli-lifecycle,cli-reset,host-tick
 shared/docs/*	none
 shared/README.md	none
 shared/test/README.md	none
-shared/lib/host/credentials.sh	credentials,cli-reset,cli-lifecycle,floor-no-browser
+shared/lib/host/credentials.sh	credentials,cli-reset,cli-lifecycle,host-tick,floor-no-browser
 shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
