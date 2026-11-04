@@ -10,6 +10,7 @@ from floor.ping import (PING_FAILS_TO_WEDGE, PING_INTERVAL_S,
                         PING_STALE_AFTER_S, PING_TIMEOUT_S, PROBE_TIMEOUT_S,
                         log, ping_box)
 from floor import CREW_ROOT
+from floor import store as fleet_store
 from floor.roster import (CONFIG_DIR, FLOOR_VERSION, agent_conf_path, box_states,
                           read_roster, role_conf_path)
 from floor.units import build_unit, fmt_dur, stuck_verdict, unit_defaults
@@ -47,6 +48,14 @@ def wedged(ping, now):
 # --------------------------------------------------------------------------
 # poller
 # --------------------------------------------------------------------------
+
+def stale_for_down(ping, unit, states_at):
+    """A heartbeat taken before the poll that saw this box stopped or absent:
+    it describes a box that is no longer up, and is neither served nor
+    decided on (#763 round 9/10)."""
+    note = unit.get("note", "") or ""
+    return ping["ts"] < states_at and (note.startswith("stopped") or note.startswith("not created"))
+
 
 class Fleet:
     """The telemetry snapshot, refreshed by one background thread."""
@@ -126,6 +135,16 @@ class Fleet:
         """
         with self._ping_lock:
             p = self.pings.get(name)
+        with self.lock:
+            snap = self.snapshot
+        unit = next((u for u in snap.get("units", []) if u.get("box") == name), None)
+        # ONE FACT: the heartbeat the page is served is the one this decides
+        # on. A box the last poll saw stopped drops an older heartbeat from the
+        # page (`get`), so it is dropped here too — otherwise the page offers a
+        # graceful restart while this answers force, and the restart is
+        # refused as a mismatch nobody can see (#763 round 10, ci-floor).
+        if p is not None and unit is not None and stale_for_down(p, unit, snap.get("states_at") or 0):
+            p = None
         return wedged(p, time.time())
 
     def request_refresh(self):
@@ -175,9 +194,14 @@ class Fleet:
 
         def work(i, unit):
             try:
+                # The store rides every poll (#758): a probe that answers is
+                # ingested after it is parsed, one that does not records a
+                # failed pull, and a box that cannot be asked is served from
+                # what the host already holds. Each thread opens its own
+                # connection inside the store; nothing here is shared.
                 units[i] = build_unit(unit, states.get(unit["box"]),
                                       self.agent_conf(unit["agent"]), now,
-                                      inventory_ok=states_ok)
+                                      inventory_ok=states_ok, store=fleet_store)
             except Exception as e:                          # noqa: BLE001
                 u = dict(unit)
                 u.update(unit_defaults())
@@ -201,6 +225,11 @@ class Fleet:
             "ping_interval": PING_INTERVAL_S,
             "units": [u for u in units if u],
             "polling": True,
+            # When the inventory was read (#763 round 9): a box this poll saw
+            # stopped or absent drops a heartbeat older than that reading — the
+            # ping map is replaced once a round, so a box stopped mid-round
+            # kept its last answer for up to a ping interval.
+            "states_at": now,
         }
         with self.lock:
             self.snapshot = snap
@@ -322,8 +351,11 @@ class Fleet:
 
         now = time.time()
         units = []
+        states_at = snap.get("states_at") or 0
         for u in snap.get("units", []):
             p = pings.get(u["box"])
+            if p is not None and stale_for_down(p, u, states_at):
+                p = None
             if p is None:
                 units.append(u)
                 continue

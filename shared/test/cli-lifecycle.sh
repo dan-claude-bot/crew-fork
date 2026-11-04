@@ -441,6 +441,25 @@ reset_case
 capture restart --all
 t lifecycle-all-restarts-roster 2 "$(grep -c '^start ' "$STATE/calls")"
 t lifecycle-all-leaves-offroster 0 "$(grep -c 'offroster' "$STATE/calls" || true)"
+# Under --all the daily cycle is a cycle (#763 review): a box the host tick
+# stopped stays stopped, and a paused box is left exactly as paused — neither
+# is started with its cron live; a named restart still starts a stopped box.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+capture restart --all
+t lifecycle-all-leaves-a-stopped-box-to-the-tick 1 "$(grep -c 'alpha: stopped — left to the host tick' <<<"$OUT")"
+t lifecycle-all-does-not-start-a-stopped-box 0 "$(grep -c '^start alpha$' "$STATE/calls" || true)"
+t lifecycle-all-still-cycles-the-running-box 1 "$(grep -c '^start beta$' "$STATE/calls")"
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+capture restart alpha
+t lifecycle-a-named-restart-starts-a-stopped-box 1 "$(grep -c '^start alpha$' "$STATE/calls")"
+reset_case
+mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
+capture restart --all
+t lifecycle-all-leaves-a-paused-box-alone 1 "$(grep -c 'alpha: paused — left alone' <<<"$OUT")"
+t lifecycle-all-neither-stops-nor-starts-a-paused-box 0 "$(grep -cE '^(down|start) alpha$' "$STATE/calls" || true)"
+rm -f "$CONF/store/paused/alpha"
 
 reset_case
 printf 'busy:65\nidle:0\n' >"$STATE/probe-alpha"
@@ -507,8 +526,13 @@ unset LIFE_DOWN_FAIL
 HOST_CRONTAB="$ROOT/shared/host-crontab.example"
 host_cron_lines="$(grep -vE '^[[:space:]]*(#|$)' "$HOST_CRONTAB" || true)"
 t hostcron-example-exists yes "$([ -f "$HOST_CRONTAB" ] && echo yes || echo no)"
-t hostcron-schedules-the-daily-restart-alone 1 \
+# Three job lines since 0.1.4: the daily restart, the host tick (#759) and
+# the weekly reset (#761), which #678 deferred until the store could hold
+# what a restore wipes.
+t hostcron-schedules-three-job-lines 3 \
   "$(printf '%s\n' "$host_cron_lines" | grep -c '[^[:space:]]' || true)"
+t hostcron-ticks-every-five-minutes 1 \
+  "$(printf '%s\n' "$host_cron_lines" | grep -cE '^\*/5 \* \* \* \* .*crew tick$' || true)"
 t hostcron-no-flock-in-any-line 0 \
   "$(printf '%s\n' "$host_cron_lines" | grep -c 'flock' || true)"
 t hostcron-no-redirect-in-any-line 0 \
@@ -575,8 +599,10 @@ cron_entry="^[[:blank:]]*(${cron_five}|${cron_at}[[:blank:]]+).*crew[[:blank:]]+
 # an `^[0-9]+ [0-9]+` pattern let it through while the assertion's NAME claimed
 # otherwise (@claude-bot-andresmgsl, #683). The count above would have caught
 # it; a guard that leans on a neighbour is one edit from catching nothing.
-t hostcron-schedules-no-reset-job-line 0 \
+t hostcron-schedules-the-weekly-reset 1 \
   "$(printf '%s\n' "$host_cron_lines" | grep -cE "$cron_entry" || true)"
+t hostcron-the-weekly-reset-is-on-sunday 1 \
+  "$(printf '%s\n' "$host_cron_lines" | grep -cE '^[0-9]+ [0-9]+ \* \* 0 .*crew reset --all$' || true)"
 # AND IT MUST NOT BE REINSTATABLE BY UNCOMMENTING. This is the one assertion
 # here that reads the whole file rather than the job lines, because a
 # commented-out job line is invisible to every assertion above it and a
@@ -596,7 +622,7 @@ t hostcron-schedules-no-reset-job-line 0 \
 # group only repeats where what follows a marker run is whitespace and more
 # markers, so a comment that merely NAMES the verb is untouched.
 t hostcron-has-no-commented-out-reset-job-line 0 \
-  "$(sed -E 's/^([[:space:]]*#+)+[[:space:]]*//' "$HOST_CRONTAB" \
+  "$(grep -E '^[[:space:]]*#' "$HOST_CRONTAB" | sed -E 's/^([[:space:]]*#+)+[[:space:]]*//' \
      | grep -cE "$cron_entry" || true)"
 # #688 — the operator-facing reset help and the shipped schedule are two
 # readers of one fact. Compare them instead of pinning either answer: #694 can
@@ -767,8 +793,11 @@ t hostjob-reset-help-preserves-every-invocation-lock-guarantee preserved "$r1"
 # citation would satisfy a substring read (@claude-bot-andresmgsl, #683).
 t hostcron-deferral-names-its-issue yes \
   "$(grep -qE '#678([^0-9]|$)' "$HOST_CRONTAB" && echo yes || echo no)"
-t hostcron-deferral-names-what-returns-it yes \
-  "$(grep -qE '#328([^0-9]|$)' "$HOST_CRONTAB" && echo yes || echo no)"
+# The reset is back (#761): what the header owes now is the host's own gh
+# login and the three jobs, in place of the deferral's return condition.
+t hostcron-names-the-hosts-own-gh-login yes \
+  "$(grep -qE 'HOST NEEDS ITS OWN .gh. LOGIN' "$HOST_CRONTAB" && echo yes || echo no)"
+t hostcron-schedules-three-jobs 3 "$(grep -cE '^[0-9*/]+ [0-9*/]+ [0-9*/]+ [0-9*/]+ [0-9*/]+ ' "$HOST_CRONTAB")"
 # #589's refusal must never be handed a way past it: --force on a scheduled
 # reset is the silent fleet-wide downgrade the interlock exists to prevent,
 # and it would arrive as a one-word edit. The guard outlives the line it was
@@ -972,6 +1001,7 @@ cat >"$CONF_NEW/fleet.roster" <<'EOF'
 gamma claude reviewer
 delta claude reviewer goldbox/gold
 epsilon claude builder
+zeta claude builder,reviewer
 EOF
 
 # The criterion in the issue's own words: a reviewer roster line with no 4th
@@ -1019,6 +1049,38 @@ t new-fresh-mint-bootstrap-names-no-user 0 \
 # mint is not the place to take a lottery ticket on another tool's release.
 t new-fresh-mint-pins-the-declared-rig 1 \
   "$(grep -c "RIG_REF=$CREW_PLATFORM_RIG_MIN" "$STATE/root-script-gamma" || true)"
+
+# A TWO-ROLE LINE is one line (#763 round 3): `builder,reviewer` is the column
+# load_conf sources in order on the box, the host tick splits, and the floor's
+# editor writes — so the profile check reads it one role at a time (read
+# whole, it looked for roles/builder,reviewer.conf and usage_error stopped
+# `crew up` for the entire fleet), and the mint is sized the way the box's
+# own conf will read it: every role sourced in order, the last one's figures.
+reset_case
+LIFE_CONF="$CONF_NEW" capture new zeta
+t new-a-two-role-line-is-accepted 0 "$RC"
+t new-a-two-role-line-is-sized-by-its-roles-in-order \
+  "new --name zeta --user claude --cpu $EXP_CPU --memory $EXP_MEM --disk $EXP_DISK" \
+  "$(grep '^new ' "$STATE/calls")"
+reset_case
+LIFE_CONF="$CONF_NEW" capture new --role builder,janitor --agent claude
+t new-a-two-role-line-names-the-unknown-role-alone 1 "$(grep -c "unknown role 'janitor'" <<<"$OUT")"
+# An ad-hoc two-role box with no --name is named by both roles, hyphenated: a
+# comma is outside incus's alphabet and failed at create, past validation
+# (#763 round 4).
+reset_case
+LIFE_CONF="$CONF_NEW" capture new --role builder,reviewer --agent claude
+t new-a-two-role-ad-hoc-box-is-named-by-both-roles "0 1" "$RC $(grep -c '^new --name claude-builder-reviewer ' "$STATE/calls")"
+# ...and `crew status` reads the memory of the LAST role, the one whose
+# figures the box was minted with (#763 round 4: it read the first's).
+# The function is read out of the CLI itself, over a roster_line of the
+# suite's, so the pin is on the shipped code.
+t status-a-two-role-boxs-memory-is-the-last-roles "8GiB 4GiB" "$(
+  CREW_ROOT="$ROOT" bash -c "
+    $(sed -n '/^box_memory_of()/,/^}/p' "$CLI")
+    roster_line() { case \$1 in a) echo 'claude triage,builder' ;; b) echo 'claude builder,triage' ;; esac; }
+    printf '%s %s' \"\$(box_memory_of a)\" \"\$(box_memory_of b)\""
+)"
 
 # THE TWO SURFACES AN OPERATOR READS WITHOUT OPENING THE SOURCE (#679 D2, and
 # the fence triage widened onto them on 2026-09-05 upholding codex-bot's

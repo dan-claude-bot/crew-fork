@@ -220,13 +220,77 @@ no build step, no dependencies.
 |---|---|---|
 | `/` | GET | the page |
 | `/api/fleet` | GET | latest telemetry snapshot |
-| `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent` |
+| `/api/roster` | GET | the fleet's definition as it is on disk: members, the agent and role profiles a line may name, the path, and the `etag` a save hands back (#764) |
+| `/api/actions` | GET | what is in flight right now: per box the action holding it, its step and age; for the fleet the action and its progress (#766) |
+| `/api/credentials` | GET | per member, the credential kinds its gh and its agent take — never a credential (#765) |
+| `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set`, `credentials-set` |
 | `/api/logs` | GET | tail `duty.log` or one session log |
 | `/healthz` | GET | liveness |
 
 **Two things the page still cannot do.** "Open box terminal" copies `box shell
 <name>` for you — a browser cannot attach a shell. And a box that is not running
 cannot be messaged; the request is refused rather than queued.
+
+### Actions are claimed while in flight (#766)
+
+**Box actions.** These are pause, resume, restart, power, force-stop, a message and a credential set. Each one **claims its box** for its duration. A second action on that box, whether from another click, another tab or another operator, is refused `409` with `busy: true`. The reply names the first action, its step, its age and who started it, and nothing is fired.
+
+**Fleet actions.** Start all, stop all and wake silent **claim the fleet**, one at a time. Each box is claimed only while its own call runs. A box another action holds is left alone and its row says so (`ok: null`, `step: busy`).
+
+**Claims never block.** Busy is an answer, not a queue.
+
+**What every tab sees.** The page reads `GET /api/actions`: every second while anything is in flight, every few seconds otherwise. So in every tab:
+
+- a control that would act on something held is disabled, dimmed and not clickable;
+- the control doing the work spins;
+- the status line names the step (a restart reads `down`, then `start`) and counts its seconds;
+- a fleet action draws a progress bar of boxes done out of boxes asked.
+
+**A refused click loses nothing.** A message prompt or a credential value refused for a busy box stays in its field.
+
+### Credentials are settable, never readable (#765)
+
+**Credentials** (beside **Roster**) sets a member's GitHub token and its agent's login. Each row shows the box, what the last poll read (gh and the vendor: flowing, missing, stale or waiting), a service and kind picker (the kinds come from the agent's profile, `AGENT_CRED_KINDS`), and a password field.
+
+- **How Set works.** It sends the value once, in the `credentials-set` body, and clears the field before the reply lands. The collector hands the value to the box as the stdin of the credentials shell (`shared/lib/host/credentials.sh`, the same one the CLI's login verb runs). The value lands 0600 where the CLI reads it.
+- **What comes back.** The reply is the box's one-line verdict: the gh login it now answers as, or whether the agent reads as logged in.
+- **Where the value never goes.** It is never in argv, the collector's log, `.credentials-journal.log` (who set which kind, for which member, and the verdict), the reply, or a file on the host. No endpoint reads a credential back.
+- **Refusals.** A kind the agent does not take, an empty value or an unknown box is refused 400, and nothing reaches a box. The box must be running.
+
+### The roster is editable (#764)
+
+`fleet.roster` is the fleet — one line per box: name, agent, role(s), and the
+gold box/snapshot it is minted from — and **Roster** (beside **Registries**)
+edits it the way the registries are edited: an overlay painted from the file
+as it is on disk right now, one row per box (add, remove, save), each row's
+standing read off the poll (hired, not created, new). A save is validated
+whole before anything moves — box names in incus's alphabet, agents that
+exist as profiles and roles from the shipped set (the only ones the CLI
+accepts), no duplicates, `from` as `<box>/<snapshot>`, and a NEW name that
+is not already a box on the host (adopting an existing box into the fleet is
+a hand edit, where that choice is visible) — refused with the line and the
+reason. The save names the file it edits: `GET /api/roster` answers an
+`etag`, the save hands it back, and a roster edited since the overlay opened
+(by hand, from another tab) is refused `409` with nothing written — checked
+before the validation, so a stale save costs no `box list`, and again on the
+very bytes the write is built from, so an edit that lands during that list
+is caught too. A line's roles are saved in the order the line was written
+(the box sources them in that order, and the last one's figures are its); a
+newly ticked role is appended, and a role the overlay cannot show (not a
+shipped one) is kept as written and refused by name rather than dropped. The
+write replaces the members in place and keeps every other line where it was
+— the header, a note between members, a commented-out parked member, a
+trailing remark — through a symlink if the roster is one, with the file's
+own mode, fsynced, and journalled in `.roster-journal.log` (who, the state
+the write applied, the deltas). It is refused under the shipped examples
+fallback, as every writer is.
+
+Saving writes the definition and nothing else. A new line becomes a box when
+the operator runs `crew up` on the host (it creates, starts and hires every
+roster box; the login is the operator's, by hand). A removed line's box is
+left alone: the console stops watching it and the host tick stops waking it,
+and nothing is ever deleted. The collector reads the roster on every poll, so
+the edit is live at the next one.
 
 ## Tests
 

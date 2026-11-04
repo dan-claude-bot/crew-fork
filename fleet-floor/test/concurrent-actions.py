@@ -431,8 +431,10 @@ status, payload = floor.do_command(WakeFleet(WAKE_UNITS), {"action": "wake-silen
 # The decisive one: nothing at all is fired at the wedged box. A reply that
 # merely NAMES it is what the timed-out row already did.
 assert not any("wake-wedged" in call for call in wake_calls), wake_calls
-assert wake_calls == ["box start wake-stopped", "box exec wake-unmeasured",
-                      "box exec wake-answering"], wake_calls
+# The calls run on the action's threads, so they land in any order; the
+# REPLY's order is the stable one, asserted below.
+assert sorted(wake_calls) == sorted(["box start wake-stopped", "box exec wake-unmeasured",
+                                     "box exec wake-answering"]), wake_calls
 assert [r["box"] for r in payload["results"]] == [u["box"] for u in WAKE_UNITS], payload
 assert [r["step"] for r in payload["results"]] == [
     "start", "resume", "escalate", "resume"], payload
@@ -498,5 +500,152 @@ ping.sys.stdout = real_stdout
 assert stream.peak == 1, ("overlapping log writes", stream.peak)
 assert len(stream.writes) == len(threads), ("torn log writes", stream.writes)
 assert all(line.endswith(" complete\n") for line in stream.writes), stream.writes
+
+# #766 — claims. A second action on a box one is already changing is refused
+# 409 busy and fires nothing; a fleet action leaves a held box alone; the
+# registry the page polls names the action and its step while it runs.
+from floor.inflight import INFLIGHT  # noqa: E402
+CLAIM_CALLS = []
+CLAIM_GATE = threading.Event()
+
+
+def gated_run(argv, _timeout, _stdin_data=None):
+    CLAIM_CALLS.append(" ".join(argv[:3]))
+    if argv[1] == "down" and argv[2] == "box-a":
+        CLAIM_GATE.wait(5)
+    return 0, "done", ""
+
+
+floor.read_roster = lambda: [{"box": n, "agent": "claude", "room": "builder"} for n in BOXES]
+floor.box_states = lambda: {n: "running" for n in BOXES}
+floor.run = gated_run
+# The host's pause marker is a file under the config dir — the shipped
+# examples, here. Never written by a suite: kept in memory.
+MARKERS = {}
+floor._paused_marker = lambda name, on: MARKERS.__setitem__(name, on)
+floor._paused_marker_set = lambda name: MARKERS.get(name, False)
+
+
+class ClaimFleet(Fleet):
+    def box_unreachable(self, _box):
+        return False
+
+
+cf = ClaimFleet()
+first = {}
+t1 = threading.Thread(target=lambda: first.update(
+    r=floor.do_command(cf, {"action": "restart", "box": "box-a", "mode": "graceful"}, actor="op1")))
+t1.start()
+for _ in range(200):
+    if INFLIGHT.snapshot()["boxes"].get("box-a", {}).get("step") == "down":
+        break
+    time.sleep(0.01)
+snap = INFLIGHT.snapshot()
+assert snap["boxes"]["box-a"]["action"] == "restart", snap
+assert snap["boxes"]["box-a"]["step"] == "down", snap
+assert snap["boxes"]["box-a"]["actor"] == "op1", snap
+# The second operator's restart, and a power-off, on the held box: refused.
+code, reply = floor.do_command(cf, {"action": "restart", "box": "box-a", "mode": "graceful"}, actor="op2")
+assert code == 409 and reply["busy"] and reply["refused"], (code, reply)
+assert "restart (down)" in reply["error"] and "by op1" in reply["error"], reply
+code, reply = floor.do_command(cf, {"action": "power-off", "box": "box-a"}, actor="op2")
+assert code == 409 and reply["busy"], (code, reply)
+# Another box is not held by it.
+code, reply = floor.do_command(cf, {"action": "pause", "box": "box-b"}, actor="op2")
+assert code == 200, (code, reply)
+# A fleet action meanwhile: it runs, and leaves the held box alone, named.
+code, reply = floor.do_command(cf, {"action": "stop-all"}, actor="op2")
+rows = {r["box"]: r for r in reply["results"]}
+assert rows["box-a"]["ok"] is None and rows["box-a"]["step"] == "busy", rows
+assert rows["box-b"]["ok"] and rows["box-c"]["ok"], rows
+CLAIM_GATE.set()
+t1.join(5)
+assert first["r"][0] == 200, first
+# Fired exactly once at box-a: the first restart's down and start, nothing else.
+assert [c for c in CLAIM_CALLS if c.endswith("box-a")] == ["box down box-a", "box start box-a"], CLAIM_CALLS
+assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
+
+# Two fleet actions at once: the second is refused and fires nothing.
+FLEET_GATE = threading.Event()
+FLEET_CALLS = []
+
+
+def fleet_gated(argv, _timeout, _stdin_data=None):
+    FLEET_CALLS.append(" ".join(argv[:3]))
+    FLEET_GATE.wait(5)
+    return 0, "done", ""
+
+
+floor.run = fleet_gated
+floor.box_states = lambda: {n: "stopped" for n in BOXES}
+held = {}
+t2 = threading.Thread(target=lambda: held.update(r=floor.do_command(cf, {"action": "start-all"}, actor="op1")))
+t2.start()
+for _ in range(200):
+    f = INFLIGHT.snapshot()
+    if f["fleet"] and f["fleet"]["total"] == 3 and len(f["boxes"]) == 3:
+        break
+    time.sleep(0.01)
+f = INFLIGHT.snapshot()["fleet"]
+assert f["action"] == "start-all" and f["total"] == 3 and f["done"] == 0, f
+code, reply = floor.do_command(cf, {"action": "stop-all"}, actor="op2")
+assert code == 409 and reply["busy"] and "start-all" in reply["error"], (code, reply)
+# A box the fleet action is on right now is held for it, too.
+code, reply = floor.do_command(cf, {"action": "power-off", "box": "box-c"}, actor="op2")
+assert code == 409, (code, reply)
+FLEET_GATE.set()
+t2.join(5)
+assert held["r"][0] == 200, held
+assert sorted(FLEET_CALLS) == ["box start box-a", "box start box-b", "box start box-c"], FLEET_CALLS
+assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
+
+# Round 11: wake-silent lifts a box's pause marker only inside that box's own
+# claimed call — a box another action holds, and that it leaves alone, keeps
+# its pause.
+MARKERS.clear(); MARKERS.update({"box-a": True, "box-b": True})
+floor.box_states = lambda: {n: "stopped" for n in BOXES}
+WAKE_CALLS = []
+
+
+def wake_run(argv, _t, _s=None):
+    WAKE_CALLS.append(" ".join(argv[:3]) + (" " + argv[-1].strip().split("\n")[0] if argv[1] == "exec" else ""))
+    return 0, "floor-ready" if argv[-1] == floor.READY_SH else "done", ""
+
+
+floor.run = wake_run
+ok_a, _ = INFLIGHT.claim_box("box-a", "pause", "op1")
+assert ok_a
+code, reply = floor.do_command(Fleet(), {"action": "wake-silent"}, actor="op2")
+rows = {r["box"]: r for r in reply["results"]}
+assert rows["box-a"]["step"] == "busy", rows
+assert MARKERS["box-a"] is True, ("a held box lost its pause marker", MARKERS)
+assert MARKERS["box-b"] is False, ("the woken box keeps its marker", MARKERS)
+# Round 12: the paused, stopped box was started AND resumed — its crontab back
+# on — and only then un-marked; the unpaused one was only started.
+b_calls = [c for c in WAKE_CALLS if "box-b" in c]
+assert b_calls[0] == "box start box-b" and any("echo floor-ready" in c for c in b_calls) \
+    and any("crontab" in c for c in b_calls), WAKE_CALLS
+assert [c for c in WAKE_CALLS if "box-c" in c] == ["box start box-c"], WAKE_CALLS
+INFLIGHT.release_box("box-a")
+# Round 13: a wake that could not resume the box puts its pause back — the
+# marker was lifted first (so the host tick cannot stop the box mid-wake),
+# and a box this action did not wake is paused again.
+MARKERS.clear(); MARKERS.update({"box-b": True})
+floor.run = lambda argv, _t, _s=None: ((1, "", "crontab write failed") if "crontab" in argv[-1]
+                                       else (0, "floor-ready" if argv[-1] == floor.READY_SH else "done", ""))
+code, reply = floor.do_command(Fleet(), {"action": "wake-silent"}, actor="op2")
+rows = {r["box"]: r for r in reply["results"]}
+assert rows["box-b"]["ok"] is False, rows
+assert MARKERS["box-b"] is True, ("a box the wake could not resume lost its pause", MARKERS)
+# ...and a message (which does not claim) never blanks a holder's step.
+INFLIGHT.claim_box("box-c", "restart", "op1")
+INFLIGHT.step("box-c", "down", "restart")
+INFLIGHT.step("box-c", "", "message")
+assert INFLIGHT.snapshot()["boxes"]["box-c"]["step"] == "down", INFLIGHT.snapshot()
+INFLIGHT.release_box("box-c")
+
+# Nothing above wrote into the shipped tree (round 11: a real pause marker
+# once landed under examples/store/ and was committed).
+assert not os.path.exists(os.path.join(os.path.dirname(HERE), "..", "examples", "store")), "a suite wrote into examples/"
 
 print("concurrent fleet actions: ok")

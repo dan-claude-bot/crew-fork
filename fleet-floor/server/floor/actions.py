@@ -5,13 +5,16 @@ envelope exists for exactly one caller, the `message` action below.
 """
 
 import os
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from floor import FLOOR_ENVELOPE
 from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
-from floor.roster import box_states, read_roster
+from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
+from floor.credentials import credentials_set
+from floor.inflight import INFLIGHT, busy_reply
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -82,31 +85,52 @@ def floor_message_prompt(operator_text):
 # fed from that snapshot rather than from a second `crontab -l`: the counts
 # and the text being rewritten are then the same crontab, so the delta check
 # below means what it says. It costs one read rather than adding one.
-PAUSE_SH = r"""
-cron="$(crontab -l 2>/dev/null || true)"
-armed="$(printf '%s\n' "$cron" | grep -cE '^[^#].*tick\.sh' || true)"
-[ "$armed" -gt 0 ] || { echo "nothing to pause: no armed tick.sh line"; exit 0; }
-was="$(printf '%s\n' "$cron" | grep -c '^#CREW-FLOOR-PAUSED' || true)"
-printf '%s\n' "$cron" | sed -E 's|^([^#].*tick\.sh.*)$|#CREW-FLOOR-PAUSED \1|' | crontab - \
-  || { echo "pause: crontab write failed" >&2; exit 1; }
-now="$(crontab -l 2>/dev/null | grep -c '^#CREW-FLOOR-PAUSED' || true)"
-[ "$(( now - was ))" -eq "$armed" ] \
-  || { echo "pause: crontab write reported success, $(( now - was )) of $armed lines are commented" >&2; exit 1; }
-echo "paused $armed"
-"""
+# Both scripts are read out of shared/lib/host/pause.sh, the one copy (#284):
+# cli/crew sources that file and the floor extracts the two marked blocks, so
+# `crew pause` and the floor's pause button run byte-identical shell (#759).
+def _host_shell_block(name):
+    path = os.path.join(CREW_ROOT, "shared", "lib", "host", "pause.sh")
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    start = text.index("# ---%s---\n" % name) + len("# ---%s---\n" % name)
+    # A leading newline, as the embedded strings had: the stub box logs the
+    # script after `bash -lc `, and the floor suite's needle reads the first
+    # line of RESUME_SH right after that newline.
+    return "\n" + text[start:text.index("# ---END---", start)]
 
-RESUME_SH = r"""
-cron="$(crontab -l 2>/dev/null || true)"
-paused="$(printf '%s\n' "$cron" | grep -c '^#CREW-FLOOR-PAUSED' || true)"
-[ "$paused" -gt 0 ] || { echo "nothing to resume: no paused tick.sh line"; exit 0; }
-was="$(printf '%s\n' "$cron" | grep -cE '^[^#].*tick\.sh' || true)"
-printf '%s\n' "$cron" | sed -E 's|^#CREW-FLOOR-PAUSED ||' | crontab - \
-  || { echo "resume: crontab write failed" >&2; exit 1; }
-now="$(crontab -l 2>/dev/null | grep -cE '^[^#].*tick\.sh' || true)"
-[ "$(( now - was ))" -eq "$paused" ] \
-  || { echo "resume: crontab write reported success, $(( now - was )) of $paused lines are live" >&2; exit 1; }
-echo "resumed $paused"
-"""
+PAUSE_SH = _host_shell_block("PAUSE_SH")
+
+
+def _paused_marker(box, on):
+    """`<config>/store/paused/<box>`: the file `crew pause` writes and `crew
+    tick` reads, so the button and the verb pause the same way."""
+    d = os.path.join(CONFIG_DIR, "store", "paused")
+    path = os.path.join(d, box)
+    if on:
+        os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
+    else:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def _paused_marker_set(box):
+    """Is the host's pause marker standing for this box? `crew pause` on a
+    STOPPED box writes only the marker (there is no crontab to comment), so
+    the box's own `paused` flag — read off its crontab by the probe — says
+    nothing about it (#763 round 3)."""
+    return os.path.exists(os.path.join(CONFIG_DIR, "store", "paused", box))
+
+
+RESUME_SH = _host_shell_block("RESUME_SH")
+
+# A started guest answering at all (#763 round 12): asked before a paused,
+# stopped box's crontab is resumed. Its own marker, so the stub box answers it.
+READY_SH = "echo floor-ready"
+WAKE_READY_S = int(os.environ.get("CREW_FLOOR_WAKE_READY_S", "90"))
 
 # The operator's message becomes a real session of the box's own vendor CLI,
 # detached so the HTTP request does not hold a model run open, and logged where
@@ -255,7 +279,51 @@ def registry_command(action, box, body, actor):
                  "results": []}
 
 
+# What claims what (#766). A box action holds its box for its duration; a
+# fleet action holds the fleet slot, and each box only while its own call runs.
+BOX_CLAIMED = {"pause", "resume", "restart", "power-on", "power-off", "force-stop",
+               "credentials-set"}
+# A message does not hold its box — concurrent messages are each their own
+# session, by design (a token per prompt file) — but it is refused while an
+# action that changes the box holds it: a prompt fired into a restart lands
+# nowhere anyone can see.
+BOX_RESPECTED = {"message"}
+FLEET_CLAIMED = {"start-all", "stop-all", "wake-silent"}
+
+
 def do_command(fleet, body, actor=""):
+    """One operator action under its claim (#766): a second action on a box
+    that one is already changing — or a second fleet action — is refused 409
+    `busy`, naming the first, and fires nothing. See floor/inflight.py."""
+    action = str(body.get("action", ""))
+    box = str(body.get("box", ""))
+    if action in BOX_CLAIMED and box in {u["box"] for u in read_roster()}:
+        ok, holder = INFLIGHT.claim_box(box, action, actor)
+        if not ok:
+            log("%s %s refused: busy (%s)" % (action, box, holder.get("action")))
+            return busy_reply(action, box, holder)
+        try:
+            return _do_command(fleet, body, actor)
+        finally:
+            INFLIGHT.release_box(box)
+    if action in BOX_RESPECTED:
+        holder = INFLIGHT.snapshot()["boxes"].get(box)
+        if holder is not None:
+            return busy_reply(action, box, holder)
+        return _do_command(fleet, body, actor)
+    if action in FLEET_CLAIMED:
+        ok, holder = INFLIGHT.claim_fleet(action, actor)
+        if not ok:
+            log("%s refused: busy (%s)" % (action, holder.get("action")))
+            return busy_reply(action, "", holder)
+        try:
+            return _do_command(fleet, body, actor)
+        finally:
+            INFLIGHT.release_fleet()
+    return _do_command(fleet, body, actor)
+
+
+def _do_command(fleet, body, actor=""):
     """Apply one operator action. Returns (http_status, result dict).
 
     `actor` is the authenticated operator, carried only as far as the registry
@@ -266,7 +334,7 @@ def do_command(fleet, body, actor=""):
     box = str(body.get("box", ""))
 
     roster = {u["box"]: u for u in read_roster()}
-    fleet_wide = {"start-all", "stop-all", "wake-silent", "registry-set"}
+    fleet_wide = {"start-all", "stop-all", "wake-silent", "registry-set", "roster-set"}
     registry = {"registry-set", "registry-override", "registry-inherit"}
 
     if action not in fleet_wide:
@@ -279,8 +347,37 @@ def do_command(fleet, body, actor=""):
     # write needs no box at all, which is why it joins the set above.
     if action in registry:
         return registry_command(action, box, body, actor)
+    if action == "credentials-set":
+        # A member's credential (#765): set through the one credentials
+        # shell and never read back. Its own module, so the secret's whole
+        # path through this process is one function; a refresh is asked for
+        # so the next poll's `authfail` reads the box after it.
+        code, reply = credentials_set(body, actor)
+        if reply.get("ok"):
+            fleet.request_refresh()
+        return code, reply
+    if action == "roster-set":
+        # The roster, whole (#764): the registry writers' three
+        # outcomes, with the same codes. A refusal is 400 and nothing moved; a
+        # landed edit without its record is 500 with the result beside it. A
+        # refresh IS asked for here, unlike a registry write: the roster is
+        # exactly what the snapshot enumerates, so the next poll must read it.
+        result, err = roster_set(body.get("members"), actor, body.get("etag"))
+        if result is None:
+            # 409 when the file moved under the editor (#486's code for "what
+            # you confirmed is no longer what is there"), 400 for a bad line.
+            code = 409 if isinstance(err, RosterChanged) else 400
+            return code, {"ok": False, "action": action, "error": str(err), "refused": True}
+        fleet.request_refresh()
+        if err:
+            return 500, {"ok": False, "action": action, "error": err, "refused": False,
+                         "roster": result, "results": []}
+        return 200, {"ok": True, "action": action, "roster": result, "results": []}
 
     def one(name, argv, timeout=ACTION_TIMEOUT_S, stdin_data=None, step=None):
+        # The step it is on, for every tab watching (#766): a restart reads
+        # `down`, then `start`, while it runs.
+        INFLIGHT.step(name, step or "", action)
         rc, out, err = run(argv, timeout, stdin_data)
         ok = rc == 0
         # `step` names WHICH call this row is, for the actions that now have
@@ -304,11 +401,35 @@ def do_command(fleet, body, actor=""):
         return fleet.operator_conf(unit["agent"], unit["room"])
 
     def concurrently(tasks):
-        """Run per-box calls together and return results in submission order."""
+        """Run per-box calls together and return results in submission order.
+
+        Under a fleet action each box call claims its box first (#766): a box
+        another action holds is left alone and its row says so, `ok: None` —
+        named, not a failure — and the fleet's progress counts every row."""
         if not tasks:
             return []
+        INFLIGHT.fleet_total(len(tasks))
+
+        def guarded(fn, args):
+            if fn is done:
+                try:
+                    return fn(*args)
+                finally:
+                    INFLIGHT.fleet_done()
+            name = args[0]
+            claimed, holder = INFLIGHT.claim_box(name, action, actor)
+            if not claimed:
+                INFLIGHT.fleet_done()
+                return {"box": name, "ok": None, "step": "busy",
+                        "out": "busy — %s in flight on it; left alone" % holder.get("action", "?")}
+            try:
+                return fn(*args)
+            finally:
+                INFLIGHT.release_box(name)
+                INFLIGHT.fleet_done()
+
         with ThreadPoolExecutor(max_workers=min(len(tasks), ACTION_WORKERS)) as pool:
-            futures = [pool.submit(fn, *args) for fn, args in tasks]
+            futures = [pool.submit(guarded, fn, args) for fn, args in tasks]
             return [future.result() for future in futures]
 
     def done(result):
@@ -320,11 +441,53 @@ def do_command(fleet, body, actor=""):
     # down, `resume` for one whose crontab can still be restored, `escalate` for
     # one nothing can be run inside. Named helpers because `concurrently` submits
     # `fn(*args)` and the step is not one of the caller's arguments.
-    def wake_start(name):
-        return one(name, ["box", "start", name], step="start")
+    # The host's pause marker is lifted INSIDE the woken box's own claimed
+    # call (#766, round 11): lifted while planning, a box another action
+    # held — and that this action then left alone — lost its pause anyway.
+    #
+    # A PAUSED box that is stopped is started AND resumed (round 12): its
+    # crontab was commented by the pause, so a start alone left it running
+    # with its own cron off — reported ok, still painted paused, and never
+    # idle-stopped. The CLI's start path resumes for the same reason.
+    #
+    # The host's marker is lifted FIRST, inside this box's claim, and put
+    # back on any failure (round 13): left standing while the box boots, the
+    # host tick could reach it in that window and drain and stop the very box
+    # being woken. A box this could not wake is paused again, both halves.
+    def wake_start(name, unpause=False):
+        if unpause:
+            _paused_marker(name, False)
+        row = one(name, ["box", "start", name], step="start")
+        if not unpause:
+            return row
+        if not row["ok"]:
+            _paused_marker(name, True)
+            return row
+        INFLIGHT.step(name, "ready", action)
+        deadline = time.time() + WAKE_READY_S
+        while time.time() < deadline:
+            rc, out, _err = run(["box", "exec", name, "--", "bash", "-lc", READY_SH], 15)
+            if rc == 0 and "floor-ready" in (out or ""):
+                break
+            time.sleep(3)
+        else:
+            _paused_marker(name, True)
+            return {"box": name, "ok": False, "step": "resume",
+                    "out": "started, but its guest did not answer within %ds — paused again "
+                           "(the host's marker is back, so the host tick will stop it); "
+                           "Resume it from the console once it answers" % WAKE_READY_S}
+        resumed = in_box(name, RESUME_SH, step="resume")
+        if not resumed["ok"]:
+            _paused_marker(name, True)
+        return resumed
 
-    def wake_resume(name):
-        return in_box(name, RESUME_SH, step="resume")
+    def wake_resume(name, unpause=False):
+        if unpause:
+            _paused_marker(name, False)
+        row = in_box(name, RESUME_SH, step="resume")
+        if unpause and not row["ok"]:
+            _paused_marker(name, True)
+        return row
 
     results = []
 
@@ -354,8 +517,12 @@ def do_command(fleet, body, actor=""):
                                   stdin_data=operator_conf_for(box)))
 
     elif action == "pause":
+        # The host's marker FIRST: it is what keeps the host tick from starting
+        # the box again (#759); the box's own crontab is paused after it.
+        _paused_marker(box, True)
         results.append(in_box(box, PAUSE_SH))
     elif action == "resume":
+        _paused_marker(box, False)
         results.append(in_box(box, RESUME_SH))
     elif action == "restart":
         # Force-then-start recovery WHEN THE BOX IS UNREACHABLE, and only then
@@ -533,13 +700,20 @@ def do_command(fleet, body, actor=""):
             if u["disarmed"] and not u["paused"]:
                 continue
             name = u["box"]
+            # A wake of a PAUSED box is a resume, and the host's pause marker
+            # is part of the pause (#759): left in place, the next host tick
+            # would drain and stop the box this action just woke. The marker
+            # is read for itself, not through the box's crontab flag: a box
+            # paused while STOPPED has the marker and no commented line, and
+            # `u["paused"]` alone left it to be stopped again (#763 round 3).
+            unpause = bool(u["paused"] or _paused_marker_set(name))
             if states.get(name) == "stopped":
                 # FIRST, and before the wedge question. Starting a stopped box
                 # is a host operation that works whatever the guest was doing
                 # when it went down, and a heartbeat left over from before it
                 # stopped must not talk this action out of the one thing it can
                 # certainly do.
-                tasks.append((wake_start, (name,)))
+                tasks.append((wake_start, (name, unpause)))
             elif states.get(name) is None:
                 # GONE FROM THE HOST, and that answer comes before the wedge
                 # question rather than after it. `fleet.get()`'s units are a
@@ -585,7 +759,7 @@ def do_command(fleet, body, actor=""):
                 # A plain `else`: the absence question is asked once, above,
                 # and asking it again here would leave two places that have to
                 # agree about which boxes this action can reach.
-                tasks.append((wake_resume, (name,)))
+                tasks.append((wake_resume, (name, unpause)))
         results = concurrently(tasks)
     else:
         return 400, {"ok": False, "error": "unknown action %r" % action}

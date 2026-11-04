@@ -87,10 +87,12 @@ def hit():
 ts = [threading.Thread(target=hit) for _ in range(5)]
 [t.start() for t in ts]
 [t.join(60) for t in ts]
-print(sum(1 for c in codes if c == 200))
+# Every request answered; on ONE box, the first holds it and the rest may be
+# told busy (#766) — 409 is an answer, a hang or a dropped request is not.
+print("%d|%s" % (sum(1 for c in codes if c in (200, 409)), "yes" if 200 in codes else "no"))
 PY_CONC
 )"
-t "5 concurrent commands all answered 200" 5 "$CONC"
+t "5 concurrent commands on one box all answered (200, or 409 busy)" "5|yes" "$CONC"
 t "fleet still served during load" 200 "$(status GET /api/fleet)"
 # The coalescing refresh must not have left a poll wedged behind it.
 t "fleet still complete after load" 44 "$(body GET /api/fleet | jqf "len(d['units'])")"

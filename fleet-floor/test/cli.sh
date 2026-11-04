@@ -1,7 +1,7 @@
 # shellcheck shell=bash  # sourced by run.sh, so it has no shebang of its own
 # fleet-floor/test/cli.sh — `crew floor` argument handling and preflight.
 #
-# Sourced by test/run.sh (which provides ok/fail/t/skip); runnable standalone.
+# Sourced by test/run.sh (which provides ok/fail/t/skip/jqf); runnable standalone.
 #
 # The CLI is the only part an operator actually types, and it is where the
 # auth decision is made: a page that can power-cycle boxes must never come up
@@ -20,6 +20,14 @@ if ! declare -F ok >/dev/null; then
   fail() { echo "FAIL $1${2:+  — $2}"; FAILS+=("$1"); }
   skip() { echo "skip $1${2:+  — $2}"; SKIP=$((SKIP + 1)); }
   t()    { if [ "$2" = "$3" ]; then ok "$1"; else fail "$1" "expected [$2] got [$3]"; fi; }
+  # jqf EXPR — run.sh's copy, byte for byte: `d` is the JSON read from stdin.
+  # Guarded with the rest so it never displaces the aggregate's own (#664).
+  jqf()  { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
+  # Every name this file calls that the block above does not define lands
+  # here, by name, at run time — the one census that cannot be fooled by prose
+  # (#664). jqf's 2>/dev/null hid exactly this "command not found" for weeks.
+  CL_NOT_FOUND="$(mktemp)"
+  command_not_found_handle() { printf '%s\n' "$1" >>"$CL_NOT_FOUND"; return 127; }
   CL_STANDALONE=1
 fi
 
@@ -1230,22 +1238,23 @@ cl_box_execs() { cl_code | grep -E 'box exec "'; }
 
 # `box exec` forwards stdin like ssh, so ONE unredirected call inside a
 # `while read … done < <(read_roster)` drains the roster: the loop ends after a
-# single box, quietly, rc=0. Three call sites are legitimate — bxn pins
+# single box, quietly, rc=0. Four call sites are legitimate — bxn pins
 # /dev/null, while bxput and vendor_probe deliberately ship a named file
 # (vendor_probe's is the RESOLVED profile — agent_conf, so an operator
-# profile is what gets probed, #75).
+# profile is what gets probed, #75), and bxpipe ships its own argument through
+# a pipe (a credential, #765 — in memory, never a file).
 CL_EXECS="$(cl_box_execs | grep -c . || true)"
-t "crew: box exec appears only in bxn, bxput and vendor_probe" 3 "${CL_EXECS:-0}"
-if [ "${CL_EXECS:-0}" -ne 3 ]; then
+t "crew: box exec appears only in bxn, bxput, bxpipe and vendor_probe" 4 "${CL_EXECS:-0}"
+if [ "${CL_EXECS:-0}" -ne 4 ]; then
   echo "  call sites:"; cl_box_execs | sed 's/^/    /'
 fi
 # shellcheck disable=SC2016  # matching the literal redirect text in the source
-CL_BARE="$(cl_box_execs | grep -vcE '</dev/null|<"\$\(agent_conf|<"\$source_file' || true)"
+CL_BARE="$(cl_box_execs | grep -vcE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box exec' || true)"
 t "crew: every box exec call site pins stdin" 0 "${CL_BARE:-0}"
 if [ "${CL_BARE:-0}" -ne 0 ]; then
   echo "  unpinned:"
   # shellcheck disable=SC2016  # matching the literal redirect text in the source
-  cl_box_execs | grep -vE '</dev/null|<"\$\(agent_conf|<"\$source_file' | sed 's/^/    /'
+  cl_box_execs | grep -vE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box exec' | sed 's/^/    /'
 fi
 
 # `box info --json` returns an array; the filter that read it as an object
@@ -1610,14 +1619,16 @@ if [ "$CL_RC" -eq 0 ] && grep -q 'allow-offroster' "$CL_TMP/crew-out"; then
 else
   fail "crew hire: --allow-offroster arms it, and says that is what happened" "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
 fi
-# A narrowed registry is not production, so the same off-roster box is fine —
-# which is the state drill/rehearsal.sh leaves a drill box in while it runs.
+# A registry that shares NOTHING with production is not production, so the
+# same off-roster box is fine — which is the state drill/rehearsal.sh leaves a
+# drill box in while it runs. "Shares nothing with", not "differs from" (#328):
+# the cases under the #488 heading below are where the two come apart.
 echo "drill-host/crew-drill-sandbox" > "$CL_TMP/crew-state/cli-hired.repos"
 crew_off hire cli-hired --role builder --agent claude
 if [ "$CL_RC" -eq 0 ]; then
-  ok "crew hire: off-roster with a NARROWED registry is allowed"
+  ok "crew hire: off-roster with a DISJOINT sandbox registry is allowed"
 else
-  fail "crew hire: off-roster with a narrowed registry is allowed" "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
+  fail "crew hire: off-roster with a DISJOINT sandbox registry is allowed" "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
 fi
 rm -f "$CL_TMP/crew-state/cli-hired.repos"
 
@@ -1640,7 +1651,7 @@ rm -f "$CL_TMP/crew-state/cli-hired.repos"
 # Two entries fleet-wide, because a selection has to be a PROPER subset for the
 # case below to mean anything: with a one-line registry the only subsets are
 # the whole thing and nothing, and "nothing" would pass this guard for the
-# uninteresting reason that an empty string differs from a non-empty one.
+# uninteresting reason that an empty string shares nothing with anything.
 printf 'heavy-duty/crew\nheavy-duty/box\n' >"$CL_CONFIG/repos.txt"
 : >"$CL_TMP/crew-state/cli-hired.repos"
 # THE CONTROL FIRST, or the case under it proves nothing. With no selection the
@@ -1654,13 +1665,51 @@ else
   fail "crew hire: a box with no registry yet inherits, and production is still refused" \
        "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
 fi
+# A box with a SELECTION is read as carrying its selection, not the fleet-wide
+# list (#488 D6) — and a selection that keeps a production repository is
+# STILL production (#328). The two halves are asserted apart, because each
+# has a way to fail alone: a guard that let the subset through is the
+# "differs from" predicate back, #51's second agent racing the fleet for the
+# one board it kept; a guard that refused it over `heavy-duty/crew` — a
+# repository this box was never going to carry — is the "dirty member" read
+# the operator ruled out on 2026-08-29. The refusal names what is actually
+# shared, which is the selection, and nothing outside it.
 mkdir -p "$CL_CONFIG/repos.d"
 printf 'heavy-duty/box\n' >"$CL_CONFIG/repos.d/cli-hired.txt"
 crew_off hire cli-hired --role builder --agent claude
-if [ "$CL_RC" -eq 0 ]; then
-  ok "crew hire: ...while a box with a SELECTION is read as narrowed, not as production"
+if [ "$CL_RC" -ne 0 ] && grep -q 'PRODUCTION registry' "$CL_TMP/crew-out"; then
+  ok "crew hire: ...while a SELECTION that keeps a production repository is REFUSED"
 else
-  fail "crew hire: ...while a box with a SELECTION is read as narrowed, not as production" \
+  fail "crew hire: ...while a SELECTION that keeps a production repository is REFUSED" \
+       "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
+fi
+CL_SHAREDLINE="$(grep -A1 'shares with the fleet' "$CL_TMP/crew-out" | tail -1 || true)"
+case "$CL_SHAREDLINE" in
+  *'heavy-duty/crew'*) CL_R1=WIDENED ;;
+  *'heavy-duty/box'*)  CL_R1=shared ;;
+  *)                   CL_R1="SILENT: $CL_SHAREDLINE" ;;
+esac
+t "crew hire: ...and the refusal names the shared repository, not the whole fleet list" shared "$CL_R1"
+# A selection that names EVERY production repository is the production
+# registry under another file, and refuses the same way — naming all of it.
+printf 'heavy-duty/crew\nheavy-duty/box\n' >"$CL_CONFIG/repos.d/cli-hired.txt"
+crew_off hire cli-hired --role builder --agent claude
+CL_SHAREDLINE="$(grep -A1 'shares with the fleet' "$CL_TMP/crew-out" | tail -1 || true)"
+if [ "$CL_RC" -ne 0 ] && [[ "$CL_SHAREDLINE" == *'heavy-duty/crew'* && "$CL_SHAREDLINE" == *'heavy-duty/box'* ]]; then
+  ok "crew hire: ...and a selection IDENTICAL to production is refused naming all of it"
+else
+  fail "crew hire: ...and a selection IDENTICAL to production is refused naming all of it" \
+       "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
+fi
+# --allow-offroster still carries through, and its NOTE names the shared
+# repository too: the operator who means it is told what they are arming.
+printf 'heavy-duty/box\n' >"$CL_CONFIG/repos.d/cli-hired.txt"
+crew_off hire cli-hired --role builder --agent claude --allow-offroster
+if [ "$CL_RC" -eq 0 ] && grep -q 'allow-offroster' "$CL_TMP/crew-out" \
+   && grep -q 'heavy-duty/box' <<<"$(grep 'allow-offroster' "$CL_TMP/crew-out")"; then
+  ok "crew hire: ...and --allow-offroster arms the subset, naming what it shares"
+else
+  fail "crew hire: ...and --allow-offroster arms the subset, naming what it shares" \
        "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
 fi
 # And the line names what install.sh will actually seed. An operator told
@@ -1701,18 +1750,24 @@ case "$CL_SEEDLINE" in
   *)                           CL_R1="UNEXPECTED: $CL_SEEDLINE" ;;
 esac
 t "crew hire: ...and an empty selection is named as one, not left trailing" said "$CL_R1"
+# And it HIRES, as it did under `!=`: a box aimed at no board shares nothing
+# with production, and is the containment state repos.txt's header describes,
+# not a refusal (#328).
+t "crew hire: ...and an empty selection still hires, as before" 0 "$CL_RC"
 rm -rf "$CL_CONFIG/repos.d"
 
 # --- ONE READER ON BOTH SIDES OF THE PRODUCTION COMPARISON (#488) ----------
 #
-# `hire_guard` asks `[ "$reg" != "$prod" ]`, and since the block above both
-# sides DERIVE from the fleet-wide file rather than one being assigned from the
-# other: `$reg` through `resolved_registry` → `registry_entries`, which strips
-# each line, and `$prod` through `production_registry`, which used to hand back
-# raw ones. Two readers of one file disagreeing about whitespace, feeding a
-# `!=` whose every difference is read as "narrowed" and returns 0. One trailing
-# space or a CRLF in a hand-edited `repos.txt` and #51's refusal is gone, with
-# the guard's own line still printing the production registry back.
+# `hire_guard` asked `[ "$reg" != "$prod" ]` (now: does `$reg` share nothing
+# with `$prod`, #328 — an exact-entry match either way), and since the block
+# above both sides DERIVE from the fleet-wide file rather than one being
+# assigned from the other: `$reg` through `resolved_registry` →
+# `registry_entries`, which strips each line, and `$prod` through
+# `production_registry`, which used to hand back raw ones. Two readers of one
+# file disagreeing about whitespace, feeding a comparison whose every
+# difference is read as "narrowed" and returns 0. One trailing space or a CRLF
+# in a hand-edited `repos.txt` and #51's refusal is gone, with the guard's own
+# line still printing the production registry back.
 #
 # Every case above misses it for one reason: they all write
 # `printf 'heavy-duty/crew\nheavy-duty/box\n'`, clean lines on both sides, so
@@ -1739,18 +1794,18 @@ else
   fail "crew hire: ...and neither does a CRLF one" "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
 fi
 # THE CONTROL, or the two above are satisfied by a guard that refuses
-# everything: under the same CRLF list, a box with a real selection is still
-# narrowed and still allowed.
-mkdir -p "$CL_CONFIG/repos.d"
-printf 'heavy-duty/box\n' >"$CL_CONFIG/repos.d/cli-hired.txt"
+# everything: under the same CRLF list, a box carrying a DISJOINT sandbox
+# registry is still allowed. A selection cannot serve as the control any more
+# — it is a subset of the list by construction, so it shares with it (#328).
+echo "drill-host/crew-drill-sandbox" > "$CL_TMP/crew-state/cli-hired.repos"
 crew_off hire cli-hired --role builder --agent claude
 if [ "$CL_RC" -eq 0 ]; then
-  ok "crew hire: ...while a SELECTION under the same list is still narrowed"
+  ok "crew hire: ...while a DISJOINT sandbox under the same list is still allowed"
 else
-  fail "crew hire: ...while a SELECTION under the same list is still narrowed" \
+  fail "crew hire: ...while a DISJOINT sandbox under the same list is still allowed" \
        "rc=$CL_RC $(cat "$CL_TMP/crew-out")"
 fi
-rm -rf "$CL_CONFIG/repos.d"
+rm -f "$CL_TMP/crew-state/cli-hired.repos"
 # THE SAME ASYMMETRY FROM THE OTHER SIDE, and this half predates #488:
 # `box_registry` reads the registry the box CARRIES and strips `\r` but never
 # spaces, so a carried production registry with one trailing space compares
@@ -2894,7 +2949,7 @@ else
 fi
 
 CL_ROSTER_NAMES="$(grep -vE '^[[:space:]]*(#|$)' "$CL_INIT_DIR/fleet.roster" | awk '{print $1}')"
-CL_REPORTED_NAMES="$(sed -n 's/^  \([^ ]*\) — by hand:.*/\1/p' "$CL_TMP/init-out")"
+CL_REPORTED_NAMES="$(sed -n 's/^  \([^ ]*\) — crew login .*/\1/p' "$CL_TMP/init-out")"
 t "crew init: names every static login obligation" "$CL_ROSTER_NAMES" "$CL_REPORTED_NAMES"
 if grep -q 'definition only; not a live auth check' "$CL_TMP/init-out"; then
   ok "crew init: labels the roster reading as static"
@@ -3475,6 +3530,16 @@ fi
 rm -rf "$CL_TMP"
 
 if [ -n "${CL_STANDALONE:-}" ]; then
+  # The header's "runnable standalone" sentence, asserted (#664): a helper
+  # run.sh defines, called here and missing from the standalone block, was
+  # recorded by command_not_found_handle the moment it was called.
+  if [ -s "$CL_NOT_FOUND" ]; then
+    fail "cli: every helper this file calls is defined in its standalone block" \
+         "not found: $(sort -u "$CL_NOT_FOUND" | tr '\n' ' ')— bash fleet-floor/test/cli.sh by hand loses every case that calls them"
+  else
+    ok "cli: every helper this file calls is defined in its standalone block"
+  fi
+  rm -f "$CL_NOT_FOUND"
   echo
   echo "== cli summary: $PASS ok, $SKIP skipped, ${#FAILS[@]} failed"
   [ "${#FAILS[@]}" -gt 0 ] && exit 1
