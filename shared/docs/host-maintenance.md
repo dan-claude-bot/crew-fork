@@ -57,7 +57,13 @@ own rule applied to the one verb that could undo it:
   `MEMORY_PENDING_GRACE_S` (1800 s, counted from the later of boot and the
   marker's own mtime — so the marker the cut touches into a long-running
   box for the snapshot's duration is never expired by that box's uptime):
-  past it the box runs without its memory and says so once in `duty.log`. A write-back that
+  past it the box runs without its memory and says so once in `duty.log`.
+  While the marker stands the probe names it, and a full pull of the box (a
+  retried reset's drain, the tick's stop, a floor poll) lands its duty.log
+  and nothing else: the store's state files and ledgers are the truth, and
+  neither the checkpoint's week-old copies nor their absence touches them.
+  Continuation stubs are not written back — the transcripts they name went
+  with the restore; the handoff note is the memory that crosses a reset. A write-back that
   fails is a failed reset (rc 1), said by name in the job log; a store that
   simply holds nothing for the box (its first reset) lifts the marker and
   is said as that. Checkpoints cut before `0.1.4` carry no marker: re-cut
@@ -335,9 +341,16 @@ across the next five-minute boundaries, the daily restart or the weekly
 reset. Before an idle box is stopped its duty lock is probed: a box whose own
 cron started a session since its idle counter was written is busy, and busy
 is never stopped. Triage's coarse "the board moved" reason is set aside once
-the box was woken for it `IDLE_TICKS_BEFORE_STOP` times and bought nothing;
-a precise reason (an attention demand, a ready issue, a review request, a
-due wait or cut) never is. A breaker tripped in the store's copy vetoes a
+the box was woken for it `IDLE_TICKS_BEFORE_STOP` times and bought nothing.
+A reason that names an item is set aside only by its item and timestamp: the
+host remembers what it woke a member for (`<config>/store/wake/<box>.woken`),
+and a reason it woke the member for at that very timestamp, which the member
+then idled through to `IDLE_TICKS_BEFORE_STOP`, is `passed` — the builder's
+own open PR with no round owed, a ready issue it cannot take while that PR
+holds its slot. The item moving (a review posted) is a new reason. A running
+box's waits and due cuts are read live off the box, not from the store's
+copy, and a reason a budget or a breaker vetoed leaves that board unmarked,
+so it is read again once the lane opens even if nothing moves. A breaker tripped in the store's copy vetoes a
 lane only while the box runs: a stopped box is started for the work and its
 own gate — the one thing that can clear the breaker — decides.
 

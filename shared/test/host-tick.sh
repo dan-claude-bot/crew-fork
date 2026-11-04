@@ -135,6 +135,19 @@ HT_STATES=$'.release-due-o_r\to/r soon'
 t release-an-unreadable-due-time-is-not-a-reason "" "$(wake_release_reasons alpha)"
 HT_STATES=$'.release-cut-o_r\t91 release/x 0123abc'
 t release-the-cut-record-is-not-a-deferral "" "$(wake_release_reasons alpha)"
+# A RUNNING box's waits and due cuts are its own files, read live (#763
+# round 5): the store's past-due copy of a cut the box already made, or a wait
+# it already resumed, woke it every tick and never let it idle-stop.
+HT_STATES=".release-due-o_r	o/r $(( $(date +%s) - 1 ))"$'\n.wait-o_r-7\to/r 7 h1 2026-10-23T10:00:00Z'
+HT_PENDING=0; HT_HEAD=h1
+t live-an-empty-live-read-is-no-due-cut "" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_LIVE="" wake_release_reasons alpha)"
+t live-an-empty-live-read-is-no-wait "" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_LIVE="" wake_wait_reasons alpha)"
+t live-the-boxs-own-due-cut-is-a-reason "release#o/r -" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_LIVE=".release-due-o_r	o/r 1" wake_release_reasons alpha)"
+t live-the-prefix-picks-only-its-files "" "$(WAKE_STATES_LIVE_READ=1 WAKE_STATES_LIVE=".release-due-o_r	o/r 1" wake_wait_reasons alpha)"
+t live-no-live-read-falls-back-to-the-store "release#o/r -" "$(WAKE_STATES_LIVE="" wake_release_reasons alpha)"
+# The attention label is the conf's too.
+t attention-a-renamed-label-is-read 1 "$(LABEL_ATTENTION=atencion wake_reasons builder me o/r 'I 9 2026-10-23T10:00:00Z atencion me' | grep -c '^attention#o/r#9 ')"
+t attention-the-default-name-is-not-read-when-renamed 0 "$(LABEL_ATTENTION=atencion wake_reasons builder me o/r 'I 9 2026-10-23T10:00:00Z attention me' | grep -c '^attention#')"
 
 # ── crew tick, end to end: shims for box and gh, a real store ─────────────
 # shellcheck source=shared/lib/platform.sh
@@ -180,6 +193,8 @@ case "$cmd" in
       # The probe first: its file list names .idle-ticks and .wake-reason too.
       *'echo "::logstart"'*) echo "drain $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.record" ;;
       *'.wake-reason'*) echo "wake $name $(printf '%s' "$script" | sed -n "s/.*printf '%s\\\\n' '\([^']*\)'.*/\1/p")" >>"$HT_STATE/calls" ;;
+      # The live waits and due cuts a running box answers (#763 round 5).
+      *'.release-due-*'*) echo "states $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.live" 2>/dev/null; exit 0 ;;
       *'.idle-ticks'*) cat "$HT_STATE/$name.idle" 2>/dev/null || echo 0 ;;
       # The live ledger read a running box answers (#763 round 4).
       *'.seen-'*) echo "ledger $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.ledger" 2>/dev/null ;;
@@ -216,9 +231,10 @@ ht_record() {  # ht_record <box> <login> [ledger-line] [idle-ticks]
     printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
     printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
     printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
-    printf '::statefiles .identity .seen-build%s\n::filestart .identity\n%s\n::fileend\n' "${4:+ .idle-ticks}" "$2"
+    printf '::statefiles .identity .seen-build%s%s\n::filestart .identity\n%s\n::fileend\n' "${4:+ .idle-ticks}" "${HT_EXTRA_FILE:+ $HT_EXTRA_FILE}" "$2"
     printf '::filestart .seen-build\n%s\n::fileend\n' "${3:-}"
     [ -z "${4:-}" ] || printf '::filestart .idle-ticks\n%s\n::fileend\n' "$4"
+    [ -z "${HT_EXTRA_FILE:-}" ] || printf '::filestart %s\n%s\n::fileend\n' "$HT_EXTRA_FILE" "$HT_EXTRA_BODY"
     printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
   } >"$STATE/$1.record"
   CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box "$1" <"$STATE/$1.record" >/dev/null
@@ -348,6 +364,22 @@ t tick-the-wake-names-the-park "wake alpha wait#o/r#7" "$(grep '^wake alpha' "$S
 HT_EXPORT="$TMP/export"; rm -rf "$HT_EXPORT"
 t store-export-writes-the-members-files 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" export --box alpha --dir "$HT_EXPORT" >/dev/null; [ -f "$HT_EXPORT/.identity" ] && [ -f "$HT_EXPORT/.wait-o_r-7" ] && echo 1 || echo 0)"
 t store-export-identity-round-trips dan-claude-bot "$(cat "$HT_EXPORT/.identity")"
+# A box restored from its checkpoint and not yet given its memory back says
+# so in its file list (`.memory-pending`): a full pull of it lands the log and
+# holds every stored state file and ledger as it was — no week-old ledger
+# written over the store's, no park pruned (#763 round 5).
+{ printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
+  printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
+  printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
+  printf '::statefiles .identity .memory-pending\n::filestart .identity\nold-login\n::fileend\n::filestart .memory-pending\n::fileend\n'
+  printf '::logfrom 1\n::logtotal 2\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n2026-10-23T12:30:00Z duty run start\n::fileend\n'
+} >"$STATE/alpha.pending.record"
+HT_PENDING_OUT="$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box alpha <"$STATE/alpha.pending.record")"
+t store-a-pending-pull-says-so 1 "$(grep -c 'memory pending' <<<"$HT_PENDING_OUT")"
+t store-a-pending-pull-prunes-no-park ".wait-o_r-7	o/r 7 h1 2026-10-23T10:00:00Z" "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" states --box alpha --prefix .wait-)"
+t store-a-pending-pull-writes-no-state-file dan-claude-bot "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" state --box alpha --name .identity)"
+t store-the-marker-itself-is-never-stored 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" state --box alpha --name .memory-pending >/dev/null 2>&1; echo $?)"
+t probe-ships-the-marker 1 "$(grep -cF '/.memory-pending; do' "$ROOT/fleet-floor/server/probe.sh")"
 t store-peaks-without-sessions-is-1 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" peaks --box alpha >/dev/null 2>&1; echo $?)"
 
 # --- wiring pins ----------------------------------------------------------------
@@ -488,5 +520,55 @@ capture tick
 t labels-a-renamed-ready-is-not-a-stray-for-triage 0 "$(grep -c 'triage#o/r#18' <<<"$OUT")"
 t labels-the-triage-box-is-not-started-for-it 0 "$(calls 'start gamma')"
 t labels-a-renamed-ready-is-the-builders-queue 1 "$(grep -c 'alpha: starting why=ready#o/r#18' <<<"$OUT")"
+
+# (5) the builder's coarse reasons (#763 round 5): an open PR of its own with
+# no round owed, and a ready issue it cannot take while that PR holds its
+# slot, are answered by no ledger. A member the host woke for exactly that
+# (reason, timestamp) and that idled past the threshold since has looked:
+# set aside as `passed`, the box idle-stopped, and not restarted on an
+# unrelated move — until the PR itself moves.
+echo running >"$STATE/alpha.state"; echo stopped >"$STATE/gamma.state"; printf '0\n' >"$STATE/alpha.idle"
+ht_record alpha dan-claude-bot '' 0
+rm -f "$CONF/store/wake"/alpha.* "$STATE/alpha.lock" "$STATE/alpha.ledger"; : >"$STATE/calls"
+ht_board 'I 18 2026-10-23T19:00:00Z lista -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
+capture tick
+t passed-the-first-wake-is-for-the-pr 1 "$(grep -c 'alpha: woke (running) why=ready#o/r#18,pr#o/r#30' <<<"$OUT")"
+t passed-the-wake-is-remembered-with-its-idle-count 1 "$(grep -c '^pr#o/r#30 2026-10-23T19:10:00Z 0$' "$CONF/store/wake/alpha.woken")"
+t passed-the-running-boxs-states-are-read-live 1 "$(calls 'states alpha')"
+# The box's ticks buy nothing; an unrelated issue moves.
+printf '2\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 2
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:20:00Z blocked -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
+: >"$STATE/calls"
+capture tick
+t passed-the-pr-is-set-aside 1 "$(grep -c 'alpha: veto pr#o/r#30:passed' <<<"$OUT")"
+t passed-the-ready-issue-too 1 "$(grep -c 'alpha: veto ready#o/r#18:passed' <<<"$OUT")"
+t passed-no-wake 0 "$(calls 'wake alpha')"
+t passed-the-builder-is-idle-stopped "drain alpha|down alpha" "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+# Stopped, its stored count says idle; another unrelated move does not boot it.
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
+: >"$STATE/calls"
+capture tick
+t passed-a-stopped-builder-is-not-restarted-on-an-unrelated-move 0 "$(calls 'start alpha')"
+# The PR moves (a review landed): a new timestamp is a new reason.
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 30 2026-10-23T20:00:00Z dan-claude-bot 0 -' ''
+: >"$STATE/calls"
+capture tick
+t passed-the-pr-moving-starts-it 1 "$(grep -c 'alpha: starting why=pr#o/r#30' <<<"$OUT")"
+
+# (6) a breaker veto leaves the board unread-as-seen (#763 round 5): the
+# reason is read again on a quiet board once the breaker clears, instead of
+# waiting for the board to move.
+echo running >"$STATE/alpha.state"; printf '0\n' >"$STATE/alpha.idle"
+HT_EXTRA_FILE=.session-terminal.build HT_EXTRA_BODY=$'1\ttripped' ht_record alpha dan-claude-bot '' 0
+rm -f "$CONF/store/wake"/alpha.*; : >"$STATE/calls"
+ht_board 'I 40 2026-10-23T21:00:00Z lista -' '' ''
+capture tick
+t held-the-breaker-vetoes-the-ready-issue 1 "$(grep -c 'alpha: veto ready#o/r#40:breaker-build' <<<"$OUT")"
+t held-the-digest-is-not-recorded 0 "$(find "$CONF/store/wake" -name 'alpha.o_r.digest' | wc -l | tr -d ' ')"
+ht_record alpha dan-claude-bot '' 0
+: >"$STATE/calls"
+capture tick
+t held-the-quiet-board-is-read-again-once-it-clears 1 "$(grep -c 'alpha: woke (running) why=ready#o/r#40' <<<"$OUT")"
+t held-then-the-digest-is-recorded 1 "$(find "$CONF/store/wake" -name 'alpha.o_r.digest' | wc -l | tr -d ' ')"
 
 suite_finish

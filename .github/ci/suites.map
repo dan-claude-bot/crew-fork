@@ -49,6 +49,7 @@ shared/host-crontab.example	cli-lifecycle,cli-reset,host-tick
 shared/docs/*	none
 shared/README.md	none
 shared/test/README.md	none
+shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
 cli/crew	cli-lifecycle,cli-reset,cli-store,host-tick,common,floor-no-browser
@@ -56,5 +57,6 @@ drill/*	drill,install-drill,drill-teardown
 install.sh	install-lifecycle,artifact,install-drill
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate
 dist/*	artifact,install-lifecycle
+fleet-floor/server/floor/store.py	floor-no-browser,host-tick,cli-reset,cli-store,cli-lifecycle
 fleet-floor/*	floor-no-browser
 examples/*	conf,cli-lifecycle,cli-reset

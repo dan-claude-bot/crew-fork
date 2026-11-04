@@ -196,7 +196,10 @@ case "$cmd" in
       printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
       printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
       printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
-      printf '::statefiles .seen-build\n::filestart .seen-build\no/r#1 2026-10-23T00:00:00Z\n::fileend\n'
+      # A continuation stub rides the probe too; the write-back leaves it out
+      # (#763 round 5: its transcript is gone with the restore).
+      printf '::statefiles .seen-build .session-continue.build.o_r_1\n::filestart .seen-build\no/r#1 2026-10-23T00:00:00Z\n::fileend\n'
+      printf '::filestart .session-continue.build.o_r_1\nsid-1 2026-10-23T00:00:00Z\n::fileend\n'
       printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
     elif [[ "$script" == *'gh auth status'* ]]; then
       printf 'login-probe %s\n' "$name" >>"$calls"
@@ -257,7 +260,7 @@ case "$cmd" in
     elif [[ "$script" == *'destination="$HOME/duty/'* ]]; then
       # The memory write-back rides bxput (#761): the archive arrives on
       # stdin and the remote script names its destination under ~/duty.
-      cat >/dev/null
+      cat >"$state_dir/memory-$name.tar"
       printf 'memory %s %s\n' "$name" "$(printf '%s' "$script" | sed -n 's|.*destination="\$HOME/duty/\([^"]*\)".*|\1|p' | head -1)" >>"$calls"
     elif [[ "$script" == *'tar -xf .memory-restore.tar'* ]]; then
       # ...and is unpacked under the duty lock; the box answers `restored`.
@@ -662,6 +665,8 @@ t reset-unpacks-the-memory-under-the-duty-lock 1 \
   "$(awk '/^memory alpha .memory-restore.tar/{m=NR} /^memory-unpack alpha/{u=NR} END{print (m && u && u>m) ? 1 : 0}' "$STATE/calls")"
 case "$OUT" in *"alpha: memory restored from the store"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-memory-restore-is-reported reported "$r1"
+t reset-memory-carries-the-ledgers 1 "$(tar -tf "$STATE/memory-alpha.tar" 2>/dev/null | grep -c 'seen-build$')"
+t reset-memory-leaves-continuations-out 0 "$(tar -tf "$STATE/memory-alpha.tar" 2>/dev/null | grep -c 'session-continue')"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-restore-is-reported reported "$r1"
 # The memory's return lifts `.memory-pending` in the same locked step that

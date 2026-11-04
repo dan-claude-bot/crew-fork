@@ -102,13 +102,18 @@ refusal, a leftover fork branch) never spends the lane's whole budget.
 ## When the cut is wrong
 
 - **Stale** — main moved past the cut on the track (another PR merged
-  after it): the next tick withdraws it (`gh pr close --delete-branch`, with
-  a comment saying why) and cuts the new head on the tick after — but only
-  when every commit on it is the engine's; a cut somebody pushed to is held
-  and said, never closed. Nothing is force-pushed onto an open release PR,
-  ever.
-- **Refused** — a person closed the PR without merging: the track's tree
-  stays in `.seen-release` and is never cut again. Only a new merge ON THE
+  after it): the next tick withdraws it (`gh pr close`, with a comment
+  saying why, then the branch deleted by ref on the fork it lives on —
+  `--delete-branch` only warns for a fork's head) and cuts the new head on
+  the tick after — but only when every commit on it is the engine's; a cut
+  somebody pushed to is held and said, never closed. A branch that cannot be
+  deleted holds the track, and every tick retries it: the next cut of the
+  same version pushes to the same name. Nothing is force-pushed onto an open
+  release PR, ever.
+- **Refused** — a person closed the PR without merging: the tree the cut
+  was made FROM stays in `.seen-release` and is never cut again (a newer
+  tree, merged on the track before the close, is cut), and the engine's own
+  branch is deleted on the fork as above. Only a new merge ON THE
   TRACK makes a new cut; an off-track merge changes nothing. To cut the same
   tree anyway, the operator cuts by hand, or removes the row from the ledger.
 - **Held** — `:hold` on the track keeps it declared (the admin's line on the

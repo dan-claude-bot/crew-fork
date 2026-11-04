@@ -704,8 +704,18 @@ def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="
             # nothing; the tail offset stays what it was.
             inserted, sessions = _ingest_lines(conn, box, loglines, None)
         landed = 0
+        # A box whose `.memory-pending` stands was restored from its weekly
+        # checkpoint and has not had its memory written back yet: its state
+        # files and ledgers are the checkpoint's, a week old, and the store's
+        # are the truth. A full pull of it (a retried reset's drain, the
+        # tick's stop, a floor poll between `box start` and the export) lands
+        # duty.log and nothing else — no state file written, none pruned
+        # (#763 round 5).
+        pending = "statefiles" in meta and ".memory-pending" in meta["statefiles"].split()
         for name, lines in files.items():
             if name == "duty.log":
+                continue
+            if pending and name != "duty.log.1":
                 continue
             if name == "duty.log.1":
                 # The rotated log, shipped whole once per rotation: lines
@@ -722,7 +732,7 @@ def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="
                 continue
             _ingest_file(conn, box, name, lines, full="statefiles" in meta)
             landed += 1
-        if "statefiles" in meta:
+        if "statefiles" in meta and not pending:
             # Full mode names every state file the box has, so one it no
             # longer has — a breaker that cleared, a ledger emptied — leaves
             # the store too.
@@ -754,6 +764,8 @@ def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="
                     last_seen=at, last_pull_ok=at, source_state=state,
                     log_lines=log_lines if log_lines is not None else prev_lines)
         note = "%d lines, %d sessions, %d files" % (inserted, sessions, landed)
+        if pending:
+            note += "; memory pending — the box's state files are the checkpoint's, the store's kept as they were"
         record_pull(conn, box, True, note, now, state)
         conn.execute("COMMIT")
         return {"ok": True, "note": note, "lines": inserted, "sessions": sessions, "files": landed}

@@ -67,6 +67,10 @@ gh() {
       printf '%s\n' "${GH_PR_AUTHORS:-dan-claude-bot}" ;;
     "pr close"*)
       return "${GH_CLOSE_RC:-0}" ;;
+    "pr view"*"headRepositoryOwner"*)
+      printf '%s\n' "${GH_HEAD_REPO:-dan-claude-bot/site-fork}" ;;
+    "api -X DELETE repos/"*"/git/refs/heads/"*)
+      [ -z "${GH_DELETE_ERR:-}" ] || { printf '%s\n' "$GH_DELETE_ERR" >&2; return 1; } ;;
     "api --paginate repos/"*"/check-runs"*)
       case "${GH_CI:-green}" in
         green) printf 'completed success\ncompleted skipped\n' ;;
@@ -304,7 +308,11 @@ t withdrawal-checks-whose-commits-they-are 1 "$(grep -Fc -- '-F num=93 --jq [.da
 # the Co-Authored-By trailers as authors too, so an engine commit carrying one
 # never read as the engine's and no stale cut was ever withdrawn.
 t withdrawal-reads-the-git-author-not-the-trailers 1 "$(grep -Fc 'commits(first:100){nodes{commit{author{user{login}}}}}' "$GH_CALLS")"
-t withdrawal-closes-the-pr-and-its-branch 1 "$(grep -c '^GH pr close 93 -R acme/site --delete-branch --comment Withdrawn by dan-claude-bot: main moved past this cut' "$GH_CALLS")"
+t withdrawal-closes-the-pr 1 "$(grep -c '^GH pr close 93 -R acme/site --comment Withdrawn by dan-claude-bot: main moved past this cut' "$GH_CALLS")"
+# ...and deletes its branch WHERE IT LIVES (#763 round 5): `--delete-branch`
+# only warns for a fork's head, and the next cut of the same VERSION pushes
+# to the same name.
+t withdrawal-deletes-the-branch-on-the-fork 1 "$(grep -c '^GH api -X DELETE repos/dan-claude-bot/site-fork/git/refs/heads/release/site-2.1.46$' "$GH_CALLS")"
 # ...and the trailer is never the question: a release session's commits end
 # `Co-Authored-By: Claude …`, which GitHub's `authors` list carries as a second
 # person and the git author does not. The fixture above answers TWO commits,
@@ -328,6 +336,37 @@ t a-held-stale-cut-keeps-its-memory 1 "$(cuts)"
 OUT="$(GH_CLOSE_RC=1 GH_PRS="94 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-failed-withdrawal-holds-the-track 1 "$(grep -c 'WARN: release: acme/site#94 is stale (main moved past' <<<"$OUT")"
 t a-failed-withdrawal-buys-nothing 0 "$(sessions)"
+
+# A branch that cannot be deleted holds the track, marked, and the next tick
+# retries the delete before anything else (#763 round 5).
+rel_reset
+printf 'q\n' >"$ORIGIN/apps/site/q.txt"; gq add -A; gq commit -q -m "feat(site): q (#10)"
+HEADQ="$(git -C "$ORIGIN" rev-parse HEAD)"
+OUT="$(SIM_PR_AFTER="96 dan-claude-bot release/site-2.1.46" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+printf 'p\n' >"$ORIGIN/apps/site/p.txt"; gq add -A; gq commit -q -m "feat(site): p (#11)"
+HEADP="$(git -C "$ORIGIN" rev-parse HEAD)"
+: >"$SESSION_LOG"
+OUT="$(GH_DELETE_ERR="HTTP 403: Resource not accessible" GH_PRS="96 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t an-undeleted-branch-is-said 1 "$(grep -c "WARN: release: acme/site#96 withdrawn, but its branch release/site-2.1.46 could not be deleted on the fork; it holds the track" <<<"$OUT")"
+t an-undeleted-branch-is-marked "96 release/site-2.1.46 $HEADQ withdrawn" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+t an-undeleted-branch-buys-nothing 0 "$(sessions)"
+: >"$SESSION_LOG"; : >"$GH_CALLS"
+OUT="$(GH_DELETE_ERR="HTTP 404: Not Found" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-branch-already-gone-frees-the-track 1 "$(grep -c "release: acme/site#96's branch release/site-2.1.46 is deleted on the fork — the track is free" <<<"$OUT")"
+t a-marked-cut-is-not-read-again 0 "$(grep -c '^GH pr view 96 -R acme/site --json state' "$GH_CALLS")"
+t a-freed-track-buys-nothing-the-same-tick 0 "$(sessions)"
+OUT="$(SIM_PR_AFTER="97 dan-claude-bot release/site-2.1.46" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-freed-track-is-cut-at-the-new-head 1 "$(grep -c "release: acme/site — cutting site-2.1.46 from ${HEADP:0:7}" <<<"$OUT")"
+# A cut a person closes AFTER main moved on the track refuses the tree it was
+# cut from, not main's newer one (#763 round 5): the newer tree is cut.
+printf 'o\n' >"$ORIGIN/apps/site/o.txt"; gq add -A; gq commit -q -m "feat(site): o (#12)"
+HEADO="$(git -C "$ORIGIN" rev-parse HEAD)"
+: >"$SESSION_LOG"; : >"$GH_CALLS"
+OUT="$(SIM_PR_AFTER="98 dan-claude-bot release/site-2.1.46" GH_PRS="" GH_PR_STATE="CLOSED " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-closed-cut-refuses-its-own-tree 1 "$(grep -c "^acme/site:apps/site#$(git -C "$ORIGIN" rev-parse "$HEADP:apps/site") " "$DUTY_DIR/.seen-release")"
+t a-closed-cuts-branch-is-deleted-on-the-fork 1 "$(grep -c '^GH api -X DELETE repos/dan-claude-bot/site-fork/git/refs/heads/release/site-2.1.46$' "$GH_CALLS")"
+t mains-newer-tree-is-cut-after-a-closed-cut 1 "$(grep -c "release: acme/site — cutting site-2.1.46 from ${HEADO:0:7}" <<<"$OUT")"
+t the-closed-cut-is-replaced-by-the-new-one "98 release/site-2.1.46 $HEADO" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
 
 # ── a session that opened nothing: counted, then refused at the cap ─────────
 rel_reset

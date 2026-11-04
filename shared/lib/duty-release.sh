@@ -25,7 +25,9 @@
 # so two tracks of one repository never share a cut, a wait or a refusal:
 #   .seen-release              `repo:path#<tree sha> 0` — track states the
 #                              engine cut or a person refused; never re-cut
-#   .release-cut-<slug>        `<pr> <branch> <main sha>` — the open cut
+#   .release-cut-<slug>        `<pr> <branch> <main sha> [withdrawn|refused]`
+#                              — the open cut; the mark is a cut already
+#                              closed whose fork branch is still owed deleting
 #   .release-due-<slug>        `<repo> <epoch>` — a cut waiting for main to go
 #                              quiet; the host tick starts the box when due
 #   .release-tried-<slug>      `<tree sha> <n>` — sessions that ended without a
@@ -143,13 +145,13 @@ _release_merges() {
   git -C "$dir" log --no-merges --format='%h %s' "$from..origin/main" "${_RELEASE_PATHSPEC[@]}" 2>/dev/null
 }
 
-# _release_track_id DIR PATH — the sha of the TRACK'S TREE at origin/main:
-# the identity a cut or a refusal is remembered by. An off-track merge leaves
-# it unchanged; any merge on the track changes it.
+# _release_track_id DIR PATH [REV] — the sha of the TRACK'S TREE at REV
+# (origin/main by default): the identity a cut or a refusal is remembered by.
+# An off-track merge leaves it unchanged; any merge on the track changes it.
 _release_track_id() {
-  local dir="$1" path="$2"
-  if [ "$path" = . ]; then git -C "$dir" rev-parse 'origin/main^{tree}' 2>/dev/null
-  else git -C "$dir" rev-parse "origin/main:${path%/}" 2>/dev/null; fi
+  local dir="$1" path="$2" rev="${3:-origin/main}"
+  if [ "$path" = . ]; then git -C "$dir" rev-parse "$rev^{tree}" 2>/dev/null
+  else git -C "$dir" rev-parse "$rev:${path%/}" 2>/dev/null; fi
 }
 
 # _release_fragments DIR PATH — the fragments waiting in the track's
@@ -236,11 +238,15 @@ _release_due_write() { # SLUG REPO DUE-EPOCH
 }
 _release_due_clear() { rm -f "$DUTY_DIR/.release-due-$1"; }
 
-# _release_refuse DIR PATH REPO — the track's current tree, remembered as
-# cut-or-refused, so it is never bought again until the track moves.
+# _release_refuse DIR PATH REPO [REV] — the track's tree at REV (main's head
+# by default), remembered as cut-or-refused, so it is never bought again until
+# the track moves. A closed cut passes the commit it was cut FROM: main may
+# have moved on the track since, and that newer tree is nobody's refusal
+# (#763 round 5). A cut commit the clone cannot resolve falls back to main's.
 _release_refuse() {
-  local tree
-  tree="$(_release_track_id "$1" "$2")"
+  local tree=""
+  [ -z "${4:-}" ] || tree="$(_release_track_id "$1" "$2" "$4")"
+  [ -n "$tree" ] || tree="$(_release_track_id "$1" "$2")"
   [ -n "$tree" ] || return 0
   printf '%s:%s#%s 0\n' "$3" "$2" "$tree" | ledger_commit "$DUTY_DIR/.seen-release"
 }
@@ -266,6 +272,22 @@ _release_mine() {
   [ "$authors" = "$ME" ]
 }
 
+# _release_delete_head REPO NUM BRANCH — the closed cut's head branch,
+# deleted where it lives. `gh pr close --delete-branch` deletes a branch of the
+# BASE repository only and merely warns for a fork's, exit 0 (#763 round 5);
+# the engine's cut is on its fork, and the next cut of the same VERSION
+# pushes to the same name — non-fast-forward. A branch already gone is gone;
+# any other failure is a failure, and the caller holds the track on it.
+_release_delete_head() {
+  local repo="$1" num="$2" branch="$3" head_repo err
+  head_repo="$(gh pr view "$num" -R "$repo" --json headRepository,headRepositoryOwner \
+    --jq '"\(.headRepositoryOwner.login // "")/\(.headRepository.name // "")"' 2>/dev/null)" || return 1
+  case "$head_repo" in /*|*/|'') return 1 ;; esac
+  err="$(gh api -X DELETE "repos/$head_repo/git/refs/heads/$branch" 2>&1 >/dev/null)" && return 0
+  case "$err" in *"HTTP 404"*|*"HTTP 422"*"Reference does not exist"*) return 0 ;; esac
+  return 1
+}
+
 # _release_settle_cut SLUG REPO PATH DIR — what became of the cut the engine
 # holds open for this track, if any. Merged: forgotten. Closed unmerged by a
 # person: refused — the track's tree stays in the ledger so it is never
@@ -276,20 +298,45 @@ _release_mine() {
 # and not stdout, because the function logs on the way.
 RELEASE_SETTLED=none
 _release_settle_cut() {
-  local slug="$1" repo="$2" path="$3" dir="$4" f num branch head state ahead
+  local slug="$1" repo="$2" path="$3" dir="$4" f num branch head mark state ahead
   RELEASE_SETTLED=none
   f="$DUTY_DIR/.release-cut-$slug"
   [ -f "$f" ] || return 0
-  read -r num branch head <"$f" || return 0
+  read -r num branch head mark <"$f" || return 0
+  case "$mark" in
+    withdrawn|refused)
+      # Closed already; its fork branch was owed deleting. The track holds
+      # until it is gone, or the next cut of the same VERSION would collide.
+      if _release_delete_head "$repo" "$num" "$branch"; then
+        rm -f "$f"
+        log "release: $repo#$num's branch $branch is deleted on the fork — the track is free"
+        RELEASE_SETTLED="$mark"; return 0
+      fi
+      warn "release: $repo#$num is closed but its branch $branch could not be deleted on the fork; it holds the track until it is (the next cut would push to the same name)"
+      RELEASE_SETTLED=open; return 0 ;;
+  esac
   state="$(gh pr view "$num" -R "$repo" --json state,mergedAt \
     --jq '"\(.state) \(.mergedAt // "")"' 2>/dev/null)" || { RELEASE_SETTLED=open; return 0; }
   case "$state" in
     MERGED*) rm -f "$f"; log "release: $repo#$num shipped ($branch) — the cut is forgotten"; RELEASE_SETTLED=shipped; return 0 ;;
     CLOSED*)
-      rm -f "$f"
-      _release_refuse "$dir" "$path" "$repo"
+      _release_refuse "$dir" "$path" "$repo" "$head"
       log "release: $repo#$num was closed without merging ($branch) — refused; the track at ${head:0:7} is not cut again until it moves"
-      RELEASE_SETTLED=refused; return 0 ;;
+      RELEASE_SETTLED=refused
+      # Its branch goes too when it is the engine's alone (a person's commits
+      # on it are theirs to keep): the next cut of the same VERSION pushes to
+      # the same name.
+      if ! _release_mine "$branch" "$repo" "$num"; then
+        rm -f "$f"
+        warn "release: $repo#$num's branch $branch carries commits that are not $ME's — left on the fork; a cut of the same version would push to the same name, so delete it once it is settled"
+      elif _release_delete_head "$repo" "$num" "$branch"; then
+        rm -f "$f"
+      else
+        printf '%s %s %s refused\n' "$num" "$branch" "$head" >"$f.tmp" && mv -f "$f.tmp" "$f"
+        warn "release: $repo#$num's branch $branch could not be deleted on the fork; it holds the track until it is"
+        RELEASE_SETTLED=open
+      fi
+      return 0 ;;
   esac
   _release_pathspec "$path"
   ahead="$(git -C "$dir" rev-list --count "$head..origin/main" "${_RELEASE_PATHSPEC[@]}" 2>/dev/null || echo 0)"
@@ -298,8 +345,13 @@ _release_settle_cut() {
       warn "release: $repo#$num is stale (main moved past ${head:0:7}) but carries commits that are not $ME's — not withdrawn; it holds the track until a person settles it"
       RELEASE_SETTLED=open; return 0
     fi
-    if gh pr close "$num" -R "$repo" --delete-branch \
+    if gh pr close "$num" -R "$repo" \
         --comment "Withdrawn by $ME: main moved past this cut (${ahead} merge(s) on the track since ${head:0:7}). The next tick cuts the new head; nothing here is re-pushed." >/dev/null 2>&1; then
+      if ! _release_delete_head "$repo" "$num" "$branch"; then
+        printf '%s %s %s withdrawn\n' "$num" "$branch" "$head" >"$f.tmp" && mv -f "$f.tmp" "$f"
+        warn "release: $repo#$num withdrawn, but its branch $branch could not be deleted on the fork; it holds the track until it is (the next cut would push to the same name)"
+        RELEASE_SETTLED=open; return 0
+      fi
       rm -f "$f"
       log "release: $repo#$num withdrawn ($branch) — main moved $ahead merge(s) past ${head:0:7}; the new head is cut next tick"
       RELEASE_SETTLED=withdrawn; return 0

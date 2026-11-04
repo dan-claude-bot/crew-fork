@@ -77,6 +77,14 @@ t plan-a-rename-is-planned-by-its-old-name-too 1 "$(suites_of "$out" | tr ',' '\
 rm -rf "$stub"
 # $GITHUB_OUTPUT receives the same two lines.
 tmp="$(mktemp)"; GITHUB_OUTPUT="$tmp" "$PLAN" --all >/dev/null; t plan-writes-github-output 2 "$(grep -c -E '^(full|suites)=' "$tmp")"; rm -f "$tmp"
+# The store's module and the pause shell plan the suites that drive them
+# through the CLI, not the floor's alone (#763 round 5).
+out="$(plan fleet-floor/server/floor/store.py)"
+t plan-the-store-plans-its-cli-suites "cli-lifecycle,cli-reset,cli-store,floor-no-browser,host-tick" "$(suites_of "$out")"
+out="$(plan shared/lib/host/pause.sh)"
+t plan-the-pause-shell-plans-its-callers "cli-lifecycle,cli-reset,floor-no-browser,host-tick" "$(suites_of "$out")"
+out="$(plan fleet-floor/server/floor/roster.py)"
+t plan-the-rest-of-the-floor-is-the-floors "floor-no-browser" "$(suites_of "$out")"
 # run-suite.sh refuses an id it does not know and names it.
 t run-suite-refuses-an-unknown-id 2 "$("$HERE/run-suite.sh" no-such-suite >/dev/null 2>&1; echo $?)"
 echo "passed $PASS, failed $FAIL"

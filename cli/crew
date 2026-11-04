@@ -3868,7 +3868,12 @@ reset_restore_memory() {
   for f in "$dir"/.* "$dir"/*; do
     [ -f "$f" ] || continue
     base="${f##*/}"
-    case "$base" in duty.log|.duty.lock*|.identity|.idle-ticks) rm -f "$f"; continue ;; esac
+    # A continuation names a transcript the agent keeps outside ~/duty, and
+    # the restore just put that store back a week: a stub written back would
+    # resume a session that is no longer there — one failed session per key
+    # for an agent that does not check first (#763 round 5). The handoff note
+    # is the memory that crosses a reset; the next session starts fresh.
+    case "$base" in duty.log|.duty.lock*|.identity|.idle-ticks|.session-continue.*|.session-resume.*) rm -f "$f"; continue ;; esac
     count=$((count + 1))
   done
   if [ "$count" -eq 0 ]; then
@@ -4161,12 +4166,74 @@ tick_conf_knobs() {
   # names (a renamed `ready` is still the builder's queue, and not a stray for
   # triage), with the defaults the engine ships (#763 round 4).
   for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW TICK_BLIND_TICKS \
-              LABEL_NEEDS_TRIAGE LABEL_READY LABEL_CLAIMED LABEL_BLOCKED LABEL_EPIC; do
+              LABEL_NEEDS_TRIAGE LABEL_READY LABEL_CLAIMED LABEL_BLOCKED LABEL_EPIC LABEL_ATTENTION; do
     eval "$line=\"\$(tick_conf_value $line)\""
   done
   : "${FLEET_MAX_RUNNING:=2}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}" "${TICK_BLIND_TICKS:=3}"
-  : "${LABEL_NEEDS_TRIAGE:=needs-triage}" "${LABEL_READY:=ready}" "${LABEL_CLAIMED:=claimed}" "${LABEL_BLOCKED:=blocked}" "${LABEL_EPIC:=epic}"
+  : "${LABEL_NEEDS_TRIAGE:=needs-triage}" "${LABEL_READY:=ready}" "${LABEL_CLAIMED:=claimed}" "${LABEL_BLOCKED:=blocked}" "${LABEL_EPIC:=epic}" "${LABEL_ATTENTION:=attention}"
 }
+# tick_woken_file MEMBER — what the host woke this member for, one
+# `reason ts idle` line per reason: the reason as wake_reasons named it, the
+# board's timestamp it carried, the member's idle count at the wake.
+tick_woken_file() { printf '%s/%s.woken' "$(TICK_DIGEST_DIR)" "$1"; }
+
+# tick_woken_record MEMBER SURVIVING IDLE — remember the reasons this wake
+# was for (the newest line per reason wins; the file stays bounded).
+tick_woken_record() {
+  local f reason ts tmp
+  f="$(tick_woken_file "$1")"; tmp="$f.tmp"
+  { [ ! -f "$f" ] || cat "$f"
+    while read -r reason ts; do
+      case "$reason" in ''|veto:*) continue ;; esac
+      [ "$ts" != - ] || continue
+      printf '%s %s %s\n' "$reason" "$ts" "$3"
+    done <<<"$2"
+  } | awk '{ last[$1] = $0; order[$1] = NR } END { for (k in last) print order[k] "\t" last[k] }' \
+    | sort -n | cut -f2- | tail -n 500 >"$tmp" && mv -f "$tmp" "$f"
+}
+
+# tick_passed MEMBER SURVIVING IDLE — the surviving reasons, with the ones the
+# member was ALREADY woken for at this very timestamp and idled through since
+# turned into `veto:<reason>:passed`. The builder's `pr#` (its open PR, no
+# round owed) and `ready#` (an issue it cannot take while a PR holds its
+# slot) are coarse — no ledger answers them — so without this a builder with
+# an open PR was woken every tick and never idle-stopped, and a stopped one
+# restarted on every unrelated board move (#763 round 5). Passed means: the
+# host woke the member for exactly this (reason, timestamp), and the member's
+# idle count has grown past what it was at that wake and reached
+# IDLE_TICKS_BEFORE_STOP — its own precise tick looked and bought nothing. A
+# newer timestamp (a review posted, a label moved) is a new reason. Waits and
+# due cuts carry no timestamp and are never set aside this way.
+tick_passed() {
+  local f="" line reason ts wts widle
+  [ "$3" -lt "$IDLE_TICKS_BEFORE_STOP" ] || f="$(tick_woken_file "$1")"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    read -r reason ts <<<"$line"
+    if [ -n "$f" ] && [ -f "$f" ] && [ "${reason#veto:}" = "$reason" ] && [ "$ts" != - ]; then
+      wts=""; widle=""
+      read -r wts widle < <(awk -v r="$reason" '$1 == r { print $2, $3 }' "$f" | tail -1)
+      if [ -n "${wts:-}" ] && ! [ "$wts" \< "$ts" ] && [ "$3" -gt "${widle:-0}" ] 2>/dev/null; then
+        echo "veto:$reason:passed"; continue
+      fi
+    fi
+    printf '%s\n' "$line"
+  done <<<"$2"
+}
+
+# tick_held_repos SURVIVING — the repositories a budget or a breaker vetoed a
+# reason on: the board is NOT marked seen for them, so the reason is read
+# again once the window rolls (or the breaker clears) on a quiet board — a
+# recorded digest would leave that ready issue unread until the board moved.
+tick_held_repos() {
+  local line item
+  while IFS= read -r line; do
+    case "$line" in veto:*:budget-*|veto:*:breaker-*) ;; *) continue ;; esac
+    item="${line#veto:}"; item="${item%:*}"; item="${item#*#}"
+    printf '%s\n' "${item%%#*}"
+  done <<<"$1" | sort -u
+}
+
 tick_conf_value() { # KEY — the last assignment wins, fleet.conf after defaults
   { sed -n "s/^$1=//p" "$CREW_ROOT/shared/conf/fleet.defaults.conf"
     [ ! -f "$CONFIG_DIR/fleet.conf" ] || sed -n "s/^$1=//p" "$CONFIG_DIR/fleet.conf"
@@ -4215,7 +4282,8 @@ tick_wake() {
 }
 
 tick_run() { # DRY_RUN
-  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE
+  local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE held_repos
+  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4284,6 +4352,14 @@ tick_run() { # DRY_RUN
     fi
     login="$(store_py state --box "$name" --name .identity 2>/dev/null | head -1 | tr -d '\r')"
     reasons=""
+    state="$(box_state "$name")"
+    # A running box's waits and due cuts, live (#763 round 5): the store's
+    # copy keeps a resumed wait or a made cut until the next full pull. A box
+    # that does not answer leaves the store's copy as the answer.
+    WAKE_STATES_LIVE=""; WAKE_STATES_LIVE_READ=""
+    if [ "$state" = running ] && WAKE_STATES_LIVE="$(bxn "$name" "$(wake_live_states_sh)" 2>/dev/null)"; then
+      WAKE_STATES_LIVE="$(printf '%s' "$WAKE_STATES_LIVE" | tr -d '\r')"; WAKE_STATES_LIVE_READ=1
+    fi
     for repo in "${!ROWS[@]}"; do
       prev="$(cat "$(tick_digest_file "$name" "$repo")" 2>/dev/null || true)"
       [ "${DIGEST[$repo]}" != "$prev" ] || continue
@@ -4292,7 +4368,6 @@ tick_run() { # DRY_RUN
     reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
     reasons="$reasons$(wake_release_reasons "$name")"$'\n'
     reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
-    state="$(box_state "$name")"
     # A running box's ledgers, live: the store's copy is as old as its last
     # drain or floor poll, so a triage box on a busy board would keep an
     # unvetoed `triage#` for an issue its session already left for a person —
@@ -4302,10 +4377,6 @@ tick_run() { # DRY_RUN
     [ "$state" != running ] || [ -z "$reasons" ] \
       || WAKE_LEDGER_LIVE="$(bxn "$name" 'cat ~/duty/.seen-* 2>/dev/null' 2>/dev/null | tr -d '\r')"
     surviving="$(tick_veto "$name" "$roles" "$reasons" "$state")"
-    while IFS= read -r line; do
-      case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
-    done <<<"$surviving"
-    why="$(wake_why "$surviving")"
     idle=0
     if [ "$state" = running ]; then
       idle="$(bxn "$name" 'cat ~/duty/.idle-ticks 2>/dev/null' 2>/dev/null | tr -d '\r' | head -1)"
@@ -4313,18 +4384,23 @@ tick_run() { # DRY_RUN
       # The count the box carried when it was drained and stopped: a box
       # stopped for idleness is not started again for the same coarse reason
       # (it would be stopped again two ticks later — a boot every ten minutes
-      # on an active board). A session resets the count; a precise reason
-      # never reads it.
+      # on an active board). A session resets the count.
       idle="$(store_py state --box "$name" --name .idle-ticks 2>/dev/null | head -1 | tr -d '\r')"
     fi
     case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
+    surviving="$(tick_passed "$name" "$surviving" "$idle")"
+    held_repos="$(tick_held_repos "$surviving")"
+    while IFS= read -r line; do
+      case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
+    done <<<"$surviving"
+    why="$(wake_why "$surviving")"
     # Triage's coarse `board#` reason fires on any movement at all. A triage
     # box that was woken for it IDLE_TICKS_BEFORE_STOP times and bought no
     # session each time has answered: the movement is not its work. The
-    # precise reasons (an attention demand, a ready issue, a review request,
-    # an untriaged issue — `triage#`, #763 round 3 — a due wait or cut) are
-    # never set aside this way: a stopped box's stored count would otherwise
-    # be the last word, and a new needs-triage issue never a wake.
+    # reasons that name an item are never set aside this way — a stopped
+    # box's stored count would otherwise be the last word, and a new
+    # needs-triage issue never a wake: only tick_passed sets one aside, by
+    # the item and its timestamp (#763 rounds 3 and 5).
     if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] \
        && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
       echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"
@@ -4334,7 +4410,7 @@ tick_run() { # DRY_RUN
       case "$state" in
         running)
           echo "  $name: woke (running) why=$why"
-          [ "$dry" -eq 1 ] || tick_wake "$name" "$why"
+          [ "$dry" -eq 1 ] || { tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle"; }
           woke=$((woke + 1)) ;;
         stopped)
           if [ "$running" -ge "$FLEET_MAX_RUNNING" ]; then
@@ -4356,7 +4432,7 @@ tick_run() { # DRY_RUN
             # stopped, comes back live here; "nothing to resume" is the
             # ordinary answer and costs nothing.
             bxn "$name" "$(host_resume_sh)" >/dev/null 2>&1 || true
-            tick_wake "$name" "$why"
+            tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle"
           fi ;;
         *) echo "  $name: state '$state' — left alone; why=$why"; continue ;;
       esac
@@ -4393,8 +4469,12 @@ tick_run() { # DRY_RUN
         quiet=$((quiet + 1))
       fi
     fi
-    # The member has seen these boards: woken, idle, or nothing for it.
-    [ "$dry" -eq 1 ] || for repo in "${!ROWS[@]}"; do printf '%s\n' "${DIGEST[$repo]}" >"$(tick_digest_file "$name" "$repo")"; done
+    # The member has seen these boards: woken, idle, or nothing for it — all
+    # but one a budget or a breaker held a reason on, read again next tick.
+    [ "$dry" -eq 1 ] || for repo in "${!ROWS[@]}"; do
+      ! grep -qxF -- "$repo" <<<"$held_repos" || continue
+      printf '%s\n' "${DIGEST[$repo]}" >"$(tick_digest_file "$name" "$repo")"
+    done
   done <<<"$(read_roster)"
   echo "tick: started $started, woke $woke, held $held, stopped $stopped, vetoed $vetoed, nothing-for $quiet; running $running of $FLEET_MAX_RUNNING"
   return 0

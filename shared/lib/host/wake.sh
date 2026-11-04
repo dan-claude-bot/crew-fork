@@ -50,7 +50,8 @@ wake_digest() { sha256sum | cut -c1-16; }
 # this board, one reason per line, as `kind#repo#num <updatedAt>` (the
 # timestamp is what the ledger veto compares). Role rules, deliberately
 # coarse — the box's own tick does the precise detection once it is awake:
-#   every role  attention#…  an issue labelled attention assigned to me
+#   every role  attention#…  an issue labelled attention (LABEL_ATTENTION)
+#                            assigned to me
 #   builder     ready#…      a ready issue nobody is assigned to
 #               pr#…         an open pull request of mine (a round may be owed)
 #   reviewer    review#…     a pull request requesting my review
@@ -67,7 +68,7 @@ wake_reasons() {
     [ -n "$kind" ] || continue
     case "$kind" in
       I)
-        case ",$a," in *",attention,"*) case ",$b," in *",$login,"*) [ -n "$login" ] && echo "attention#$repo#$num $ts" ;; esac ;; esac
+        case ",$a," in *",${LABEL_ATTENTION:-attention},"*) case ",$b," in *",$login,"*) [ -n "$login" ] && echo "attention#$repo#$num $ts" ;; esac ;; esac
         case " $roles " in *" builder "*)
           case ",$a," in *",${LABEL_READY:-ready},"*) [ "$b" = - ] && echo "ready#$repo#$num $ts" ;; esac ;;
         esac
@@ -164,6 +165,27 @@ wake_veto() {
   done <<<"$reasons"
 }
 
+# wake_states BOX PREFIX — `name<TAB>first line` of the member's state files
+# under PREFIX. A RUNNING box's are read live by the tick (WAKE_STATES_LIVE,
+# with WAKE_STATES_LIVE_READ=1 when the read answered): the store drops a file
+# only on a full pull, so a wait the box already resumed, or a cut it already
+# made, would stand in the store's copy past due — a reason every tick, and
+# the box never idle-stopped (#763 round 5). Otherwise the store's copy.
+wake_states() {
+  if [ -n "${WAKE_STATES_LIVE_READ:-}" ]; then
+    [ -z "${WAKE_STATES_LIVE:-}" ] || printf '%s\n' "$WAKE_STATES_LIVE" | awk -F'\t' -v p="$2" 'index($1, p) == 1'
+  else
+    wake_store states --box "$1" --prefix "$2"
+  fi
+}
+
+# wake_live_states_sh — the read the tick runs on a running box for
+# wake_states: every `.wait-*` and `.release-due-*`, one `name<TAB>line` each.
+wake_live_states_sh() {
+  # shellcheck disable=SC2016  # expanded in the box, not here
+  printf '%s' 'cd ~/duty 2>/dev/null || exit 0; for f in .wait-* .release-due-*; do [ -f "$f" ] || continue; printf "%s\t%s\n" "$f" "$(head -n1 "$f")"; done'
+}
+
 # wake_wait_reasons BOX — parked waits the member left (park-until.sh), read
 # from the store while the box sleeps: one whose checks have concluded is a
 # reason of its own, `wait#repo#num`, never ledger-vetoed (the member parked
@@ -177,7 +199,7 @@ wake_wait_reasons() {
     pending="$(wake_gh pr view "$num" -R "$wrepo" --json headRefOid,statusCheckRollup 2>/dev/null \
       | jq -r --arg head "$head" 'if (.headRefOid // "") != $head then 0 else ([.statusCheckRollup[]? | select((.conclusion // "") == "" and ((.status // "") == "QUEUED" or (.status // "") == "IN_PROGRESS" or (.status // "") == "PENDING" or (.status // "") == "WAITING" or (.status // "") == "REQUESTED" or (.status // "") == "EXPECTED" or (.state // "") == "PENDING" or (.state // "") == "EXPECTED"))] | length) end' 2>/dev/null)"
     [ "$pending" = 0 ] && echo "wait#$wrepo#$num -"
-  done < <(wake_store states --box "$box" --prefix .wait- 2>/dev/null)
+  done < <(wake_states "$box" .wait- 2>/dev/null)
   return 0
 }
 
@@ -195,7 +217,7 @@ wake_release_reasons() {
     { [ -n "$rrepo" ] && [ -n "$due" ]; } || continue
     case "$due" in *[!0-9]*|'') continue ;; esac
     [ "$now" -ge "$due" ] && echo "release#$rrepo -"
-  done < <(wake_store states --box "$box" --prefix .release-due- 2>/dev/null)
+  done < <(wake_states "$box" .release-due- 2>/dev/null)
   return 0
 }
 
