@@ -431,8 +431,10 @@ status, payload = floor.do_command(WakeFleet(WAKE_UNITS), {"action": "wake-silen
 # The decisive one: nothing at all is fired at the wedged box. A reply that
 # merely NAMES it is what the timed-out row already did.
 assert not any("wake-wedged" in call for call in wake_calls), wake_calls
-assert wake_calls == ["box start wake-stopped", "box exec wake-unmeasured",
-                      "box exec wake-answering"], wake_calls
+# The calls run on the action's threads, so they land in any order; the
+# REPLY's order is the stable one, asserted below.
+assert sorted(wake_calls) == sorted(["box start wake-stopped", "box exec wake-unmeasured",
+                                     "box exec wake-answering"]), wake_calls
 assert [r["box"] for r in payload["results"]] == [u["box"] for u in WAKE_UNITS], payload
 assert [r["step"] for r in payload["results"]] == [
     "start", "resume", "escalate", "resume"], payload
