@@ -4270,7 +4270,7 @@ tick_woken_record() {
 # the slot the builder passed on it for. Waits and due cuts carry no
 # timestamp and are never set aside this way.
 tick_passed() {
-  local f="" line reason ts wts widle wctx
+  local f="" line reason ts wts widle wctx frozen="${5:-}"
   [ "$3" -lt "$IDLE_TICKS_BEFORE_STOP" ] || f="$(tick_woken_file "$1")"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -4278,7 +4278,11 @@ tick_passed() {
     if [ -n "$f" ] && [ -f "$f" ] && [ "${reason#veto:}" = "$reason" ] && [ "$ts" != - ]; then
       wts=""; widle=""; wctx=""
       read -r wts widle wctx < <(awk -v r="$reason" '$1 == r { print $2, $3, $4 }' "$f" | tail -1)
-      if [ -n "${wts:-}" ] && ! [ "$wts" \< "$ts" ] && [ "$3" -gt "${widle:-0}" ] 2>/dev/null \
+      # FROZEN (a held, stopped member, #763 round 9): its stored idle count
+      # cannot grow while the store holds its memory, so a matching wake is
+      # passed on the match alone — each item wakes it once per hold.
+      if [ -n "${wts:-}" ] && ! [ "$wts" \< "$ts" ] \
+         && { [ -n "$frozen" ] || [ "$3" -gt "${widle:-0}" ] 2>/dev/null; } \
          && [ "${wctx:-}" = "$(tick_reason_ctx "$4" "$reason")" ]; then
         echo "veto:$reason:passed"; continue
       fi
@@ -4470,7 +4474,7 @@ tick_run() { # DRY_RUN
     if [ -n "$mem_held" ] && [ "$state" != running ] && [ "$idle" -lt "$IDLE_TICKS_BEFORE_STOP" ]; then
       idle="$IDLE_TICKS_BEFORE_STOP"
     fi
-    surviving="$(tick_passed "$name" "$surviving" "$idle" "$login")"
+    surviving="$(tick_passed "$name" "$surviving" "$idle" "$login" "$([ -z "$mem_held" ] || [ "$state" = running ] || echo frozen)")"
     held_repos="$(tick_held_repos "$surviving")"
     while IFS= read -r line; do
       case "$line" in veto:*) echo "  $name: veto ${line#veto:}"; vetoed=$((vetoed + 1)) ;; esac
@@ -5156,7 +5160,10 @@ cmd_status() {
     # A running box the store still holds the memory of (a failed write-back,
     # #763 round 8) says so on its own row: its pulls land only the log.
     mem_held="$(memory_held_of "$name")"
-    [ -z "$mem_held" ] || note="memory HELD since $mem_held — re-run: crew reset $name${note:+; $note}"
+    # Once: an unreachable box's stored note already carries it.
+    case "$note" in *"memory HELD since"*) ;; *)
+      [ -z "$mem_held" ] || note="memory HELD since $mem_held — re-run: crew reset $name${note:+; $note}" ;;
+    esac
     # shellcheck disable=SC2059
     printf "$fmt" "$name" "$state" "$host" "$hired" "$edisplay" "$ghs_d" "$vs_d" "$note"
   done < <(read_roster)

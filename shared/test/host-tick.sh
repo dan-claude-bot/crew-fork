@@ -641,11 +641,27 @@ t cap-the-summary-counts-the-held-member 1 "$(grep -c '^tick: started 0, woke [0
 # there is room (its stored files are the checkpoint's).
 echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
 ht_board 'I 18 2026-10-23T19:00:00Z lista -' '' ''
+# The due cut lands with the hold LIFTED (a held pull lands only the log —
+# round 9: with the hold standing here the row tested nothing), then the
+# hold stands again.
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
 HT_EXTRA_FILE=.release-due-o_r HT_EXTRA_BODY="o/r 1" ht_record alpha dan-claude-bot '' 0
+t held-the-due-cut-is-in-the-store 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" states --box alpha --prefix .release-due- | grep -c .)"
 CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha
 rm -f "$CONF/store/wake"/*; : >"$STATE/calls"
 capture tick
 t held-a-frozen-due-cut-does-not-boot-it 0 "$(grep -c 'release#o/r' <<<"$OUT")"
+# ...and an item it was woken for once, it is not booted for again while the
+# hold stands: its frozen idle count cannot grow past the wake's (round 9).
+t held-the-item-starts-it-once 1 "$(calls 'start alpha')"
+echo stopped >"$STATE/alpha.state"
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T23:00:00Z blocked -' '' ''
+: >"$STATE/calls"
+capture tick
+t held-the-same-item-does-not-boot-it-again 0 "$(calls 'start alpha')"
+t held-the-same-item-is-passed 1 "$(grep -c 'alpha: veto ready#o/r#18:passed' <<<"$OUT")"
+echo running >"$STATE/alpha.state"
+t held-a-running-held-box-says-it-on-its-row 1 "$(run_crew status 2>&1 | grep -c '^alpha .*memory HELD since')"
 t held-the-summary-says-held-0 1 "$(grep -c '^tick: .* held 0, ' <<<"$OUT")"
 t held-status-is-one-line-in-the-table 0 "$(run_crew status 2>&1 | grep -c '^stored:')"
 CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
