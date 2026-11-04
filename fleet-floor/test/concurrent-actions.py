@@ -519,6 +519,11 @@ def gated_run(argv, _timeout, _stdin_data=None):
 floor.read_roster = lambda: [{"box": n, "agent": "claude", "room": "builder"} for n in BOXES]
 floor.box_states = lambda: {n: "running" for n in BOXES}
 floor.run = gated_run
+# The host's pause marker is a file under the config dir — the shipped
+# examples, here. Never written by a suite: kept in memory.
+MARKERS = {}
+floor._paused_marker = lambda name, on: MARKERS.__setitem__(name, on)
+floor._paused_marker_set = lambda name: MARKERS.get(name, False)
 
 
 class ClaimFleet(Fleet):
@@ -597,9 +602,7 @@ assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
 # Round 11: wake-silent lifts a box's pause marker only inside that box's own
 # claimed call — a box another action holds, and that it leaves alone, keeps
 # its pause.
-MARKERS = {"box-a": True, "box-b": True}
-floor._paused_marker = lambda name, on: MARKERS.__setitem__(name, on)
-floor._paused_marker_set = lambda name: MARKERS.get(name, False)
+MARKERS.clear(); MARKERS.update({"box-a": True, "box-b": True})
 floor.box_states = lambda: {n: "stopped" for n in BOXES}
 floor.run = lambda argv, _t, _s=None: (0, "done", "")
 ok_a, _ = INFLIGHT.claim_box("box-a", "pause", "op1")
@@ -616,5 +619,9 @@ INFLIGHT.step("box-c", "down", "restart")
 INFLIGHT.step("box-c", "", "message")
 assert INFLIGHT.snapshot()["boxes"]["box-c"]["step"] == "down", INFLIGHT.snapshot()
 INFLIGHT.release_box("box-c")
+
+# Nothing above wrote into the shipped tree (round 11: a real pause marker
+# once landed under examples/store/ and was committed).
+assert not os.path.exists(os.path.join(os.path.dirname(HERE), "..", "examples", "store")), "a suite wrote into examples/"
 
 print("concurrent fleet actions: ok")
