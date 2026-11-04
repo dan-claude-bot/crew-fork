@@ -170,6 +170,12 @@ input.woff{color:#5a6a80}
 .rosst{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#5a6a80;margin-top:3px}
 .rosst.new{color:#f7bd4e}
 .rosdrop{color:#ff8a7c;border-color:#3a1c1c}
+#credov{display:none;position:fixed;inset:0;z-index:60;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
+#credov .logbox{display:flex;flex-direction:column;width:min(980px,94vw);max-height:86vh;background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
+#credov .regbody{flex:1;overflow:auto;padding:14px}
+#credov .rosin+.rosin{margin-top:4px}
+.credverdict{text-transform:none;letter-spacing:0;font-size:10px;color:#5fce9b}
+.credverdict.bad{color:#ff8a7c}
 .regblk{margin-bottom:16px}
 .regblk:last-child{margin-bottom:0}
 .regpath{font-family:var(--mono);font-size:9.5px;color:#46566a;margin:3px 0 6px;word-break:break-all}

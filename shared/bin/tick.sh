@@ -25,6 +25,12 @@ TARGET="$DUTY_DIR/bin/$JOB.sh"
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 
+# The credentials the host set (#765, shared/lib/host/credentials.sh): the
+# env kinds — a setup-token, an API key — exported for every job this tick
+# runs, since cron reads no login shell. Absent is the ordinary case.
+# shellcheck disable=SC1091
+[ -r "$HOME/.config/crew/credentials.env" ] && . "$HOME/.config/crew/credentials.env"
+
 # Who holds a lock, asked of the kernel (#726). Used by the 199 branch below,
 # where the argument for reading it rather than inferring it lives.
 #

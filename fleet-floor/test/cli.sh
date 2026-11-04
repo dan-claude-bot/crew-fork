@@ -1238,22 +1238,23 @@ cl_box_execs() { cl_code | grep -E 'box exec "'; }
 
 # `box exec` forwards stdin like ssh, so ONE unredirected call inside a
 # `while read … done < <(read_roster)` drains the roster: the loop ends after a
-# single box, quietly, rc=0. Three call sites are legitimate — bxn pins
+# single box, quietly, rc=0. Four call sites are legitimate — bxn pins
 # /dev/null, while bxput and vendor_probe deliberately ship a named file
 # (vendor_probe's is the RESOLVED profile — agent_conf, so an operator
-# profile is what gets probed, #75).
+# profile is what gets probed, #75), and bxpipe ships its own argument through
+# a pipe (a credential, #765 — in memory, never a file).
 CL_EXECS="$(cl_box_execs | grep -c . || true)"
-t "crew: box exec appears only in bxn, bxput and vendor_probe" 3 "${CL_EXECS:-0}"
-if [ "${CL_EXECS:-0}" -ne 3 ]; then
+t "crew: box exec appears only in bxn, bxput, bxpipe and vendor_probe" 4 "${CL_EXECS:-0}"
+if [ "${CL_EXECS:-0}" -ne 4 ]; then
   echo "  call sites:"; cl_box_execs | sed 's/^/    /'
 fi
 # shellcheck disable=SC2016  # matching the literal redirect text in the source
-CL_BARE="$(cl_box_execs | grep -vcE '</dev/null|<"\$\(agent_conf|<"\$source_file' || true)"
+CL_BARE="$(cl_box_execs | grep -vcE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box exec' || true)"
 t "crew: every box exec call site pins stdin" 0 "${CL_BARE:-0}"
 if [ "${CL_BARE:-0}" -ne 0 ]; then
   echo "  unpinned:"
   # shellcheck disable=SC2016  # matching the literal redirect text in the source
-  cl_box_execs | grep -vE '</dev/null|<"\$\(agent_conf|<"\$source_file' | sed 's/^/    /'
+  cl_box_execs | grep -vE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box exec' | sed 's/^/    /'
 fi
 
 # `box info --json` returns an array; the filter that read it as an object

@@ -13,6 +13,7 @@ from floor import FLOOR_ENVELOPE
 from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
 from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
+from floor.credentials import credentials_set
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -296,6 +297,15 @@ def do_command(fleet, body, actor=""):
     # write needs no box at all, which is why it joins the set above.
     if action in registry:
         return registry_command(action, box, body, actor)
+    if action == "credentials-set":
+        # A member's credential (#765): set through the one credentials
+        # shell and never read back. Its own module, so the secret's whole
+        # path through this process is one function; a refresh is asked for
+        # so the next poll's `authfail` reads the box after it.
+        code, reply = credentials_set(body, actor)
+        if reply.get("ok"):
+            fleet.request_refresh()
+        return code, reply
     if action == "roster-set":
         # The roster, whole (#764): the registry writers' three
         # outcomes, with the same codes. A refusal is 400 and nothing moved; a

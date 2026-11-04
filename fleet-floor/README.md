@@ -221,13 +221,23 @@ no build step, no dependencies.
 | `/` | GET | the page |
 | `/api/fleet` | GET | latest telemetry snapshot |
 | `/api/roster` | GET | the fleet's definition as it is on disk: members, the agent and role profiles a line may name, the path, and the `etag` a save hands back (#764) |
-| `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set` |
+| `/api/credentials` | GET | per member, the credential kinds its gh and its agent take — never a credential (#765) |
+| `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set`, `credentials-set` |
 | `/api/logs` | GET | tail `duty.log` or one session log |
 | `/healthz` | GET | liveness |
 
 **Two things the page still cannot do.** "Open box terminal" copies `box shell
 <name>` for you — a browser cannot attach a shell. And a box that is not running
 cannot be messaged; the request is refused rather than queued.
+
+### Credentials are settable, never readable (#765)
+
+**Credentials** (beside **Roster**) sets a member's GitHub token and its agent's login. Each row shows the box, what the last poll read (gh and the vendor: flowing, missing, stale or waiting), a service and kind picker (the kinds come from the agent's profile, `AGENT_CRED_KINDS`), and a password field.
+
+- **How Set works.** It sends the value once, in the `credentials-set` body, and clears the field before the reply lands. The collector hands the value to the box as the stdin of the credentials shell (`shared/lib/host/credentials.sh`, the same one the CLI's login verb runs). The value lands 0600 where the CLI reads it.
+- **What comes back.** The reply is the box's one-line verdict: the gh login it now answers as, or whether the agent reads as logged in.
+- **Where the value never goes.** It is never in argv, the collector's log, `.credentials-journal.log` (who set which kind, for which member, and the verdict), the reply, or a file on the host. No endpoint reads a credential back.
+- **Refusals.** A kind the agent does not take, an empty value or an unknown box is refused 400, and nothing reaches a box. The box must be running.
 
 ### The roster is editable (#764)
 

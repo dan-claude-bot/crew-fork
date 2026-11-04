@@ -619,6 +619,20 @@ case "${1:-}" in
     # shellcheck disable=SC2016  # the patterns are LITERAL fragments of the
     # scripts being matched, not strings to expand: $HOME is the box's.
     case "$script" in
+      *'---CREDENTIALS_SH---'*)                  # the credentials shell (#765)
+        # The header is the first stdin line; the rest is the secret, kept
+        # apart under the state dir so a suite can prove it arrived as stdin
+        # (and grep the calls log for its absence).
+        header="$(head -n1 "$stdin_copy")"
+        tail -n +2 "$stdin_copy" >"$STATEDIR/$name.credential"
+        printf '%s\n' "$header" >>"$STATEDIR/$name.credential-headers"
+        case "$header" in
+          "gh token") echo "gh: set — logged in as ${name}-bot" ;;
+          "agent "*-json) echo "agent: ${header#agent } set ($(roster_agent_of "$name")) — logged in" ;;
+          "agent "*) echo "agent: ${header#agent } set ($(roster_agent_of "$name")) — it cannot be checked locally; the next session is the test" ;;
+          *) echo "credentials: the service is gh or agent — nothing set" >&2; exit 2 ;;
+        esac
+        ;;
       *'destination="$HOME/.crew-engine.tgz"'*) # crew's engine archive upload
         if [ "${STUB_ENGINE_UPLOAD_FAIL:-0}" = 1 ]; then
           exit 1

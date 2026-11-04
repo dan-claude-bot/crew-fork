@@ -277,6 +277,8 @@ source "$HERE/floor/store.sh"
 source "$HERE/floor/server.sh"
 # shellcheck source=floor/actions.sh
 source "$HERE/floor/actions.sh"
+# shellcheck source=floor/credentials.sh
+source "$HERE/floor/credentials.sh"
 # shellcheck source=floor/ping.sh
 source "$HERE/floor/ping.sh"
 # Reachability transitions ride the ping tier and are asserted last, after the

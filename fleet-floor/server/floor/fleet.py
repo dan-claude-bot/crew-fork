@@ -207,6 +207,11 @@ class Fleet:
             "ping_interval": PING_INTERVAL_S,
             "units": [u for u in units if u],
             "polling": True,
+            # When the inventory was read (#763 round 9): a box this poll saw
+            # stopped or absent drops a heartbeat older than that reading — the
+            # ping map is replaced once a round, so a box stopped mid-round
+            # kept its last answer for up to a ping interval.
+            "states_at": now,
         }
         with self.lock:
             self.snapshot = snap
@@ -328,8 +333,13 @@ class Fleet:
 
         now = time.time()
         units = []
+        states_at = snap.get("states_at") or 0
         for u in snap.get("units", []):
             p = pings.get(u["box"])
+            if p is not None and p["ts"] < states_at and (
+                    u.get("note", "").startswith("stopped")
+                    or u.get("note", "").startswith("not created")):
+                p = None
             if p is None:
                 units.append(u)
                 continue

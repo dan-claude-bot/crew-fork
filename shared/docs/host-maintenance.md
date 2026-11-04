@@ -309,6 +309,50 @@ logged in, not hired, or still over `CREW_RESET_CUT_MAX_USED_PCT` of its disk
 after the on-demand reaper has run. `crew help reset` has all of them. Re-cut
 attended, read what it says, and repair what it names before you reset.
 
+## Credentials — set, never read (#765)
+
+A member works on two logins: its GitHub identity (`gh`) and its agent's.
+Both are SET from the host and never read back:
+
+```bash
+crew login builder-1 gh                     # a PAT on stdin (or typed, not echoed)
+crew login builder-1 agent                  # the profile's first kind
+crew login builder-1 agent api-key          # a named kind
+crew login triage-1 agent credentials-json < ~/Downloads/.credentials.json
+```
+
+or the floor's **Credentials** overlay, which runs the same shell
+(`shared/lib/host/credentials.sh`). The kinds are each agent profile's
+`AGENT_CRED_KINDS`:
+
+| agent | kinds |
+|---|---|
+| claude | `oauth-token` (from `claude setup-token`), `api-key`, `credentials-json` |
+| codex | `api-key` (through `codex login --with-api-key`), `auth-json` |
+| grok | `api-key`, `auth-json` |
+| kimi | `credentials-json` |
+
+- **Where the secret goes.** It travels as stdin into `box exec` and nowhere
+  else: never argv, a log line, the journal, the reply or a file on the
+  host.
+- **Where it lands.** In the box it lands 0600 where the CLI reads it. An env
+  kind goes into `~/.config/crew/credentials.env`, which `tick.sh` and every
+  login shell source.
+- **One kind at a time.** The kind set last is the one that stands: setting
+  any kind removes the agent's other env kinds, so an old token never shadows
+  a new login.
+- **The reply.** It is the box's own verdict: the gh login it now answers as,
+  or the profile's local reading of the agent (logged in, not logged in, or
+  cannot be checked locally). A degraded box re-probes auth every tick, so it
+  heals on the next one.
+- **The journal.** `<config>/.credentials-journal.log` records who set which
+  kind for which member, and the verdict. It never records the value.
+- **The weekly reset.** It carries the live credential files across the
+  restore, read off the running box after the drain and written back once
+  the restored box answers, through the host's memory only. A box that was
+  already stopped cannot be read, and the reset says the checkpoint's
+  credentials came back.
+
 ## The host tick — `crew tick` (#759)
 
 A board the host cannot read holds every idle stop for that tick — a blind

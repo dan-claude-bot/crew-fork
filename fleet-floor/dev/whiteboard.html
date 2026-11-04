@@ -176,6 +176,12 @@ input.woff{color:#5a6a80}
 .rosst{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#5a6a80;margin-top:3px}
 .rosst.new{color:#f7bd4e}
 .rosdrop{color:#ff8a7c;border-color:#3a1c1c}
+#credov{display:none;position:fixed;inset:0;z-index:60;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
+#credov .logbox{display:flex;flex-direction:column;width:min(980px,94vw);max-height:86vh;background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
+#credov .regbody{flex:1;overflow:auto;padding:14px}
+#credov .rosin+.rosin{margin-top:4px}
+.credverdict{text-transform:none;letter-spacing:0;font-size:10px;color:#5fce9b}
+.credverdict.bad{color:#ff8a7c}
 .regblk{margin-bottom:16px}
 .regblk:last-child{margin-bottom:0}
 .regpath{font-family:var(--mono);font-size:9.5px;color:#46566a;margin:3px 0 6px;word-break:break-all}
@@ -328,7 +334,8 @@ body { margin: 0; background: #05080f; color: #cfe0f2; font-family: var(--mono);
         a change to what the whole fleet watches. The per-box half is in the
         box's own console, beside every other per-box control. --><button class="gbtn" id="g-reg">⛭ Registries</button><!--
         The fleet's definition itself (#764): one line per box,
-        edited here the way the registries are. --><button class="gbtn" id="g-roster">☰ Roster</button></span></div>
+        edited here the way the registries are. --><button class="gbtn" id="g-roster">☰ Roster</button><!--
+        Each member's logins (#765): set here, never read back. --><button class="gbtn" id="g-creds">🔑 Credentials</button></span></div>
       <div class="olist" id="opslist"></div>
     </div>
     <div class="obox met">
@@ -2190,7 +2197,7 @@ function goLive(){
     b.textContent="◈ LIVE";b.classList.add("live");
     b.title="Live telemetry — every box polled from the operator host over 'box exec'.";
   });
-  ["g-start","g-stop","g-wake","g-reg","g-roster","a-pause","a-restart","c-send"].forEach(function(id){
+  ["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","a-pause","a-restart","c-send"].forEach(function(id){
     var e=document.getElementById(id);if(e){e.classList.remove("woff");e.title="";}
   });
   var cin=document.getElementById("c-in");
@@ -6886,7 +6893,7 @@ for(var _sd=0;_sd<6;_sd++)tickerEvent();
    controls stay shown-but-disabled. Serving the page with `crew floor` is what
    turns them on — goLive() clears every .woff below. */
 var CTL_TIP="Open this page with `crew floor` — a served page drives the boxes from the host.";
-if(!LIVE){["g-start","g-stop","g-wake","g-reg","g-roster","a-pause","a-restart","c-send"].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.add("woff");e.title=CTL_TIP;}});var cin=document.getElementById("c-in");if(cin){cin.disabled=true;cin.classList.add("woff");cin.placeholder="Messaging needs a served page — run: crew floor";}}
+if(!LIVE){["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","a-pause","a-restart","c-send"].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.add("woff");e.title=CTL_TIP;}});var cin=document.getElementById("c-in");if(cin){cin.disabled=true;cin.classList.add("woff");cin.placeholder="Messaging needs a served page — run: crew floor";}}
 /* Fleet-wide actions. "Start/Stop all" are box lifecycle, not a mood: they
    power the roster's boxes up and down. "Wake silent" resumes a paused crontab
    and starts a stopped box — it does NOT start a model session, because a box
@@ -6895,6 +6902,7 @@ document.getElementById("g-start").addEventListener("click",function(){if(!LIVE)
 document.getElementById("g-stop").addEventListener("click",function(){if(!LIVE)return;if(confirm("Stop every roster box? Running sessions are lost."))cmd("stop-all");});
 document.getElementById("g-reg").addEventListener("click",function(){openRegistries("");});
 document.getElementById("g-roster").addEventListener("click",function(){openRoster();});
+document.getElementById("g-creds").addEventListener("click",function(){openCreds();});
 document.getElementById("g-wake").addEventListener("click",function(){if(!LIVE)return;cmd("wake-silent");});
 setInterval(tickOps,1000);setInterval(updateCurrent,1000);
 /* The access panel is re-rendered on every poll, so its buttons are handled by
@@ -7222,6 +7230,86 @@ function onRosterClick(e){
             from:tr.querySelector('[data-k="from"]').value.trim()};
   });
   return cmd("roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});
+}
+/* ---- Credentials (#765) ------------------------------------------------------
+   SET, NEVER READ. A member's GitHub login and its agent's login are written
+   from here through the one credentials shell the CLI's login verb runs: the secret
+   leaves this page once, in the POST body, and the field is cleared before the
+   reply is read. Nothing on the page — no endpoint, no row, no reply — can show
+   a credential back; what a row shows is the poll's own reading (gh and the
+   vendor: flowing, missing, stale, waiting) and, after a set, the box's
+   verdict on it. */
+var CREDS_OPTS={members:[]};
+function openCreds(){
+  if(!LIVE){setStatus("credentials are live-only — run the collector to set them",true);return;}
+  setStatus("reading the credential kinds…",false);
+  api("/api/credentials").then(function(r){
+    if(!r||!r.members){setStatus("could not read the credential kinds",true);return;}
+    var ov=document.getElementById("credov");
+    if(!ov){
+      ov=document.createElement("div");ov.id="credov";
+      ov.innerHTML='<div class="logbox"><div class="loghd"><span id="credttl"></span><button id="credx">✕ close</button></div><div class="regbody" id="credbody"></div></div>';
+      document.body.appendChild(ov);
+      ov.addEventListener("click",function(e){if(e.target===ov||e.target.id==="credx")closeCreds();});
+      document.getElementById("credbody").addEventListener("click",onCredsClick);
+      document.getElementById("credbody").addEventListener("change",onCredsChange);
+    }
+    CREDS_OPTS={members:r.members};
+    document.getElementById("credttl").textContent="credentials · set, never read back";
+    var units={};((LIVEMETA&&LIVEMETA.units)||[]).forEach(function(u){units[u.box]=u;});
+    document.getElementById("credbody").innerHTML=
+      '<div class="regnote">A member\'s GitHub token (one identity per box) and its agent\'s login. '
+      +'The value goes to the box once, as the input of the same shell the CLI\'s login verb runs, lands where its CLI reads it (0600), and is never shown, logged or kept on the host. '
+      +'A row shows what the last poll read (<b>flowing</b>, <b>missing</b>, <b>stale</b>, <b>waiting</b>) and, after Set, the box\'s own verdict. '
+      +'The box must be running. Each set is journalled by who and which kind — never the value.</div>'
+      +'<table class="rostbl"><thead><tr><th>box</th><th>reads</th><th>set</th><th></th></tr></thead><tbody id="credlist">'
+      +r.members.map(function(m){return credsRow(m,units[m.box]);}).join('')
+      +'</tbody></table>';
+    ov.style.display="flex";
+    setStatus("credentials: "+r.members.length+" member"+(r.members.length===1?"":"s"),false);
+  }).catch(function(){setStatus("could not read the credential kinds",true);});
+}
+function credsKinds(m,svc){return (m.services&&m.services[svc])||[];}
+function credsKindOptions(m,svc){return credsKinds(m,svc).map(function(k){return '<option>'+esc(k)+'</option>';}).join('');}
+function credsRow(m,u){
+  var gh=u?(u.gh||"unknown"):"no box",ven=u?(u.vendor||"unknown"):"no box";
+  var agentKinds=credsKinds(m,"agent");
+  return '<tr class="credrow" data-box="'+esc(m.box)+'">'
+    +'<td>'+esc(m.box)+'<div class="rosst">'+esc(m.agent)+'</div></td>'
+    +'<td><div class="rosst">gh: '+esc(gh)+'</div><div class="rosst">'+esc(m.agent)+': '+esc(ven)+'</div></td>'
+    +'<td><select class="rosin" data-k="service"><option value="gh">gh</option>'+(agentKinds.length?'<option value="agent">'+esc(m.agent)+'</option>':'')+'</select>'
+    +'<select class="rosin" data-k="kind">'+credsKindOptions(m,"gh")+'</select>'
+    +'<input class="rosin" data-k="secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="paste — never shown again">'
+    +'<div class="rosst credverdict"></div></td>'
+    +'<td><button class="lbtn" data-cred="set">Set</button></td></tr>';
+}
+function closeCreds(){
+  var ov=document.getElementById("credov");if(!ov)return;
+  /* Closing forgets what was typed: a value left in a hidden field is a value
+     the next person at this browser can reveal. */
+  [].forEach.call(ov.querySelectorAll('[data-k="secret"]'),function(i){i.value="";});
+  ov.style.display="none";
+}
+function onCredsChange(e){
+  var sel=e.target.closest('[data-k="service"]');if(!sel)return;
+  var tr=sel.closest("tr"),m=CREDS_OPTS.members.filter(function(x){return x.box===tr.dataset.box;})[0];
+  if(m)tr.querySelector('[data-k="kind"]').innerHTML=credsKindOptions(m,sel.value);
+}
+function onCredsClick(e){
+  var b=e.target.closest("[data-cred]");if(!b)return;
+  var tr=b.closest("tr"),box=tr.dataset.box,inp=tr.querySelector('[data-k="secret"]');
+  var svc=tr.querySelector('[data-k="service"]').value,kind=tr.querySelector('[data-k="kind"]').value;
+  var secret=inp.value,out=tr.querySelector(".credverdict");
+  if(!secret.trim()){setStatus("credentials-set: paste the value first — nothing set",true);return;}
+  /* Cleared BEFORE the request resolves: whatever the box answers, the value
+     is not on this page any more. */
+  inp.value="";
+  out.textContent="setting…";
+  return cmd("credentials-set",{box:box,service:svc,kind:kind,secret:secret}).then(function(r){
+    secret="";
+    out.textContent=(r&&(r.verdict||r.error))||"no answer";
+    out.classList.toggle("bad",!(r&&r.ok));
+  });
 }
 document.getElementById("filters").addEventListener("click",function(e){var b=e.target.closest(".fchip");if(!b)return;var f=b.dataset.f;floorFilter[f]=b.dataset.v;[].forEach.call(this.querySelectorAll('.fchip[data-f="'+f+'"]'),function(x){x.classList.toggle("on",x===b);});});
 /* Pause/Resume is the box's crontab, not its power: the engine stops being

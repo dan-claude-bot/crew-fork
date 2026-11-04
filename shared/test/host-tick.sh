@@ -195,10 +195,20 @@ case "$cmd" in
   down)  echo "down $1" >>"$HT_STATE/calls"; echo stopped >"$HT_STATE/$1.state" ;;
   exec)
     name="$1"; script="${*: -1}"
-    cat >/dev/null
+    case "$script" in *'---CREDENTIALS_SH---'*) ;; *) cat >/dev/null ;; esac
     [ "$(state_of "$name")" = running ] || { echo "Error: instance is not running" >&2; exit 1; }
     case "$script" in
       true) exit 0 ;;
+      # The credentials shell (#765): the header is logged, the secret kept
+      # apart — it must arrive as stdin and nowhere else.
+      *'---CREDENTIALS_SH---'*)
+        IFS= read -r header; cat >"$HT_STATE/$name.secret"
+        echo "login $name $header" >>"$HT_STATE/calls"
+        case "$header" in
+          "gh token") echo "gh: set — logged in as dan-claude-bot" ;;
+          "agent oauth-token") echo "agent: oauth-token set (claude) — it cannot be checked locally; the next session is the test" ;;
+          *) echo "credentials: nothing set" >&2; exit 2 ;;
+        esac ;;
       # The probe first: its file list names .idle-ticks and .wake-reason too.
       *'echo "::logstart"'*) echo "drain $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.record" ;;
       *'.wake-reason'*) echo "wake $name $(printf '%s' "$script" | sed -n "s/.*printf '%s\\\\n' '\([^']*\)'.*/\1/p")" >>"$HT_STATE/calls" ;;
@@ -403,6 +413,29 @@ t store-a-hold-without-a-store-is-3 3 "$(CREW_CONFIG_DIR="$CONF" CREW_FLOOR_STOR
 t store-a-hold-never-creates-a-store 0 "$([ -e "$TMP/no-store/fleet.sqlite" ] && echo 1 || echo 0)"
 t probe-ships-the-marker 1 "$(grep -cF '/.memory-pending; do' "$ROOT/fleet-floor/server/probe.sh")"
 t store-peaks-without-sessions-is-1 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" peaks --box alpha >/dev/null 2>&1; echo $?)"
+
+# ── #765 — crew login: a credential set from stdin, never read back ──────────
+echo running >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; : >"$STATE/calls"
+OUT="$(printf 'ghp_SECRETTOKEN\n' | run_crew login alpha gh 2>&1)"; RC=$?
+t login-gh-sets-and-says-the-login 0 "$RC"
+t login-the-verdict-is-the-boxs "  alpha: gh: set — logged in as dan-claude-bot" "$OUT"
+t login-the-header-names-service-and-kind 1 "$(grep -c '^login alpha gh token$' "$STATE/calls")"
+t login-the-secret-arrives-as-stdin ghp_SECRETTOKEN "$(cat "$STATE/alpha.secret")"
+t login-the-secret-is-in-no-argv 0 "$(grep -c SECRETTOKEN "$STATE/calls")"
+t login-the-journal-names-who-and-what 1 "$(grep -c ' actor=cli:.* box=alpha service=gh kind=token ok=yes verdict=gh: set — logged in as dan-claude-bot$' "$CONF/.credentials-journal.log")"
+t login-the-journal-never-holds-the-secret 0 "$(grep -c SECRETTOKEN "$CONF/.credentials-journal.log")"
+OUT="$(printf 'sk-ant-oat01-SECRETAGENT\n' | run_crew login alpha agent 2>&1)"; RC=$?
+t login-an-agent-defaults-to-its-first-kind 1 "$(grep -c '^login alpha agent oauth-token$' "$STATE/calls")"
+t login-an-agent-verdict-is-said 0 "$RC"
+OUT="$(printf 'x\n' | run_crew login alpha agent cookie 2>&1)"; RC=$?
+t login-a-kind-the-agent-does-not-take-is-a-usage-error 2 "$RC"
+t login-the-refusal-lists-the-kinds 1 "$(grep -c 'agent on alpha takes: oauth-token api-key credentials-json' <<<"$OUT")"
+OUT="$(printf 'x\n' | run_crew login beta gh 2>&1)"; RC=$?
+t login-a-stopped-box-is-refused 1 "$RC"
+t login-a-stopped-box-is-said 1 "$(grep -c 'beta is not running — start it first' <<<"$OUT")"
+OUT="$(printf '\n' | run_crew login alpha gh 2>&1)"; RC=$?
+t login-nothing-read-sets-nothing 1 "$RC"
+t help-names-login 1 "$(run_crew help 2>&1 | grep -c "^  login  *Set a member's GitHub or agent credential")"
 
 # --- wiring pins ----------------------------------------------------------------
 t crontab-example-runs-the-host-tick 1 "$(grep -c 'crew tick' "$ROOT/shared/host-crontab.example")"

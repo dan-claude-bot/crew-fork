@@ -18,6 +18,7 @@ from floor.fleet import Fleet
 from floor.ping import PING_INTERVAL_S, log, run
 from floor.registry import snapshot as registry_snapshot
 from floor.roster import CONFIG_DIR, read_roster, require_operator_config, roster_snapshot
+from floor.credentials import credentials_snapshot
 
 # --------------------------------------------------------------------------
 # HTTP
@@ -104,6 +105,11 @@ class Handler(BaseHTTPRequestHandler):
             # visible with no floor restart (#488 D4).
             return self.send_json(200, registry_snapshot(
                 [u["box"] for u in read_roster()]))
+
+        if path == "/api/credentials":
+            # Which kinds each member's agent takes (#765) — never a
+            # credential: there is no endpoint that reads one back.
+            return self.send_json(200, credentials_snapshot())
 
         if path == "/api/roster":
             # Read fresh on every request, as the registries are: what the

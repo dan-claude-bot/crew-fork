@@ -163,7 +163,16 @@ case "$cmd" in
     current="running"
     [ ! -s "$state_dir/state-$name" ] || current="$(cat "$state_dir/state-$name")"
     [ "$current" != stopped ] || exit 1
-    if [[ "$script" == *'flock -n "$lock"'* ]]; then
+    if [[ "$script" == *'---CREDENTIALS_EXPORT_SH---'* ]]; then
+      # The live credentials the reset carries (#765): an opaque line out...
+      printf 'creds-export %s\n' "$name" >>"$calls"
+      [ "$name" != "${RST_CREDS_EXPORT_FAIL:-}" ] || exit 1
+      printf 'Q1JFRFMtJHtuYW1lfQ==\n'
+    elif [[ "$script" == *'---CREDENTIALS_IMPORT_SH---'* ]]; then
+      # ...and the same line back in, on the restored disk.
+      printf 'creds-import %s %s\n' "$name" "$(cat)" >>"$calls"
+      echo "carried 2"
+    elif [[ "$script" == *'flock -n "$lock"'* ]]; then
       probe="$state_dir/probe-$name"
       value="${RST_PROBE_DEFAULT:-idle:0}"
       if [ -s "$probe" ]; then
@@ -672,6 +681,16 @@ t reset-memory-leaves-continuations-out 0 "$(tar -tf "$STATE/memory-alpha.tar" 2
 # box's marker expired cannot prune the store to the checkpoint's copy.
 reset_hold() { CREW_CONFIG_DIR="$CONF" python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import store; c = store.connect(readonly=True); print(c.execute("SELECT COUNT(*) FROM meta WHERE key=?", ("memory-hold:" + sys.argv[2],)).fetchone()[0])' "$ROOT/fleet-floor/server/floor" "$1"; }
 t reset-a-written-back-memory-lifts-the-stores-hold 0 "$(reset_hold alpha)"
+# Its live credentials cross the restore (#765): read off the running box
+# after the drain and before the stop, written back once it answers again —
+# before the memory, through the host's memory and never its disk.
+t reset-credentials-are-read-before-the-stop 1 \
+  "$(awk '/^creds-export alpha/{e=NR} /^down alpha/{d=NR} END{print (e && d && e<d) ? 1 : 0}' "$STATE/calls")"
+t reset-credentials-go-back-after-the-start 1 \
+  "$(awk '/^start alpha/{s=NR} /^creds-import alpha Q1JFRFMtJHtuYW1lfQ==$/{i=NR} END{print (s && i && i>s) ? 1 : 0}' "$STATE/calls")"
+case "$OUT" in *"alpha: its live credentials carried across the restore (2 file(s))"*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-the-carry-is-said said "$r1"
+t reset-the-credentials-never-touch-the-hosts-disk 0 "$(grep -rl 'Q1JFRFMtJHtuYW1lfQ==' "$CONF" 2>/dev/null | grep -c .)"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-restore-is-reported reported "$r1"
 # The memory's return lifts `.memory-pending` in the same locked step that
@@ -713,6 +732,15 @@ case "$OUT" in *'the store HOLDS its memory until a reset writes it back'*'re-ru
 t reset-a-failed-write-back-names-the-hold-and-its-exit said "$r1"
 CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
 t reset-the-hold-is-released-by-its-verb 0 "$(reset_hold alpha)"
+# Credentials that cannot be read are said, and nothing is written back.
+reset_case
+arm alpha
+capture reset --cut alpha
+: >"$STATE/calls"
+RST_CREDS_EXPORT_FAIL=alpha capture reset alpha
+case "$OUT" in *"alpha: NOTE — its live credentials could not be read; the checkpoint's come back with the restore"*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-unread-credentials-are-said said "$r1"
+t reset-unread-credentials-write-nothing-back 0 "$(calls_of 'creds-import')"
 # The checkpoint carries the marker: set before the snapshot, lifted after it.
 reset_case
 arm alpha

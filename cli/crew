@@ -53,6 +53,9 @@ source "$CREW_ROOT/shared/lib/common/tick-health.sh"
 source "$CREW_ROOT/shared/lib/host/wake.sh"
 # shellcheck source=shared/lib/host/pause.sh
 source "$CREW_ROOT/shared/lib/host/pause.sh"
+# The credentials shell (#765): set from the host, never read back.
+# shellcheck source=shared/lib/host/credentials.sh
+source "$CREW_ROOT/shared/lib/host/credentials.sh"
 ROLES_DIR="$CREW_ROOT/shared/conf/roles"
 AGENTS_DIR="$CREW_ROOT/shared/conf/agents"
 
@@ -481,6 +484,7 @@ CMDS=(
   "tick^[--dry-run]^The host tick: read each board once, start a box only for work its member owns, stop an idle one^cmd_tick"
   "pause^<box>^Keep a box off: the host tick never starts it, and its own cron is commented until resume^cmd_pause"
   "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
+  "login^<box> gh|agent [<kind>]^Set a member's GitHub or agent credential from stdin: write-only, never read back^cmd_login"
   "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
   "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
@@ -577,19 +581,21 @@ THE LIFECYCLE — two verbs around one human step in the middle
           blank at the role profile's size, then rig converges it into its
           agent's <agent>-box role (the vendor CLI). It has no engine and no
           cron: it does nothing at all until it is hired.
-  login   BY HAND, once per box, ever. 'crew auth' was removed until the
-          fleet is proven — vendor logins are flaky and half-automating a
-          step you still babysit buys a second thing to debug:
-              box shell <box>      # then, inside the box:
-              gh auth login        # a NEW identity — one box per identity
-              <the agent profile's login hint — see 'crew profiles'>
+  login   Once per box, and again whenever a credential expires or
+          rotates — set, never read back (#765). A token or key on stdin:
+              crew login <box> gh                 # a PAT — one identity per box
+              crew login <box> agent [<kind>]     # the kinds its profile takes
+          or the floor's Credentials overlay, which runs the same shell.
+          The interactive way still works: box shell <box>, then
+          gh auth login and <the agent profile's login hint>.
           'crew status' and 'crew up' report who still owes this.
   hire    crew hire / crew hire-all — the box joins the crew: engine
           installed at this tree's version, cron armed, on duty at the next
           five-minute boundary. An idempotent upsert.
 
   A fleet from scratch: install box and crew, 'crew create-all', log each box
-  in by hand, 'crew hire-all'. Steady state afterwards is just 'crew up'.
+  in ('crew login', or the floor), 'crew hire-all'. Steady state afterwards is
+  just 'crew up'.
 
 ENVIRONMENT
   CREW_CONFIG_DIR   Select one fleet definition directory. An invalid value
@@ -1112,6 +1118,12 @@ cmd_uninstall() {
 # each call site had to remember, and the two that forgot were the two in
 # roster loops.
 bxn() { box exec "$1" -- bash -lc "$2" </dev/null; }
+
+# bxpipe BOX SCRIPT DATA — the one exec site whose stdin is DATA, piped from
+# this shell (#765): a credential to set, the credentials a reset carries.
+# Never the caller's stdin — inside a roster loop that would drain the roster
+# — and never a file: DATA crosses the host in memory only.
+bxpipe() { printf '%s' "$3" | box exec "$1" -- bash -lc "$2"; }
 
 # bxput is the one other stdin-bearing box channel: atomically stage one host
 # file without requiring it to be tracked by git in the box's checkout.
@@ -2474,7 +2486,7 @@ hire_box() {
   if bxn "$name" 'gh auth status >/dev/null 2>&1'; then
     echo "$name: hired — on duty at the next 5-minute boundary"
   else
-    echo "$name: hired but NOT authenticated — it idles loudly until you log it in: box shell $name → gh auth login"
+    echo "$name: hired but NOT authenticated — it idles loudly until you log it in: crew login $name gh (a token on stdin), or the floor's Credentials"
   fi
 }
 
@@ -2569,12 +2581,12 @@ cmd_create_all() {
   done < <(read_roster)
   echo
   if [ "$failed" -eq 0 ] && [ "$existing" -eq 0 ]; then
-    echo "$made created. Next: log each new box in by hand (box shell <box> → gh auth login; the worst part,"
+    echo "$made created. Next: log each new box in (crew login <box> gh and crew login <box> agent, or the floor's Credentials;"
   else
     echo "create-all: $made created, $existing existing, $failed failed${failed_names:+ ($failed_names)}."
-    echo "Next: log each new box in by hand (box shell <box> → gh auth login; the worst part,"
+    echo "Next: log each new box in (crew login <box> gh and crew login <box> agent, or the floor's Credentials;"
   fi
-  echo "halved: GitHub is automated), then 'crew hire-all'."
+  echo "a token or key on stdin, never read back), then 'crew hire-all'."
   if [ "$failed" -ne 0 ]; then return 1; fi
 }
 
@@ -2816,7 +2828,7 @@ cmd_up() {
       if bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then
         echo "  $name: logged in"
       else
-        echo "  $name: AWAITING LOGIN  (box shell $name → gh auth login)"
+        echo "  $name: AWAITING LOGIN  (crew login $name gh, or the floor's Credentials)"
       fi
     done < <(read_roster)
     echo
@@ -3694,7 +3706,7 @@ cut_box() { # NAME
 # reason: a stop that does not take must never be followed by anything, and
 # here "anything" includes rolling a running box's disk out from under it.
 restore_box() { # NAME
-  local name="$1" recorded stale live state why pstate hold_rc stopped_here=0
+  local name="$1" recorded stale live state why pstate hold_rc stopped_here=0 creds="" creds_read=0
   case "$(has_reset_checkpoint "$name"; echo $?)" in
     2)
       echo "  $name: REFUSED — could not read its snapshot labels; a reset is not performed on an unverified box"
@@ -3762,6 +3774,17 @@ restore_box() { # NAME
       echo "  $name: REFUSED — drain failed ($(printf '%s' "$drain_out" | tail -1)); a box whose evidence the store does not hold is not reset"
       return 1
     fi
+    # ITS LIVE CREDENTIALS CROSS THE RESET (#765). The checkpoint holds the
+    # logins of the day it was cut; one set or rotated since (crew login, the
+    # floor) would go back to that copy — revoked, or past its refresh date.
+    # Read off the live disk into this shell's memory, never the host's disk,
+    # and written back once the restored box answers.
+    if creds="$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r\n')"; then
+      creds_read=1
+    else
+      creds=""
+      echo "  $name: NOTE — its live credentials could not be read; the checkpoint's come back with the restore"
+    fi
     if ! box down "$name" </dev/null; then
       echo "  $name: FAILED — stop command failed; nothing restored"
       return 1
@@ -3778,6 +3801,8 @@ restore_box() { # NAME
   # and a full pull of the restored disk past that — a retried reset's drain,
   # the tick's stop, a floor poll — would prune the store to the checkpoint's
   # week-old copy, which the retry would then write back as "restored".
+  [ "$stopped_here" -eq 1 ] \
+    || echo "  $name: NOTE — it was stopped, so its live credentials could not be read; the checkpoint's come back with the restore"
   # No store at all (3) holds nothing and is said where the export fails.
   hold_rc=0
   store_py memory-hold --box "$name" >/dev/null 2>&1 || hold_rc=$?
@@ -3807,6 +3832,16 @@ restore_box() { # NAME
     echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
+  if [ "$creds_read" -eq 1 ] && [ -n "$creds" ]; then
+    local carried
+    if carried="$(bxpipe "$name" "$(host_credentials_import_sh)" "$creds" 2>/dev/null | tr -d '\r' | tail -1)" \
+       && [ "${carried#carried }" != "$carried" ]; then
+      echo "  $name: its live credentials carried across the restore (${carried#carried } file(s))"
+    else
+      echo "  $name: NOTE — its live credentials did not come back across the restore; it runs on the checkpoint's (set them again: crew login $name gh|agent)"
+    fi
+  fi
+  creds=""
   if ! reset_restore_memory "$name"; then
     echo "  $name: FAILED — restored to $RESET_LABEL and started, but its memory did not come back from the store (above); its ticks run without it once the box's own grace passes (MEMORY_PENDING_GRACE_S) — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
@@ -4613,6 +4648,48 @@ cmd_resume() {
   else
     echo "  $b: resumed on the host (box not running; the host tick may start it again)"
   fi
+}
+
+# --- login (#765) ---------------------------------------------------------------
+# A member's credential, SET and never read: the secret is read from stdin (or
+# without echo from a terminal), handed to the box as stdin of the one
+# credentials shell the floor's button runs too, and forgotten. The reply is
+# the box's verdict; the journal says who set which kind, never the secret.
+cmd_login() {
+  max_args login 3 "$@"
+  local b="${1:-}" svc="${2:-}" kind="${3:-}" agent kinds secret verdict rc=0
+  { [ -n "$b" ] && [ -n "$svc" ]; } || usage_error "usage: $(synopsis_of login)"
+  need_box
+  require_operator_config "crew login"
+  box_exists "$b" || die "no box named '$b' — 'crew status' lists the roster"
+  read -r agent _ <<<"$(roster_line "$b")"
+  case "$svc" in
+    gh) kind="${kind:-token}"; kinds=token ;;
+    agent)
+      kinds="$(credentials_kinds "$agent")"
+      [ -n "$kinds" ] || die "$b runs '$agent', whose profile declares no credential the host may set"
+      kind="${kind:-${kinds%% *}}" ;;
+    *) usage_error "the service is gh or agent (usage: $(synopsis_of login))" ;;
+  esac
+  case " $kinds " in *" $kind "*) ;; *) usage_error "$svc on $b takes: $kinds" ;; esac
+  [ "$(box_state "$b")" = running ] || die "$b is not running — start it first (box start $b); a credential is written onto the live box"
+  if [ -t 0 ]; then
+    case "$kind" in *-json) die "a $kind is a file: pipe it in — crew login $b $svc $kind < the-file.json" ;; esac
+    read -rs -p "$b: $svc $kind (not echoed, never read back): " secret; echo >&2
+  else
+    secret="$(cat)"
+  fi
+  [ -n "$secret" ] || die "nothing read — nothing set"
+  verdict="$(bxpipe "$b" "$(host_credentials_set_sh)" "$(printf '%s %s\n%s\n' "$svc" "$kind" "$secret")" 2>&1 \
+    | tr -d '\r' | tail -1)" || rc=$?
+  secret=""
+  [ "$rc" -ne 0 ] || case "$verdict" in *"NOT logged in"*|*refused*|*"nothing set"*) rc=1 ;; esac
+  printf '%s actor=cli:%s box=%s service=%s kind=%s ok=%s verdict=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "${USER:-?}" "$b" "$svc" "$kind" "$([ "$rc" -eq 0 ] && echo yes || echo no)" "${verdict:-none}" \
+    >>"$CONFIG_DIR/.credentials-journal.log" 2>/dev/null \
+    || echo "  $b: NOTE — the credentials journal could not be written ($CONFIG_DIR/.credentials-journal.log)"
+  echo "  $b: ${verdict:-no answer from the box}"
+  [ "$rc" -eq 0 ]
 }
 
 cmd_status() {
