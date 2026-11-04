@@ -738,7 +738,7 @@ arm alpha
 capture reset --cut alpha
 : >"$STATE/calls"
 RST_CREDS_EXPORT_FAIL=alpha capture reset alpha
-case "$OUT" in *"alpha: NOTE — its live credentials could not be read; the checkpoint's come back with the restore"*) r1=said ;; *) r1="$OUT" ;; esac
+case "$OUT" in *"alpha: NOTE — its live credentials could not be read ("*"); the checkpoint's come back with the restore"*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-unread-credentials-are-said said "$r1"
 t reset-unread-credentials-write-nothing-back 0 "$(calls_of 'creds-import')"
 # A start that fails after the restore says the carried credentials did not go

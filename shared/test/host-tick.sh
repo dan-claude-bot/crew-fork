@@ -201,7 +201,8 @@ case "$cmd" in
       true) exit 0 ;;
       # The credentials shell (#765): the header is logged, the secret kept
       # apart — it must arrive as stdin and nowhere else.
-      *'---CREDENTIALS_EXPORT_SH---'*) cat "$HT_STATE/$name.creds-export" 2>/dev/null; exit 0 ;;
+      *'---CREDENTIALS_EXPORT_SH---'*)
+        if [ -f "$HT_STATE/$name.creds-export" ]; then cat "$HT_STATE/$name.creds-export"; else echo "CREDS1 - -"; fi; exit 0 ;;
       *'---CREDENTIALS_SH---'*)
         IFS= read -r header; cat >"$HT_STATE/$name.secret"
         echo "login $name $header" >>"$HT_STATE/calls"
@@ -455,6 +456,15 @@ echo running >"$STATE/alpha.state"; printf 'a banner\nCREDS1 Q1JFRFM= -\n' >"$ST
 OUT="$(run_crew gold alpha 2>&1)"; RC=$?
 t gold-an-agent-credential-refuses-the-cut 1 "$RC"
 t gold-the-refusal-names-it 1 "$(grep -c 'alpha holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login' <<<"$OUT")"
+# A box whose export answered nothing (a login shell that died first), or
+# said it could not read, is not a gold's to judge either (round 14).
+: >"$STATE/alpha.creds-export"
+OUT="$(run_crew gold alpha 2>&1)"; RC=$?
+t gold-a-box-that-answers-nothing-refuses-the-cut 1 "$RC"
+t gold-...-said-as-could-not-tell 1 "$(grep -c 'alpha: could not tell whether it holds credentials' <<<"$OUT")"
+printf 'CREDS-FAIL credentials.env did not read\n' >"$STATE/alpha.creds-export"
+OUT="$(run_crew gold alpha 2>&1)"; RC=$?
+t gold-an-unreadable-env-refuses-the-cut 1 "$RC"
 rm -f "$STATE/alpha.creds-export"
 t help-names-login 1 "$(run_crew help 2>&1 | grep -c "^  login  *Set a member's GitHub or agent credential")"
 

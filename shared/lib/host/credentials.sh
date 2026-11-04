@@ -135,10 +135,15 @@ CREDENTIALS_SH
 }
 
 # host_credentials_export_sh — the member's live credentials, as ONE line on
-# stdout, `CREDS1 <files> <env>` (nothing at all when it has none): <files> is
-# a base64 tar of the credential files (or `-`), <env> the base64 of
-# `NAME base64(value)` lines read from credentials.env in the box's own shell
-# (or `-`). The weekly reset reads it off the running box before the disk
+# stdout, ALWAYS: `CREDS1 <files> <env>` — `CREDS1 - -` when it has none — or
+# `CREDS-FAIL <why>` when they could not be read (round 14: a reply with no
+# such line is never "no credentials"; a login shell that died before this
+# ran answers nothing, and that is a failure to read). <files> is a base64
+# tar of the credential files (or `-`); <env> the base64 of `NAME
+# base64(value)` lines read from credentials.env in the box's own shell, `=`
+# for a credentials.env that is there and EMPTY — what setting a file kind
+# leaves, and what must cross so an older env token does not come back over
+# the new login (round 14) — or `-` for none. The weekly reset reads it off the running box before the disk
 # goes back and writes it after (host_credentials_import_sh), so a credential
 # set or rotated since the checkpoint is not rolled back to it. Nothing is
 # staged on the box's disk — a full disk is what a reset is for (round 13) —
@@ -160,10 +165,10 @@ if [ -f "$envf" ]; then
               for n in $(sed -n 's/^export \([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$envf"); do
                 printf '%s %s\n' "$n" "$(printf '%s' "${!n}" | base64 -w0)"
               done
-              echo "CREDS-END" ) 2>/dev/null )" || { echo "credentials: credentials.env did not read" >&2; exit 1; }
-  case "$pairs" in *CREDS-END) ;; *) echo "credentials: credentials.env did not read whole" >&2; exit 1 ;; esac
+              echo "CREDS-END" ) 2>/dev/null )" || { echo; echo "CREDS-FAIL credentials.env did not read"; exit 1; }
+  case "$pairs" in *CREDS-END) ;; *) echo; echo "CREDS-FAIL credentials.env did not read whole"; exit 1 ;; esac
   pairs="${pairs%CREDS-END}"
-  [ -z "$pairs" ] || env64="$(printf '%s' "$pairs" | base64 -w0)"
+  if [ -n "$pairs" ]; then env64="$(printf '%s' "$pairs" | base64 -w0)"; else env64="="; fi
 fi
 set -- "$HOME/.config/gh/hosts.yml"
 # shellcheck disable=SC1091
@@ -184,10 +189,9 @@ have=()
 for f in "$@"; do [ -f "$f" ] && have+=("${f#/}"); done
 files64="-"
 if [ "${#have[@]}" -gt 0 ]; then
-  files64="$(tar -C / -czf - "${have[@]}" 2>/dev/null | base64 -w0)" || { echo "credentials: the files did not pack" >&2; exit 1; }
-  [ -n "$files64" ] || { echo "credentials: the files did not pack" >&2; exit 1; }
+  files64="$(tar -C / -czf - "${have[@]}" 2>/dev/null | base64 -w0)" || { echo; echo "CREDS-FAIL the files did not pack"; exit 1; }
+  [ -n "$files64" ] || { echo; echo "CREDS-FAIL the files did not pack"; exit 1; }
 fi
-[ "$files64" = - ] && [ "$env64" = - ] && exit 0
 echo
 echo "CREDS1 $files64 $env64"
 # ---END---
@@ -230,7 +234,7 @@ fi
 allow=" "; for f in "$@"; do allow="$allow${f#/} "; done
 # The env data first, all checked before anything is written.
 pairs=""
-if [ "${env64:--}" != - ]; then
+if [ "${env64:--}" != - ] && [ "$env64" != = ]; then
   pairs="$(printf '%s' "$env64" | base64 -d 2>/dev/null)" || { echo "credentials: the env data did not decode — nothing carried" >&2; exit 1; }
   bad="$(printf '%s\n' "$pairs" | grep -cvE '^([A-Z_][A-Z0-9_]* [A-Za-z0-9+/]*=*|)$' || true)"
   if [ "${bad:-0}" -ne 0 ]; then

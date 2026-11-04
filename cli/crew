@@ -1119,6 +1119,14 @@ cmd_uninstall() {
 # roster loops.
 bxn() { box exec "$1" -- bash -lc "$2" </dev/null; }
 
+# credentials_line BOX — the export's one answer off a running box (#765):
+# the LAST `CREDS1 …` or `CREDS-FAIL …` line, so a login banner before it is
+# not the answer; nothing when the box said neither.
+credentials_line() {
+  bxn "$1" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r' \
+    | sed -n 's/^\(CREDS1 .*\|CREDS-FAIL.*\)$/\1/p' | tail -1
+}
+
 # bxpipe BOX SCRIPT DATA — the one exec site whose stdin is DATA, piped from
 # this shell (#765): a credential to set, the credentials a reset carries.
 # Never the caller's stdin — inside a roster loop that would drain the roster
@@ -3779,16 +3787,17 @@ restore_box() { # NAME
     # floor) would go back to that copy — revoked, or past its refresh date.
     # Read off the live disk into this shell's memory, never the host's disk,
     # and written back once the restored box answers.
-    # The LAST `CREDS1 ` line is the payload (a login banner before it is
-    # not); an export that fails — a credentials.env that does not read whole
-    # — is said, never carried in part (round 13).
-    if creds="$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r')"; then
-      creds="$(printf '%s\n' "$creds" | sed -n 's/^\(CREDS1 .*\)$/\1/p' | tail -1)"
-      creds_read=1
-    else
-      creds=""
-      echo "  $name: NOTE — its live credentials could not be read; the checkpoint's come back with the restore"
-    fi
+    # The export always answers one line (credentials_line): `CREDS1 - -` is
+    # nothing to carry; any other `CREDS1` is the payload; `CREDS-FAIL`, or no
+    # line at all, is a failure to read — said, never read as "none" and
+    # never carried in part (rounds 13, 14).
+    creds="$(credentials_line "$name")"
+    case "$creds" in
+      "CREDS1 - -") creds=""; creds_read=1 ;;
+      "CREDS1 "*) creds_read=1 ;;
+      *) echo "  $name: NOTE — its live credentials could not be read (${creds#CREDS-FAIL }); the checkpoint's come back with the restore"
+         creds="" ;;
+    esac
     if ! box down "$name" </dev/null; then
       echo "  $name: FAILED — stop command failed; nothing restored"
       return 1
@@ -5380,9 +5389,13 @@ cmd_gold() {
   # ...and any credential the host can set (#765, round 10): an agent's env
   # kind or login file is a credential before gh is, and the carry's own
   # export is the one list of where they live.
-  if [ -n "$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r' | sed -n 's/^\(CREDS1 .*\)$/\1/p' | tail -1)" ]; then
-    [ "$force" = "--force" ] || die "$name holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login (--force to override)"
-  fi
+  # Only a clean `CREDS1 - -` is "none" (round 14): a credentials.env that
+  # does not read, or a box that answers nothing, is not a gold's to judge.
+  case "$(credentials_line "$name")" in
+    "CREDS1 - -") ;;
+    "CREDS1 "*) [ "$force" = "--force" ] || die "$name holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login (--force to override)" ;;
+    *) [ "$force" = "--force" ] || die "$name: could not tell whether it holds credentials (its credentials could not be read) — golds are cut PRE-login (--force to override)" ;;
+  esac
   local stamp ver
   stamp="$(hired_at "$name")"
   stamp="${stamp:-crew@unknown}"

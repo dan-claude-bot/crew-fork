@@ -237,7 +237,25 @@ rm -f "$SP/.config/crew/credentials.env"
 IMP="$(printf '%s' "$CARRY" | env -i HOME="$SP" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"
 t carry-a-home-with-two-spaces-crosses "carried 1" "$IMP"
 H="$(box_home claude)"
-t carry-a-box-with-none-exports-nothing "" "$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
+t carry-a-box-with-none-answers-none "CREDS1 - -" "$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)" | tail -1)"
+# A login switched from an env token to a credentials file leaves an EMPTY
+# credentials.env, and that crosses as `=` so the checkpoint's token does not
+# come back over the new login (round 14).
+H="$(box_home claude)"
+set_cred "$H" agent oauth-token "sk-ant-oat01-OLD-SECRET17"
+OLDCARRY="$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)" | tail -1)"
+set_cred "$H" agent credentials-json "{\"claudeAiOauth\":{\"accessToken\":\"SECRET18\",\"refreshTokenExpiresAt\":$FUT}}"
+NEWCARRY="$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)" | tail -1)"
+t carry-an-empty-env-crosses-as-present-and-empty "=" "$(printf '%s\n' "$NEWCARRY" | awk '{print $3}')"
+# The checkpoint's disk: the old token back, as a restore would leave it.
+printf '%s' "$OLDCARRY" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" >/dev/null 2>&1
+t carry-the-checkpoint-had-the-old-token 1 "$(grep -c OLD-SECRET17 "$H/.config/crew/credentials.env")"
+IMP="$(printf '%s' "$NEWCARRY" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"
+t carry-the-new-login-stands-after-the-carry 0 "$(grep -c OLD-SECRET17 "$H/.config/crew/credentials.env")"
+t carry-the-env-file-is-there-and-empty 0 "$(grep -c . "$H/.config/crew/credentials.env")"
+# An env file that does not read answers CREDS-FAIL, never "none" (round 14).
+H="$(box_home claude)"; mkdir -p "$H/.config/crew"; printf 'export ANTHROPIC_API_KEY=FAKE-KEY\nif\n' >"$H/.config/crew/credentials.env"
+t carry-an-unreadable-env-says-so "CREDS-FAIL credentials.env did not read" "$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)" | tail -1)"
 
 # --- the engine reads the env kinds; nothing printed a secret ----------------
 # shellcheck disable=SC2016  # the line as tick.sh spells it
