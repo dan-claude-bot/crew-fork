@@ -197,20 +197,28 @@ allow=" "; for f in "$@"; do allow="$allow${f#/} "; done
 arc="$(mktemp "$HOME/.crew-carry.XXXXXX")" || { echo "credentials: no room to stage the archive" >&2; exit 1; }
 trap 'rm -f "$arc"' EXIT
 base64 -d >"$arc" 2>/dev/null || { echo "credentials: the archive did not decode" >&2; exit 1; }
-entries="$(tar -tzvf "$arc" 2>/dev/null)" || { echo "credentials: the archive did not list" >&2; exit 1; }
+# Names listed literally where the tar can (GNU escapes other bytes by
+# default; busybox has no such option and lists them as they are).
+entries="$(tar --quoting-style=literal -tzvf "$arc" 2>/dev/null || tar -tzvf "$arc" 2>/dev/null)" \
+  || { echo "credentials: the archive did not list" >&2; exit 1; }
 names=()
 while IFS= read -r line; do
   [ -n "$line" ] || continue
-  name="$(printf '%s\n' "$line" | awk '{ $1 = $2 = $3 = $4 = $5 = ""; sub(/^ +/, ""); print }')"
+  # The five listing columns cut off as they stand: a field rewrite would
+  # collapse a run of spaces inside the name itself (round 11).
+  name="$(printf '%s\n' "$line" | sed -E 's/^([^ ]+ +){5}//')"
   case "$line" in -*) ;; *) echo "credentials: '$name' is not a regular file — nothing carried" >&2; exit 1 ;; esac
   case "$allow" in *" $name "*) names+=("$name") ;; *) echo "credentials: '$name' is not a credential file — nothing carried" >&2; exit 1 ;; esac
 done <<<"$entries"
 [ "${#names[@]}" -gt 0 ] || { echo "carried 0"; exit 0; }
-# credentials.env is SOURCED by every tick: it crosses as `export NAME=…`
-# lines and comments, or not at all.
+# credentials.env is SOURCED by every tick: it crosses as comments and the
+# lines the credentials shell itself writes — `export NAME=` and a value as
+# `printf %q` quotes it (no bare `$`, backtick or space; `$'…'` for control
+# bytes) — or not at all. Shape AND value: `export A=$(cmd)` is refused
+# (round 11).
 envname="${HOME#/}/.config/crew/credentials.env"
 case " ${names[*]} " in *" $envname "*)
-  bad="$(tar -xzOf "$arc" -- "$envname" 2>/dev/null | grep -cvE '^(export [A-Z_][A-Z0-9_]*=.*|#.*|)$' || true)"
+  bad="$(tar -xzOf "$arc" -- "$envname" 2>/dev/null | grep -cvE "^(export [A-Z_][A-Z0-9_]*=(\\\$'([^'\\\\]|\\\\.)*'|([^\$\`\\\\[:space:]'\"]|\\\\.)*)|#.*|)\$" || true)"
   if [ "${bad:-0}" -ne 0 ]; then
     echo "credentials: credentials.env carries a line that is not an export — nothing carried" >&2; exit 1
   fi ;;

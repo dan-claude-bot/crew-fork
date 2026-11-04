@@ -211,7 +211,9 @@ case "$cmd" in
           *) echo "credentials: nothing set" >&2; exit 2 ;;
         esac ;;
       # Is it hired (the agent half of crew login asks first)?
-      *'test -r ~/duty/conf/instance.conf'*) [ ! -e "$HT_STATE/$name.unhired" ] ;;
+      *'test -r ~/duty/conf/instance.conf'*)
+        [ ! -e "$HT_STATE/$name.mute" ] || exit 1
+        if [ -e "$HT_STATE/$name.unhired" ]; then echo unhired; else echo hired; fi ;;
       # The probe first: its file list names .idle-ticks and .wake-reason too.
       *'echo "::logstart"'*) echo "drain $name" >>"$HT_STATE/calls"; cat "$HT_STATE/$name.record" ;;
       *'.wake-reason'*) echo "wake $name $(printf '%s' "$script" | sed -n "s/.*printf '%s\\\\n' '\([^']*\)'.*/\1/p")" >>"$HT_STATE/calls" ;;
@@ -435,6 +437,10 @@ OUT="$(printf 'sk-x\n' | run_crew login alpha agent 2>&1)"; RC=$?
 t login-an-unhired-box-is-told-the-order 1 "$(grep -c 'alpha is not hired yet — its agent credential is set against the profile hire installs: crew hire alpha, then crew login alpha agent' <<<"$OUT")"
 t login-an-unhired-box-sets-nothing 1 "$RC"
 rm -f "$STATE/alpha.unhired"
+touch "$STATE/alpha.mute"
+OUT="$(printf 'sk-x\n' | run_crew login alpha agent 2>&1)"; RC=$?
+t login-a-box-that-does-not-answer-is-not-called-unhired 1 "$(grep -c 'alpha did not answer — nothing set' <<<"$OUT")"
+rm -f "$STATE/alpha.mute"
 OUT="$(printf 'x\n' | run_crew login alpha agent cookie 2>&1)"; RC=$?
 t login-a-kind-the-agent-does-not-take-is-a-usage-error 2 "$RC"
 t login-the-refusal-lists-the-kinds 1 "$(grep -c 'agent on alpha takes: oauth-token api-key credentials-json' <<<"$OUT")"

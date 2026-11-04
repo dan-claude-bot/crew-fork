@@ -594,4 +594,27 @@ assert held["r"][0] == 200, held
 assert sorted(FLEET_CALLS) == ["box start box-a", "box start box-b", "box start box-c"], FLEET_CALLS
 assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
 
+# Round 11: wake-silent lifts a box's pause marker only inside that box's own
+# claimed call — a box another action holds, and that it leaves alone, keeps
+# its pause.
+MARKERS = {"box-a": True, "box-b": True}
+floor._paused_marker = lambda name, on: MARKERS.__setitem__(name, on)
+floor._paused_marker_set = lambda name: MARKERS.get(name, False)
+floor.box_states = lambda: {n: "stopped" for n in BOXES}
+floor.run = lambda argv, _t, _s=None: (0, "done", "")
+ok_a, _ = INFLIGHT.claim_box("box-a", "pause", "op1")
+assert ok_a
+code, reply = floor.do_command(Fleet(), {"action": "wake-silent"}, actor="op2")
+rows = {r["box"]: r for r in reply["results"]}
+assert rows["box-a"]["step"] == "busy", rows
+assert MARKERS["box-a"] is True, ("a held box lost its pause marker", MARKERS)
+assert MARKERS["box-b"] is False, ("the woken box keeps its marker", MARKERS)
+INFLIGHT.release_box("box-a")
+# ...and a message (which does not claim) never blanks a holder's step.
+INFLIGHT.claim_box("box-c", "restart", "op1")
+INFLIGHT.step("box-c", "down", "restart")
+INFLIGHT.step("box-c", "", "message")
+assert INFLIGHT.snapshot()["boxes"]["box-c"]["step"] == "down", INFLIGHT.snapshot()
+INFLIGHT.release_box("box-c")
+
 print("concurrent fleet actions: ok")

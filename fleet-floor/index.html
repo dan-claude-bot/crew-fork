@@ -1907,7 +1907,21 @@ function repoURL(repo){
   return "https://github.com/"+parts.join("/");
 }
 function apiURL(path){return (location.origin&&location.origin!=="null"?location.origin:"")+path;}
-function api(path,opts){return fetch(apiURL(path),opts||{}).then(function(r){
+/* No request waits forever (round 11): a command's longest server path is a
+   restart's stop and start at the action timeout each, so it is given well
+   past that; a read is given a minute. On the deadline the request is
+   aborted, the promise rejects, and act() releases the control it held. */
+var API_CMD_TIMEOUT_MS=300000, API_READ_TIMEOUT_MS=60000;
+function api(path,opts){
+  opts=Object.assign({},opts||{});
+  var ctl=(typeof AbortController!=="undefined")?new AbortController():null,timer=null;
+  if(ctl&&!opts.signal){
+    opts.signal=ctl.signal;
+    timer=setTimeout(function(){ctl.abort();},opts.method==="POST"?API_CMD_TIMEOUT_MS:API_READ_TIMEOUT_MS);
+  }
+  return apiFetch(path,opts).then(function(j){if(timer)clearTimeout(timer);return j;},function(e){if(timer)clearTimeout(timer);throw e;});
+}
+function apiFetch(path,opts){return fetch(apiURL(path),opts||{}).then(function(r){
   if(r.status===401){throw new Error("unauthorized");}
   /* A partly-failed fleet action answers 500 with the per-box detail in the
      body. Throwing on !ok would discard exactly the part worth showing and
@@ -2217,7 +2231,9 @@ function act(key,action,extra){
   }
   INFL.local[key]={action:action,since:Date.now()/1000,step:"",box:(extra&&extra.box)||""};
   applyBusy();pollActions();
-  var clear=function(){delete INFL.local[key];applyBusy();};
+  /* The finished action's own result line (cmd() wrote it) stays readable for
+     a few seconds before another action's counter may take the line back. */
+  var clear=function(){delete INFL.local[key];INFL.hold=Date.now()+5000;applyBusy();};
   return cmd(action,extra).then(function(r){clear();return r;},function(e){clear();throw e;});
 }
 function setBusy(el,disabled,spinning){
@@ -2267,6 +2283,7 @@ function applyBusy(){
    reads the same at second one and minute three. */
 function busyStatus(){
   var keys=Object.keys(INFL.local);if(!keys.length)return;
+  if(INFL.hold&&Date.now()<INFL.hold)return;
   var now=Date.now()/1000,k=keys[keys.length-1],l=INFL.local[k];
   var srv=k==="fleet"?INFL.server.fleet:(l.box?(INFL.server.boxes||{})[l.box]:null);
   var step=(srv&&srv.step)||"",prog=(k==="fleet"&&srv&&srv.total)?" · "+srv.done+"/"+srv.total+" boxes":"";
@@ -7342,6 +7359,9 @@ function onCredsClick(e){
   inp.value="";
   out.textContent="setting…";
   return act("box:"+box,"credentials-set",{box:box,service:svc,kind:kind,secret:secret}).then(function(r){
+    /* Refused busy before anything was sent (round 11): the value goes back in
+       its field rather than having to be pasted again. */
+    if(r&&r.busy&&!inp.value)inp.value=secret;
     secret="";
     out.textContent=(r&&(r.verdict||r.error))||"no answer";
     out.classList.toggle("bad",!(r&&r.ok));
@@ -7373,9 +7393,14 @@ function sendMsg(){
   /* Busy keeps the prompt where it was typed: refused here, nothing is lost. */
   if(boxBusy(box))return act("box:"+box,"message",{});
   inp.value="";
-  var f=document.getElementById("dfeed");
-  if(f){var el=document.createElement("div");el.className="fev";el.innerHTML='<span class="ago">now</span><span style="color:#5fd6ff">📨 prompt</span><span style="color:#c7d4e4">'+esc(v.slice(0,42))+'</span>';f.insertBefore(el,f.firstChild);}
-  act("box:"+box,"message",{box:box,prompt:v});
+  var f=document.getElementById("dfeed"),el=null;
+  if(f){el=document.createElement("div");el.className="fev";el.innerHTML='<span class="ago">now</span><span style="color:#5fd6ff">📨 prompt</span><span style="color:#c7d4e4">'+esc(v.slice(0,42))+'</span>';f.insertBefore(el,f.firstChild);}
+  act("box:"+box,"message",{box:box,prompt:v}).then(function(r){
+    /* Refused busy by the collector before this page knew (round 11): the
+       prompt goes back where it was typed and the feed row comes off — nothing
+       was sent. A prompt typed meanwhile is not overwritten. */
+    if(r&&r.busy){if(!inp.value)inp.value=v;if(el&&el.parentNode)el.parentNode.removeChild(el);}
+  });
 }
 document.getElementById("c-send").addEventListener("click",sendMsg);
 document.getElementById("c-in").addEventListener("keydown",function(e){if(e.key==="Enter")sendMsg();e.stopPropagation();});

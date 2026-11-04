@@ -37,11 +37,14 @@ class Inflight:
                                 "step": ""}
             return True, None
 
-    def step(self, box, step):
-        """The step a claimed box's action is on (a restart's down, then start)."""
+    def step(self, box, step, action=None):
+        """The step a claimed box's action is on (a restart's down, then
+        start). Only the HOLDER's: a message, which does not claim its box,
+        must not blank the step of the restart that does (round 11)."""
         with self._lock:
-            if box in self._boxes:
-                self._boxes[box]["step"] = step or ""
+            held = self._boxes.get(box)
+            if held is not None and (action is None or held["action"] == action):
+                held["step"] = step or ""
 
     def release_box(self, box):
         with self._lock:

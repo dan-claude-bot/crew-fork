@@ -4687,8 +4687,15 @@ cmd_login() {
   [ -n "$secret" ] || die "nothing read — nothing set"
   # The agent half reads the box's own profile, which `crew hire` installs:
   # before it there is nothing to set it against (round 10).
-  [ "$svc" != agent ] || bxn "$b" 'test -r ~/duty/conf/instance.conf' 2>/dev/null \
-    || die "$b is not hired yet — its agent credential is set against the profile hire installs: crew hire $b, then crew login $b agent"
+  # Asked as a word, so a guest that does not answer is not mistaken for an
+  # unhired one (round 11).
+  if [ "$svc" = agent ]; then
+    case "$(bxn "$b" 'if test -r ~/duty/conf/instance.conf; then echo hired; else echo unhired; fi' 2>/dev/null | tr -d '\r')" in
+      hired) ;;
+      unhired) die "$b is not hired yet — its agent credential is set against the profile hire installs: crew hire $b, then crew login $b agent" ;;
+      *) die "$b did not answer — nothing set (is its guest up? box shell $b)" ;;
+    esac
+  fi
   verdict="$(bxpipe "$b" "$(host_credentials_set_sh)" "$(printf '%s %s\n%s\n' "$svc" "$kind" "$secret")" 2>&1 \
     | tr -d '\r' | tail -1)" || rc=$?
   secret=""

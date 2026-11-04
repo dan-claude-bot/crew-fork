@@ -173,6 +173,27 @@ CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w
 IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-a-non-export-env-line-refuses-the-import 1 "$RC"
 t carry-the-env-line-is-said 1 "$(grep -c 'carries a line that is not an export' <<<"$IMP")"
+# ...a value that would RUN when sourced is refused too: shape AND value
+# (round 11) — and every value the shell itself writes still crosses.
+rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'export A=$(touch %s/pwned)\n' "$H" >"$EVIL${H}/.config/crew/credentials.env"
+CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
+IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-a-command-substitution-is-refused 1 "$RC"
+H="$(box_home claude)"
+set_cred "$H" agent oauth-token 'sk-ant ODD!$`"'"'"'\x;|&*?~SECRET13'
+CARRY="$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
+rm -f "$H/.config/crew/credentials.env"
+IMP="$(printf '%s' "$CARRY" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-an-odd-value-the-shell-wrote-still-crosses 0 "$RC"
+t carry-...-and-reads-back-exact 'sk-ant ODD!$`"'"'"'\x;|&*?~SECRET13' "$(env -i HOME="$H" bash -c '. "$HOME/.config/crew/credentials.env"; printf %s "$CLAUDE_CODE_OAUTH_TOKEN"')"
+# A path with a run of spaces in it lists and matches as it is (round 11).
+SP="$TMP/home  two"; mkdir -p "$SP/duty/conf/agents" "$SP/.config/gh"; cp "$SHARED"/conf/agents/*.conf "$SP/duty/conf/agents/"
+printf 'BOT_AGENT=claude\n' >"$SP/duty/conf/instance.conf"; : >"$SP/.profile"
+set_cred "$SP" agent oauth-token "sk-ant-oat01-SECRET14"
+CARRY="$(env -i HOME="$SP" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
+rm -f "$SP/.config/crew/credentials.env"
+IMP="$(printf '%s' "$CARRY" | env -i HOME="$SP" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"
+t carry-a-home-with-two-spaces-crosses "carried 1" "$IMP"
 H="$(box_home claude)"
 t carry-a-box-with-none-exports-nothing "" "$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
 

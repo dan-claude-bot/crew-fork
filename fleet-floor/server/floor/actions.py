@@ -372,7 +372,7 @@ def _do_command(fleet, body, actor=""):
     def one(name, argv, timeout=ACTION_TIMEOUT_S, stdin_data=None, step=None):
         # The step it is on, for every tab watching (#766): a restart reads
         # `down`, then `start`, while it runs.
-        INFLIGHT.step(name, step or "")
+        INFLIGHT.step(name, step or "", action)
         rc, out, err = run(argv, timeout, stdin_data)
         ok = rc == 0
         # `step` names WHICH call this row is, for the actions that now have
@@ -436,10 +436,17 @@ def _do_command(fleet, body, actor=""):
     # down, `resume` for one whose crontab can still be restored, `escalate` for
     # one nothing can be run inside. Named helpers because `concurrently` submits
     # `fn(*args)` and the step is not one of the caller's arguments.
-    def wake_start(name):
+    # The host's pause marker is lifted INSIDE the woken box's own claimed
+    # call (#766, round 11): lifted while planning, a box another action
+    # held — and that this action then left alone — lost its pause anyway.
+    def wake_start(name, unpause=False):
+        if unpause:
+            _paused_marker(name, False)
         return one(name, ["box", "start", name], step="start")
 
-    def wake_resume(name):
+    def wake_resume(name, unpause=False):
+        if unpause:
+            _paused_marker(name, False)
         return in_box(name, RESUME_SH, step="resume")
 
     results = []
@@ -659,15 +666,14 @@ def _do_command(fleet, body, actor=""):
             # is read for itself, not through the box's crontab flag: a box
             # paused while STOPPED has the marker and no commented line, and
             # `u["paused"]` alone left it to be stopped again (#763 round 3).
-            if u["paused"] or _paused_marker_set(name):
-                _paused_marker(name, False)
+            unpause = bool(u["paused"] or _paused_marker_set(name))
             if states.get(name) == "stopped":
                 # FIRST, and before the wedge question. Starting a stopped box
                 # is a host operation that works whatever the guest was doing
                 # when it went down, and a heartbeat left over from before it
                 # stopped must not talk this action out of the one thing it can
                 # certainly do.
-                tasks.append((wake_start, (name,)))
+                tasks.append((wake_start, (name, unpause)))
             elif states.get(name) is None:
                 # GONE FROM THE HOST, and that answer comes before the wedge
                 # question rather than after it. `fleet.get()`'s units are a
@@ -713,7 +719,7 @@ def _do_command(fleet, body, actor=""):
                 # A plain `else`: the absence question is asked once, above,
                 # and asking it again here would leave two places that have to
                 # agree about which boxes this action can reach.
-                tasks.append((wake_resume, (name,)))
+                tasks.append((wake_resume, (name, unpause)))
         results = concurrently(tasks)
     else:
         return 400, {"ok": False, "error": "unknown action %r" % action}
