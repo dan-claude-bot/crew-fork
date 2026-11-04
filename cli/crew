@@ -3694,7 +3694,7 @@ cut_box() { # NAME
 # reason: a stop that does not take must never be followed by anything, and
 # here "anything" includes rolling a running box's disk out from under it.
 restore_box() { # NAME
-  local name="$1" recorded stale live state why pstate hold_rc
+  local name="$1" recorded stale live state why pstate hold_rc stopped_here=0
   case "$(has_reset_checkpoint "$name"; echo $?)" in
     2)
       echo "  $name: REFUSED — could not read its snapshot labels; a reset is not performed on an unverified box"
@@ -3771,6 +3771,7 @@ restore_box() { # NAME
       echo "  $name: FAILED — stop did not take (state: $state); NOT restoring"
       return 1
     fi
+    stopped_here=1
   fi
   # The store HOLDS the member's memory from here until it is written back
   # (#763 round 6): the box's own `.memory-pending` expires after its grace,
@@ -3781,7 +3782,13 @@ restore_box() { # NAME
   hold_rc=0
   store_py memory-hold --box "$name" >/dev/null 2>&1 || hold_rc=$?
   if [ "$hold_rc" -ne 0 ] && [ "$hold_rc" -ne 3 ]; then
-    echo "  $name: REFUSED — the store could not hold its memory across the restore; nothing restored"
+    # Nothing was restored, so a box this reset stopped goes back up as it
+    # was, and either way its state is said (#763 round 7).
+    if [ "$stopped_here" -eq 1 ] && box start "$name" </dev/null; then
+      echo "  $name: REFUSED — the store could not hold its memory across the restore; nothing restored, the box started again as it was"
+    else
+      echo "  $name: REFUSED — the store could not hold its memory across the restore; nothing restored, and the box is STOPPED (start it with: box start $name)"
+    fi
     return 1
   fi
   # --force because there is no terminal here to confirm on: `box restore` is
@@ -3793,15 +3800,15 @@ restore_box() { # NAME
     return 1
   fi
   if ! box start "$name" </dev/null; then
-    echo "  $name: FAILED — restored to $RESET_LABEL but the start failed; start it with: box start $name"
+    echo "  $name: FAILED — restored to $RESET_LABEL but the start failed; start it with: box start $name — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   if ! wait_box_free_kb "$name" >/dev/null; then
-    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name"
+    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   if ! reset_restore_memory "$name"; then
-    echo "  $name: FAILED — restored to $RESET_LABEL and started, but its memory did not come back from the store (above); its ticks run without it once the box's own grace passes (MEMORY_PENDING_GRACE_S)"
+    echo "  $name: FAILED — restored to $RESET_LABEL and started, but its memory did not come back from the store (above); its ticks run without it once the box's own grace passes (MEMORY_PENDING_GRACE_S) — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   # THE PAUSE AND THE CAP ARE KEPT (#763 review). The restored disk's cron is
@@ -4196,6 +4203,27 @@ tick_conf_knobs() {
 # what else its answer rested on (wake_reason_ctx).
 tick_woken_file() { printf '%s/%s.woken' "$(TICK_DIGEST_DIR)" "$1"; }
 
+# tick_merge_settle REPO ROWS — the board's rows with every `unknown` merge
+# state read as that PR's last definite one, remembered per repository in
+# the wake directory (a PR never seen definite reads `ok`). GitHub answers
+# UNKNOWN while it recomputes after main moves, so a conflicting PR would read
+# conflict, unknown, conflict — two context changes, two wakes or boots of a
+# builder that had passed, for one push to main (#763 round 7).
+tick_merge_settle() {
+  local f tmp
+  f="$(TICK_DIGEST_DIR)/$(printf '%s' "$1" | tr '/' '_').merge"; tmp="$f.tmp"
+  awk -v cache="$f" -v out="$tmp" '
+    BEGIN { while ((getline line < cache) > 0) { split(line, p, " "); known[p[1]] = p[2] } }
+    $1 == "P" && NF >= 7 {
+      if ($7 == "unknown") $7 = (($2 in known) ? known[$2] : "ok")
+      seen[$2] = $7
+    }
+    { print }
+    END { for (n in seen) print n, seen[n] > out }
+  ' <<<"$2"
+  if [ -f "$tmp" ]; then mv -f "$tmp" "$f"; else : >"$f"; fi
+}
+
 # tick_reason_ctx LOGIN REASON — wake_reason_ctx against the board this
 # tick read for the reason's repository (ROWS, tick_run's).
 tick_reason_ctx() {
@@ -4313,7 +4341,7 @@ tick_wake() {
 
 tick_run() { # DRY_RUN
   local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE held_repos
-  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ
+  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ held
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4346,6 +4374,7 @@ tick_run() { # DRY_RUN
       continue
     fi
     tick_unreadable_count "$repo" 0 >/dev/null
+    rows="$(tick_merge_settle "$repo" "$rows")"
     ROWS[$repo]="$rows"
     DIGEST[$repo]="$(printf '%s\n' "$rows" | wake_digest)"
   done <<<"$(production_registry)"
@@ -4395,8 +4424,17 @@ tick_run() { # DRY_RUN
       [ "${DIGEST[$repo]}" != "$prev" ] || continue
       reasons="$reasons$(wake_reasons "$roles" "$login" "$repo" "${ROWS[$repo]}")"$'\n'
     done
-    reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
-    reasons="$reasons$(wake_release_reasons "$name")"$'\n'
+    # A member whose memory the store holds (a reset's write-back failed,
+    # #763 round 7) is said every tick, and a STOPPED one's stored waits and
+    # due cuts are not read: they are frozen at the restore, and a past-due
+    # copy would boot it to idle and be stopped again, every few ticks. A
+    # running one's are read live, above.
+    held="$(store_py memory-held --box "$name" 2>/dev/null | head -1)"
+    [ -z "$held" ] || echo "  $name: memory HELD since $held — a reset's write-back is owed (re-run: crew reset $name); its stored waits and cuts are not read while it is stopped"
+    if [ -z "$held" ] || [ -n "$WAKE_STATES_LIVE_READ" ]; then
+      reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
+      reasons="$reasons$(wake_release_reasons "$name")"$'\n'
+    fi
     reasons="$(printf '%s' "$reasons" | sed '/^$/d')"
     # A running box's ledgers, live: the store's copy is as old as its last
     # drain or floor poll, so a triage box on a busy board would keep an

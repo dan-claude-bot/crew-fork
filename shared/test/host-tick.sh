@@ -590,20 +590,40 @@ t passed-a-merged-pr-frees-the-ready-issue 1 "$(grep -c 'alpha: starting why=rea
 # A PR that turns CONFLICTING (main moved: a rebase owed) at the same
 # updatedAt is new work too: its row carries the merge state and checks.
 printf '0\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 0
-ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - ok green' ''
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - ok ok' ''
 : >"$STATE/calls"
 capture tick
 t passed-a-new-pr-wakes-the-builder 1 "$(grep -c 'alpha: woke (running) why=ready#o/r#18,pr#o/r#32' <<<"$OUT")"
-t passed-the-ctx-is-remembered 1 "$(grep -c '^pr#o/r#32 2026-10-23T21:00:00Z 0 ok/green$' "$CONF/store/wake/alpha.woken")"
+t passed-the-ctx-is-remembered 1 "$(grep -c '^pr#o/r#32 2026-10-23T21:00:00Z 0 ok/ok$' "$CONF/store/wake/alpha.woken")"
 printf '3\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 3
 : >"$STATE/calls"
 capture tick
 t passed-idle-the-builder-stops-once-more 1 "$(calls 'down alpha')"
-ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - conflict green' ''
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - conflict ok' ''
 : >"$STATE/calls"
 capture tick
 t passed-a-conflicting-pr-starts-the-builder 1 "$(grep -c 'alpha: starting why=pr#o/r#32$' <<<"$OUT")"
 t passed-the-ready-issue-stays-passed-while-the-pr-holds-the-slot 1 "$(grep -c 'alpha: veto ready#o/r#18:passed' <<<"$OUT")"
+# GitHub recomputing after main moves answers UNKNOWN: read as the PR's last
+# definite state, so it flaps nothing (#763 round 7) — the box just started
+# for the conflict idles, is stopped, and an UNKNOWN does not boot it again.
+printf '3\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 3
+: >"$STATE/calls"
+capture tick
+t settle-the-builder-stops-after-the-conflict 1 "$(calls 'down alpha')"
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - unknown ok' ''
+: >"$STATE/calls"
+capture tick
+t settle-an-unknown-merge-state-is-the-last-known 0 "$(calls 'start alpha')"
+t settle-the-cache-remembers-the-conflict 1 "$(grep -c '^32 conflict$' "$CONF/store/wake/o_r.merge")"
+# A member whose memory the store holds is said on the tick, and a stopped
+# one's frozen waits are not read (#763 round 7).
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha
+: >"$STATE/calls"
+capture tick
+t held-the-tick-says-the-hold 1 "$(grep -c 'alpha: memory HELD since .* — a reset.s write-back is owed (re-run: crew reset alpha)' <<<"$OUT")"
+t held-status-says-the-hold 1 "$(run_crew status alpha 2>&1 | grep -c 'memory HELD since')"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
 
 # (6) a breaker veto leaves the board unread-as-seen (#763 round 5): the
 # reason is read again on a quiet board once the breaker clears, instead of

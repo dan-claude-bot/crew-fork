@@ -907,11 +907,26 @@ def stored_reading(box, path=None, now=None):
         pull = last_pull(conn, box)
         n, minutes, cost, unpriced = window_cost(conn, _since_iso("24h", now), box)
         return {"box": b, "session": sess, "pull": pull, "stored_at": b["last_pull_ok"],
+                "held": memory_held(conn, box),
                 "window": {"since": "24h", "sessions": n, "minutes": minutes,
                            "cost_usd": cost, "unpriced": unpriced},
                 "lines": stored_lines(conn, box)}
     finally:
         conn.close()
+
+
+def memory_held(conn, box):
+    """When the reset's hold on this member's memory was set, or None (#763
+    round 7): a restore whose write-back failed leaves it standing, and the
+    stored files it freezes must be said, not silently read."""
+    row = conn.execute("SELECT value FROM meta WHERE key=?", ("memory-hold:%s" % box,)).fetchone()
+    return row["value"] if row else None
+
+
+def held_line(box, held, now=None):
+    return ("memory HELD since %s (%s): the reset that restored this box has not written its "
+            "memory back, so its pulls land only the log; re-run the reset of %s to finish it"
+            % (held, fmt_ago(held, now), box))
 
 
 def status_lines(box, brief=False, path=None, now=None):
@@ -931,12 +946,17 @@ def status_lines(box, brief=False, path=None, now=None):
     if w["unpriced"]:
         cost += " (%d unpriced)" % w["unpriced"]
     if brief:
-        return ["stored: %s · %s · %s" % (last, pulled, cost)]
+        out = ["stored: %s · %s · %s" % (last, pulled, cost)]
+        if r["held"]:
+            out.append("stored: " + held_line(box, r["held"], now))
+        return out
     out = ["stored (%s, %s):" % (pulled, r["stored_at"]), "  last session: %s" % last]
     if s and (s["rc"] is not None or s["dur_s"] is not None):
         out[-1] += " (rc=%s, %s)" % (s["rc"] if s["rc"] is not None else "-",
                                      ("%ds" % s["dur_s"]) if s["dur_s"] is not None else "-")
     out.append("  %s" % cost)
+    if r["held"]:
+        out.append("  " + held_line(box, r["held"], now))
     return out
 
 
@@ -1045,6 +1065,21 @@ def main(argv=None):
                             _arg(argv, "--pool"), state=_arg(argv, "--state", "running"))
         print("%s: %s%s" % (box, "" if res["ok"] else "pull FAILED — ", res["note"]))
         return 0 if res["ok"] else 1
+    if verb == "memory-held":
+        # The hold's timestamp, or rc 1 when none stands (or no store).
+        box = _arg(argv, "--box")
+        if not box:
+            raise SystemExit("store.py memory-held: --box is required")
+        if not os.path.exists(store_path()):
+            return 1
+        conn = connect(readonly=True)
+        try:
+            held = memory_held(conn, box)
+        finally:
+            conn.close()
+        if held:
+            print(held)
+        return 0 if held else 1
     if verb in ("memory-hold", "memory-release"):
         # The host's own hold on a member's memory across a reset (#763
         # round 6): while it stands, a full pull lands duty.log and nothing

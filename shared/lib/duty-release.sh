@@ -25,9 +25,11 @@
 # so two tracks of one repository never share a cut, a wait or a refusal:
 #   .seen-release              `repo:path#<tree sha> 0` — track states the
 #                              engine cut or a person refused; never re-cut
-#   .release-cut-<slug>        `<pr> <branch> <main sha> [withdrawn|refused]`
-#                              — the open cut; the mark is a cut already
-#                              closed whose fork branch is still owed deleting
+#   .release-cut-<slug>        `<pr> <branch> <main sha> [withdrawn|refused|reopened]`
+#                              — the open cut; `withdrawn`/`refused` is a cut
+#                              already closed whose fork branch is still owed
+#                              deleting, `reopened` one a person reopened —
+#                              theirs to settle, never closed by the engine
 #   .release-due-<slug>        `<repo> <epoch>` — a cut waiting for main to go
 #                              quiet; the host tick starts the box when due
 #   .release-tried-<slug>      `<tree sha> <n>` — sessions that ended without a
@@ -297,8 +299,9 @@ _release_delete_head() {
 # person: refused — the track's tree stays in the ledger so it is never
 # re-cut. Still open and main moved past it on this track: stale — withdrawn
 # (when every commit on it is the engine's), and the next tick cuts the new
-# tree. Still open and current: `open`, which holds the track. Sets
-# RELEASE_SETTLED to one of none|shipped|refused|withdrawn|open — a variable
+# tree. Still open and current: `open`, which holds the track; a cut a person
+# reopened: `held`, likewise, said as theirs. Sets
+# RELEASE_SETTLED to one of none|shipped|refused|withdrawn|open|held — a variable
 # and not stdout, because the function logs on the way.
 RELEASE_SETTLED=none
 _release_settle_cut() {
@@ -308,6 +311,17 @@ _release_settle_cut() {
   [ -f "$f" ] || return 0
   read -r num branch head mark <"$f" || return 0
   case "$mark" in
+    reopened)
+      # A person reopened the engine's closed cut (#763 round 7): it is
+      # theirs. It holds the track while open and is never withdrawn again
+      # — main having moved is what the engine closed it for, and the person
+      # reopened it knowing that. Merged or closed, the path below settles it
+      # as any cut.
+      state="$(gh pr view "$num" -R "$repo" --json state --jq .state 2>/dev/null)" || { RELEASE_SETTLED=open; return 0; }
+      if [ "$state" = OPEN ]; then
+        log "no release duty: $repo#$num ($branch) was reopened by a person — it holds the track until they merge or close it; the engine does not withdraw it again"
+        RELEASE_SETTLED=held; return 0
+      fi ;;
     withdrawn|refused)
       # Closed already; its fork branch was owed deleting. The track holds
       # until it is gone, or the next cut of the same VERSION would collide.
@@ -316,9 +330,9 @@ _release_settle_cut() {
       # cannot be read holds.
       state="$(gh pr view "$num" -R "$repo" --json state --jq .state 2>/dev/null)" || { RELEASE_SETTLED=open; return 0; }
       if [ "$state" = OPEN ]; then
-        printf '%s %s %s\n' "$num" "$branch" "$head" >"$f.tmp" && mv -f "$f.tmp" "$f"
-        log "release: $repo#$num was reopened ($branch) — an open cut again; its branch is kept"
-        RELEASE_SETTLED=open; return 0
+        printf '%s %s %s reopened\n' "$num" "$branch" "$head" >"$f.tmp" && mv -f "$f.tmp" "$f"
+        log "release: $repo#$num was reopened by a person ($branch) — theirs now; its branch is kept and the engine does not withdraw it again"
+        RELEASE_SETTLED=held; return 0
       fi
       # A refusal's branch goes only when it is the engine's alone (a
       # withdrawal was asked that before it closed the PR).
@@ -421,6 +435,7 @@ _release_gate() {
   _release_settle_cut "$slug" "$repo" "$path" "$dir"
   case "$RELEASE_SETTLED" in
     open) log "no release duty: $name — the engine's own release PR is open and current; the approval is a person's"; return 1 ;;
+    held) return 1 ;;
     withdrawn) return 1 ;;
   esac
   prs="$(_release_open_prs "$repo")"

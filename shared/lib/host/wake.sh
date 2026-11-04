@@ -24,11 +24,15 @@ wake_store() { store_py "$@"; }
 # and 1 when any read failed (an unreadable board is "no change": the next
 # tick reads again, and nothing starts on a guess).
 #   I <num> <updatedAt> <labels,csv|-> <assignees,csv|->
-#   P <num> <updatedAt> <author> <draft 0|1> <requested,csv|-> <conflict|ok> <red|pending|green|->
-# A PR's merge state and its checks' summary ride its row (#763 round 6): a
-# rebase owed (main moved, the PR conflicts) or a head gone red changes no
-# `updatedAt`, so without them the board would not move for the builder. Only
-# CONFLICTING is said — UNKNOWN, while GitHub computes, would flip the row.
+#   P <num> <updatedAt> <author> <draft 0|1> <requested,csv|-> <conflict|ok|unknown> <red|ok>
+# A PR's merge state and whether its checks are red ride its row (#763
+# round 6): a rebase owed (main moved, the PR conflicts) or a head gone red
+# changes no `updatedAt`, so without them the board would not move for the
+# builder. The checks are red or not — pending and green are the same answer
+# for the builder, and a board moving on every check that completes woke
+# triage's coarse reason for nothing (#763 round 7). `unknown` is GitHub
+# still computing; the host tick reads it as the PR's last known state
+# (cli/crew tick_merge_settle), so a recompute after main moves flaps nothing.
 #   D <num> <updatedAt>
 wake_board_rows() {
   local repo="$1" owner name issues prs discs
@@ -38,7 +42,7 @@ wake_board_rows() {
     --jq '.[] | "I \(.number) \(.updatedAt) \(([.labels[].name] | join(",")) | if . == "" then "-" else . end) \(([.assignees[].login] | join(",")) | if . == "" then "-" else . end)"' 2>/dev/null)" || return 1
   prs="$(wake_gh pr list -R "$repo" --state open --limit 100 \
     --json number,updatedAt,author,isDraft,reviewRequests,mergeable,statusCheckRollup \
-    --jq '.[] | "P \(.number) \(.updatedAt) \(.author.login // "-") \(if .isDraft then 1 else 0 end) \(([.reviewRequests[]?.login // .reviewRequests[]?.name // empty] | join(",")) | if . == "" then "-" else . end) \(if .mergeable == "CONFLICTING" then "conflict" else "ok" end) \([.statusCheckRollup[]? | ((.conclusion // .state // "") | ascii_upcase)] as $c | if ($c | length) == 0 then "-" elif any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE") then "red" elif any($c[]; . == "" or . == "PENDING" or . == "EXPECTED") then "pending" else "green" end)"' 2>/dev/null)" || return 1
+    --jq '.[] | "P \(.number) \(.updatedAt) \(.author.login // "-") \(if .isDraft then 1 else 0 end) \(([.reviewRequests[]?.login // .reviewRequests[]?.name // empty] | join(",")) | if . == "" then "-" else . end) \(if .mergeable == "CONFLICTING" then "conflict" elif .mergeable == "MERGEABLE" then "ok" else "unknown" end) \([.statusCheckRollup[]? | ((.conclusion // .state // "") | ascii_upcase)] as $c | if any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE") then "red" else "ok" end)"' 2>/dev/null)" || return 1
   discs="$(wake_gh api graphql -f owner="$owner" -f name="$name" -f query='
     query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){
       discussions(first:50,states:OPEN){ nodes{ number updatedAt } } } }' \

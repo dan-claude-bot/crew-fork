@@ -709,6 +709,8 @@ capture reset --cut alpha
 RST_UNPACK_FAIL=alpha capture reset alpha
 t reset-a-failed-write-back-fails 1 "$RC"
 t reset-a-failed-write-back-keeps-the-stores-hold 1 "$(reset_hold alpha)"
+case "$OUT" in *'the store HOLDS its memory until a reset writes it back'*'re-run crew reset alpha'*) r1=said ;; *) r1="$OUT" ;; esac
+t reset-a-failed-write-back-names-the-hold-and-its-exit said "$r1"
 CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
 t reset-the-hold-is-released-by-its-verb 0 "$(reset_hold alpha)"
 # The checkpoint carries the marker: set before the snapshot, lifted after it.

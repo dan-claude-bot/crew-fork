@@ -354,15 +354,24 @@ t an-undeleted-branch-is-said 1 "$(grep -c "WARN: release: acme/site#96 withdraw
 t an-undeleted-branch-is-marked "96 release/site-2.1.46 $HEADQ withdrawn" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
 t an-undeleted-branch-buys-nothing 0 "$(sessions)"
 : >"$SESSION_LOG"; : >"$GH_CALLS"
-# A person reopened it meanwhile: an open cut again, its branch kept (#763
-# round 6: deleting the head would close the PR under them).
+# A person reopened it meanwhile: theirs now — its branch kept (#763 round 6:
+# deleting the head would close the PR under them) and the cut never
+# withdrawn again, main moved or not (#763 round 7).
 OUT="$(GH_PR_STATE_ONLY=OPEN GH_PRS="96 dan-claude-bot release/site-2.1.46" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
-t a-reopened-cut-is-said 1 "$(grep -c "release: acme/site#96 was reopened (release/site-2.1.46) — an open cut again; its branch is kept" <<<"$OUT")"
+t a-reopened-cut-is-said 1 "$(grep -c "release: acme/site#96 was reopened by a person (release/site-2.1.46) — theirs now; its branch is kept and the engine does not withdraw it again" <<<"$OUT")"
 t a-reopened-cuts-branch-is-not-deleted 0 "$(grep -c '^GH api -X DELETE' "$GH_CALLS")"
-t a-reopened-cut-is-unmarked "96 release/site-2.1.46 $HEADQ" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
-# Withdrawn again, the delete refused again: marked again.
-OUT="$(GH_DELETE_ERR="gh: Resource not accessible by integration (HTTP 403)" GH_PRS="96 dan-claude-bot release/site-2.1.46" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
-t a-rewithdrawn-cut-is-marked-again "96 release/site-2.1.46 $HEADQ withdrawn" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+t a-reopened-cut-is-marked-as-theirs "96 release/site-2.1.46 $HEADQ reopened" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+: >"$GH_CALLS"
+OUT="$(GH_PR_STATE_ONLY=OPEN GH_PR_STATE="OPEN " GH_PRS="96 dan-claude-bot release/site-2.1.46" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-reopened-stale-cut-is-not-withdrawn-again 0 "$(grep -c '^GH pr close' "$GH_CALLS")"
+t a-reopened-cut-holds-the-track 1 "$(grep -c "no release duty: acme/site#96 (release/site-2.1.46) was reopened by a person — it holds the track until they merge or close it" <<<"$OUT")"
+t a-reopened-cut-buys-nothing 0 "$(sessions)"
+t a-reopened-cut-keeps-its-mark "96 release/site-2.1.46 $HEADQ reopened" "$(cat "$DUTY_DIR/.release-cut-acme_site-site-")"
+# Once the person settles it, it is settled as any cut: merged, forgotten.
+OUT="$(GH_PR_STATE_ONLY=MERGED GH_PR_STATE="MERGED 2026-10-23T12:00:00Z" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-reopened-cut-merged-is-shipped 1 "$(grep -c 'release: acme/site#96 shipped (release/site-2.1.46) — the cut is forgotten' <<<"$OUT")"
+# The delete-retry path, again from a withdrawn mark.
+printf '96 release/site-2.1.46 %s withdrawn\n' "$HEADQ" >"$DUTY_DIR/.release-cut-acme_site-site-"
 : >"$SESSION_LOG"; : >"$GH_CALLS"
 # A branch already gone — gh's own shape, the message first (#763 round 6).
 OUT="$(GH_DELETE_ERR="gh: Reference does not exist (HTTP 422)" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
