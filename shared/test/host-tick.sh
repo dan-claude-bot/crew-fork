@@ -624,6 +624,31 @@ capture tick
 t held-the-tick-says-the-hold 1 "$(grep -c 'alpha: memory HELD since .* — a reset.s write-back is owed (re-run: crew reset alpha)' <<<"$OUT")"
 t held-status-says-the-hold 1 "$(run_crew status alpha 2>&1 | grep -c 'memory HELD since')"
 CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
+# A held member at the cap, with members after it (#763 round 8: the hold's
+# timestamp was read into the tick's `held` counter — the cap's arithmetic
+# then killed the tick before the rest of the roster and the summary).
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha
+echo stopped >"$STATE/alpha.state"; echo running >"$STATE/beta.state"; echo running >"$STATE/gamma.state"
+printf '0\n' >"$STATE/beta.idle"; printf '0\n' >"$STATE/gamma.idle"
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:40:00Z blocked -\nI 50 2026-10-23T22:00:00Z lista -' 'P 32 2026-10-23T21:00:00Z dan-claude-bot 0 - conflict ok' ''
+rm -f "$CONF/store/wake"/alpha.*; : >"$STATE/calls"
+capture tick
+t cap-a-held-member-at-the-cap-does-not-end-the-tick 0 "$RC"
+t cap-the-held-member-is-held-at-the-cap 1 "$(grep -c 'alpha: held — 2 of 2 boxes running' <<<"$OUT")"
+t cap-the-members-after-it-are-evaluated 1 "$(grep -c '^  gamma: ' <<<"$OUT")"
+t cap-the-summary-counts-the-held-member 1 "$(grep -c '^tick: started 0, woke [0-9]*, held 1, ' <<<"$OUT")"
+# ...and a held, STOPPED member's frozen past-due cut does not boot it once
+# there is room (its stored files are the checkpoint's).
+echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
+ht_board 'I 18 2026-10-23T19:00:00Z lista -' '' ''
+HT_EXTRA_FILE=.release-due-o_r HT_EXTRA_BODY="o/r 1" ht_record alpha dan-claude-bot '' 0
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha
+rm -f "$CONF/store/wake"/*; : >"$STATE/calls"
+capture tick
+t held-a-frozen-due-cut-does-not-boot-it 0 "$(grep -c 'release#o/r' <<<"$OUT")"
+t held-the-summary-says-held-0 1 "$(grep -c '^tick: .* held 0, ' <<<"$OUT")"
+t held-status-is-one-line-in-the-table 0 "$(run_crew status 2>&1 | grep -c '^stored:')"
+CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-release --box alpha
 
 # (6) a breaker veto leaves the board unread-as-seen (#763 round 5): the
 # reason is read again on a quiet board once the breaker clears, instead of

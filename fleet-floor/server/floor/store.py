@@ -946,10 +946,9 @@ def status_lines(box, brief=False, path=None, now=None):
     if w["unpriced"]:
         cost += " (%d unpriced)" % w["unpriced"]
     if brief:
-        out = ["stored: %s · %s · %s" % (last, pulled, cost)]
-        if r["held"]:
-            out.append("stored: " + held_line(box, r["held"], now))
-        return out
+        # One line: the brief reading rides a table row (#763 round 8).
+        return ["stored: %s · %s · %s%s" % (last, pulled, cost,
+                                            (" · " + held_line(box, r["held"], now)) if r["held"] else "")]
     out = ["stored (%s, %s):" % (pulled, r["stored_at"]), "  last session: %s" % last]
     if s and (s["rc"] is not None or s["dur_s"] is not None):
         out[-1] += " (rc=%s, %s)" % (s["rc"] if s["rc"] is not None else "-",

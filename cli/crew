@@ -4100,6 +4100,14 @@ stored_note() {
   store_py status --box "$name" "$@" 2>/dev/null || true
 }
 
+# memory_held_of NAME — when the store's hold on this member's memory was set
+# (a reset's write-back owed), or nothing (#763 round 7).
+memory_held_of() {
+  [ -f "$(store_file)" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  store_py memory-held --box "$1" 2>/dev/null | head -1 || true
+}
+
 cmd_usage() {
   local since="24h" by="member"
   while [ $# -gt 0 ]; do
@@ -4341,7 +4349,7 @@ tick_wake() {
 
 tick_run() { # DRY_RUN
   local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE held_repos
-  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ held
+  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4429,9 +4437,9 @@ tick_run() { # DRY_RUN
     # due cuts are not read: they are frozen at the restore, and a past-due
     # copy would boot it to idle and be stopped again, every few ticks. A
     # running one's are read live, above.
-    held="$(store_py memory-held --box "$name" 2>/dev/null | head -1)"
-    [ -z "$held" ] || echo "  $name: memory HELD since $held — a reset's write-back is owed (re-run: crew reset $name); its stored waits and cuts are not read while it is stopped"
-    if [ -z "$held" ] || [ -n "$WAKE_STATES_LIVE_READ" ]; then
+    mem_held="$(store_py memory-held --box "$name" 2>/dev/null | head -1)"
+    [ -z "$mem_held" ] || echo "  $name: memory HELD since $mem_held — a reset's write-back is owed (re-run: crew reset $name); its stored waits and cuts are not read while it is stopped"
+    if [ -z "$mem_held" ] || [ -n "$WAKE_STATES_LIVE_READ" ]; then
       reasons="$reasons$(wake_wait_reasons "$name")"$'\n'
       reasons="$reasons$(wake_release_reasons "$name")"$'\n'
     fi
@@ -4456,6 +4464,12 @@ tick_run() { # DRY_RUN
       idle="$(store_py state --box "$name" --name .idle-ticks 2>/dev/null | head -1 | tr -d '\r')"
     fi
     case "$idle" in ''|*[!0-9]*) idle=0 ;; esac
+    # A held, stopped member's stored count is frozen at the restore (#763
+    # round 8): it is read as idle, so only a reason that names an item
+    # starts it — the coarse `board#` never boots it on every move.
+    if [ -n "$mem_held" ] && [ "$state" != running ] && [ "$idle" -lt "$IDLE_TICKS_BEFORE_STOP" ]; then
+      idle="$IDLE_TICKS_BEFORE_STOP"
+    fi
     surviving="$(tick_passed "$name" "$surviving" "$idle" "$login")"
     held_repos="$(tick_held_repos "$surviving")"
     while IFS= read -r line; do
@@ -4880,7 +4894,7 @@ cmd_status() {
   local supp_age supp_kind supp_key supp_subject log_timestamped session_active lock_age
   local session_kind session_ceiling lock_ceiling lock_bound
   local report estate erecorded edisplay
-  local rreport conv convnote stored_brief
+  local rreport conv convnote stored_brief mem_held
   while read -r name agent role _from; do
     if ! box_exists "$name"; then
       # shellcheck disable=SC2059
@@ -5139,6 +5153,10 @@ cmd_status() {
       absent) edisplay=- ;;
       *)      edisplay="${estate:--}" ;;
     esac
+    # A running box the store still holds the memory of (a failed write-back,
+    # #763 round 8) says so on its own row: its pulls land only the log.
+    mem_held="$(memory_held_of "$name")"
+    [ -z "$mem_held" ] || note="memory HELD since $mem_held — re-run: crew reset $name${note:+; $note}"
     # shellcheck disable=SC2059
     printf "$fmt" "$name" "$state" "$host" "$hired" "$edisplay" "$ghs_d" "$vs_d" "$note"
   done < <(read_roster)

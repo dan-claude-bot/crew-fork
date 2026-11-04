@@ -370,6 +370,13 @@ t a-reopened-cut-keeps-its-mark "96 release/site-2.1.46 $HEADQ reopened" "$(cat 
 # Once the person settles it, it is settled as any cut: merged, forgotten.
 OUT="$(GH_PR_STATE_ONLY=MERGED GH_PR_STATE="MERGED 2026-10-23T12:00:00Z" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-reopened-cut-merged-is-shipped 1 "$(grep -c 'release: acme/site#96 shipped (release/site-2.1.46) — the cut is forgotten' <<<"$OUT")"
+# ...closed by the person instead: refused as any cut, its branch deleted.
+printf '96 release/site-2.1.46 %s reopened\n' "$HEADQ" >"$DUTY_DIR/.release-cut-acme_site-site-"
+: >"$GH_CALLS"
+OUT="$(GH_PR_STATE_ONLY=CLOSED GH_PR_STATE="CLOSED " GH_PRS="" RELEASE_QUIET_S=0 SIM_PR_AFTER="" RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t a-reopened-cut-closed-is-refused 1 "$(grep -c 'release: acme/site#96 was closed without merging (release/site-2.1.46) — refused' <<<"$OUT")"
+t a-reopened-cut-closed-loses-its-branch 1 "$(grep -c '^GH api -X DELETE repos/dan-claude-bot/site-fork/git/refs/heads/release/site-2.1.46$' "$GH_CALLS")"
+rm -f "$DUTY_DIR"/.release-tried-*
 # The delete-retry path, again from a withdrawn mark.
 printf '96 release/site-2.1.46 %s withdrawn\n' "$HEADQ" >"$DUTY_DIR/.release-cut-acme_site-site-"
 : >"$SESSION_LOG"; : >"$GH_CALLS"
