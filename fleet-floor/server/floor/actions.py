@@ -448,13 +448,22 @@ def _do_command(fleet, body, actor=""):
     # A PAUSED box that is stopped is started AND resumed (round 12): its
     # crontab was commented by the pause, so a start alone left it running
     # with its own cron off — reported ok, still painted paused, and never
-    # idle-stopped. The CLI's start path resumes for the same reason. The
-    # marker goes only once the resume took: a box that could not be resumed
-    # is still paused, and the host keeps it that way.
+    # idle-stopped. The CLI's start path resumes for the same reason.
+    #
+    # The host's marker is lifted FIRST, inside this box's claim, and put
+    # back on any failure (round 13): left standing while the box boots, the
+    # host tick could reach it in that window and drain and stop the very box
+    # being woken. A box this could not wake is paused again, both halves.
     def wake_start(name, unpause=False):
+        if unpause:
+            _paused_marker(name, False)
         row = one(name, ["box", "start", name], step="start")
-        if not unpause or not row["ok"]:
+        if not unpause:
             return row
+        if not row["ok"]:
+            _paused_marker(name, True)
+            return row
+        INFLIGHT.step(name, "ready", action)
         deadline = time.time() + WAKE_READY_S
         while time.time() < deadline:
             rc, out, _err = run(["box", "exec", name, "--", "bash", "-lc", READY_SH], 15)
@@ -462,18 +471,22 @@ def _do_command(fleet, body, actor=""):
                 break
             time.sleep(3)
         else:
+            _paused_marker(name, True)
             return {"box": name, "ok": False, "step": "resume",
-                    "out": "started, but its guest did not answer within %ds — still paused "
-                           "(its crontab and the host's marker); Resume it once it answers" % WAKE_READY_S}
+                    "out": "started, but its guest did not answer within %ds — paused again "
+                           "(the host's marker is back, so the host tick will stop it); "
+                           "Resume it from the console once it answers" % WAKE_READY_S}
         resumed = in_box(name, RESUME_SH, step="resume")
-        if resumed["ok"]:
-            _paused_marker(name, False)
+        if not resumed["ok"]:
+            _paused_marker(name, True)
         return resumed
 
     def wake_resume(name, unpause=False):
-        row = in_box(name, RESUME_SH, step="resume")
-        if unpause and row["ok"]:
+        if unpause:
             _paused_marker(name, False)
+        row = in_box(name, RESUME_SH, step="resume")
+        if unpause and not row["ok"]:
+            _paused_marker(name, True)
         return row
 
     results = []

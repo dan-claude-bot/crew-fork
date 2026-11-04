@@ -627,6 +627,16 @@ assert b_calls[0] == "box start box-b" and any("echo floor-ready" in c for c in 
     and any("crontab" in c for c in b_calls), WAKE_CALLS
 assert [c for c in WAKE_CALLS if "box-c" in c] == ["box start box-c"], WAKE_CALLS
 INFLIGHT.release_box("box-a")
+# Round 13: a wake that could not resume the box puts its pause back — the
+# marker was lifted first (so the host tick cannot stop the box mid-wake),
+# and a box this action did not wake is paused again.
+MARKERS.clear(); MARKERS.update({"box-b": True})
+floor.run = lambda argv, _t, _s=None: ((1, "", "crontab write failed") if "crontab" in argv[-1]
+                                       else (0, "floor-ready" if argv[-1] == floor.READY_SH else "done", ""))
+code, reply = floor.do_command(Fleet(), {"action": "wake-silent"}, actor="op2")
+rows = {r["box"]: r for r in reply["results"]}
+assert rows["box-b"]["ok"] is False, rows
+assert MARKERS["box-b"] is True, ("a box the wake could not resume lost its pause", MARKERS)
 # ...and a message (which does not claim) never blanks a holder's step.
 INFLIGHT.claim_box("box-c", "restart", "op1")
 INFLIGHT.step("box-c", "down", "restart")

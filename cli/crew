@@ -3779,7 +3779,11 @@ restore_box() { # NAME
     # floor) would go back to that copy — revoked, or past its refresh date.
     # Read off the live disk into this shell's memory, never the host's disk,
     # and written back once the restored box answers.
-    if creds="$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r\n')"; then
+    # The LAST `CREDS1 ` line is the payload (a login banner before it is
+    # not); an export that fails — a credentials.env that does not read whole
+    # — is said, never carried in part (round 13).
+    if creds="$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r')"; then
+      creds="$(printf '%s\n' "$creds" | sed -n 's/^\(CREDS1 .*\)$/\1/p' | tail -1)"
       creds_read=1
     else
       creds=""
@@ -5376,7 +5380,7 @@ cmd_gold() {
   # ...and any credential the host can set (#765, round 10): an agent's env
   # kind or login file is a credential before gh is, and the carry's own
   # export is the one list of where they live.
-  if [ -n "$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r\n')" ]; then
+  if [ -n "$(bxn "$name" "$(host_credentials_export_sh)" 2>/dev/null | tr -d '\r' | sed -n 's/^\(CREDS1 .*\)$/\1/p' | tail -1)" ]; then
     [ "$force" = "--force" ] || die "$name holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login (--force to override)"
   fi
   local stamp ver

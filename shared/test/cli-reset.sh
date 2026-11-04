@@ -167,7 +167,7 @@ case "$cmd" in
       # The live credentials the reset carries (#765): an opaque line out...
       printf 'creds-export %s\n' "$name" >>"$calls"
       [ "$name" != "${RST_CREDS_EXPORT_FAIL:-}" ] || exit 1
-      printf 'Q1JFRFMtJHtuYW1lfQ==\n'
+      printf 'a login banner\nCREDS1 Q1JFRFM= LQ==\n'
     elif [[ "$script" == *'---CREDENTIALS_IMPORT_SH---'* ]]; then
       # ...and the same line back in, on the restored disk.
       printf 'creds-import %s %s\n' "$name" "$(cat)" >>"$calls"
@@ -687,10 +687,10 @@ t reset-a-written-back-memory-lifts-the-stores-hold 0 "$(reset_hold alpha)"
 t reset-credentials-are-read-before-the-stop 1 \
   "$(awk '/^creds-export alpha/{e=NR} /^down alpha/{d=NR} END{print (e && d && e<d) ? 1 : 0}' "$STATE/calls")"
 t reset-credentials-go-back-after-the-start 1 \
-  "$(awk '/^start alpha/{s=NR} /^creds-import alpha Q1JFRFMtJHtuYW1lfQ==$/{i=NR} END{print (s && i && i>s) ? 1 : 0}' "$STATE/calls")"
+  "$(awk '/^start alpha/{s=NR} /^creds-import alpha CREDS1 Q1JFRFM= LQ==$/{i=NR} END{print (s && i && i>s) ? 1 : 0}' "$STATE/calls")"
 case "$OUT" in *"alpha: its live credentials carried across the restore (2 file(s))"*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-the-carry-is-said said "$r1"
-t reset-the-credentials-never-touch-the-hosts-disk 0 "$(grep -rl 'Q1JFRFMtJHtuYW1lfQ==' "$CONF" 2>/dev/null | grep -c .)"
+t reset-the-credentials-never-touch-the-hosts-disk 0 "$(grep -rl 'Q1JFRFM= LQ==' "$CONF" 2>/dev/null | grep -c .)"
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started"*) r1=reported ;; *) r1="$OUT" ;; esac
 t reset-restore-is-reported reported "$r1"
 # The memory's return lifts `.memory-pending` in the same locked step that

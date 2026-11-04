@@ -134,37 +134,44 @@ esac
 CREDENTIALS_SH
 }
 
-# host_credentials_export_sh — the member's live credential files, as one
-# base64 line on stdout (nothing when it has none): the weekly reset reads
-# them off the running box before the disk goes back and writes them after
-# (host_credentials_import_sh), so a credential set or rotated since the
-# checkpoint is not rolled back to it. A pipe through the host's memory,
-# never a file on the host's disk.
+# host_credentials_export_sh — the member's live credentials, as ONE line on
+# stdout, `CREDS1 <files> <env>` (nothing at all when it has none): <files> is
+# a base64 tar of the credential files (or `-`), <env> the base64 of
+# `NAME base64(value)` lines read from credentials.env in the box's own shell
+# (or `-`). The weekly reset reads it off the running box before the disk
+# goes back and writes it after (host_credentials_import_sh), so a credential
+# set or rotated since the checkpoint is not rolled back to it. Nothing is
+# staged on the box's disk — a full disk is what a reset is for (round 13) —
+# and the host holds it in memory only. A readers takes the LAST line that
+# starts `CREDS1 `: a login banner before it is not the payload. An env file
+# that does not read whole fails the export (rc 1): the reset then says the
+# credentials could not be read rather than carrying half of them.
 host_credentials_export_sh() {
   cat <<'CREDENTIALS_EXPORT_SH'
 # ---CREDENTIALS_EXPORT_SH---
 DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
-# credentials.env crosses as DATA, never as shell text (round 12): each export
-# is read here, in the box's own shell, and carried as `NAME base64(value)`;
-# the import writes the file again itself, quoting each value with printf %q.
-# So nothing that crosses is ever sourced.
-envf="$HOME/.config/crew/credentials.env"; carry="$HOME/.config/crew/credentials.carry"
-trap 'rm -f "$carry"' EXIT
+envf="$HOME/.config/crew/credentials.env"
+env64="-"
 if [ -f "$envf" ]; then
-  umask 077
-  # shellcheck disable=SC1090
-  ( . "$envf"
-    for n in $(sed -n 's/^export \([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$envf"); do
-      printf '%s %s\n' "$n" "$(printf '%s' "${!n}" | base64 -w0)"
-    done ) >"$carry" 2>/dev/null || rm -f "$carry"
+  # Sourced in a subshell, silenced, and believed only when it reaches its
+  # own end: a syntax error, an `exit` or a stray print in a hand-edited file
+  # fails the export instead of carrying a part of it.
+  pairs="$( ( . "$envf" >/dev/null 2>&1 || exit 1
+              for n in $(sed -n 's/^export \([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$envf"); do
+                printf '%s %s\n' "$n" "$(printf '%s' "${!n}" | base64 -w0)"
+              done
+              echo "CREDS-END" ) 2>/dev/null )" || { echo "credentials: credentials.env did not read" >&2; exit 1; }
+  case "$pairs" in *CREDS-END) ;; *) echo "credentials: credentials.env did not read whole" >&2; exit 1 ;; esac
+  pairs="${pairs%CREDS-END}"
+  [ -z "$pairs" ] || env64="$(printf '%s' "$pairs" | base64 -w0)"
 fi
-set -- "$HOME/.config/gh/hosts.yml" "$carry"
+set -- "$HOME/.config/gh/hosts.yml"
 # shellcheck disable=SC1091
-[ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf"
+[ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf" >/dev/null 2>&1
 conf="$DUTY_DIR/conf/agents/${BOT_AGENT:-}.conf"
 if [ -n "${BOT_AGENT:-}" ] && [ -r "$conf" ]; then
   # shellcheck disable=SC1090
-  . "$conf"
+  . "$conf" >/dev/null 2>&1
   for s in ${AGENT_CRED_KINDS:-}; do
     how="${s#*:}"; where="${how#*:}"; how="${how%%:*}"
     case "$how" in
@@ -175,31 +182,43 @@ if [ -n "${BOT_AGENT:-}" ] && [ -r "$conf" ]; then
 fi
 have=()
 for f in "$@"; do [ -f "$f" ] && have+=("${f#/}"); done
-[ "${#have[@]}" -gt 0 ] || exit 0
-tar -C / -czf - "${have[@]}" 2>/dev/null | base64 -w0
+files64="-"
+if [ "${#have[@]}" -gt 0 ]; then
+  files64="$(tar -C / -czf - "${have[@]}" 2>/dev/null | base64 -w0)" || { echo "credentials: the files did not pack" >&2; exit 1; }
+  [ -n "$files64" ] || { echo "credentials: the files did not pack" >&2; exit 1; }
+fi
+[ "$files64" = - ] && [ "$env64" = - ] && exit 0
+echo
+echo "CREDS1 $files64 $env64"
 # ---END---
 CREDENTIALS_EXPORT_SH
 }
 
-# host_credentials_import_sh — stdin: what the export printed. Unpacked over
-# the restored disk, 0600, and the login-shell hook put back when the env file
-# came across. Prints `carried N`. ONLY the credential files come across, and
-# only as regular files: the archive is listed first against the same list
-# the export reads, and one entry outside it — another path, a link, a
-# directory — refuses the whole import before anything is written (round 10).
+# host_credentials_import_sh — stdin: the export's `CREDS1 …` line. The files
+# are unpacked over the restored disk, 0600; credentials.env is written again
+# HERE from the carried data, each value quoted by printf %q — it never
+# crosses as shell text — and the login-shell hook put back when it came
+# across. Prints `carried N`. ONLY the credential files come across, and only
+# as regular files: the archive is listed first against the same list the
+# export reads, and one entry outside it — another path, a link, a directory —
+# refuses the whole import before anything is written (round 10). An env line
+# that is not a name and its base64 refuses it too.
 host_credentials_import_sh() {
   cat <<'CREDENTIALS_IMPORT_SH'
 # ---CREDENTIALS_IMPORT_SH---
 umask 077
 DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
-carry="$HOME/.config/crew/credentials.carry"; envf="$HOME/.config/crew/credentials.env"
-set -- "$HOME/.config/gh/hosts.yml" "$carry"
+envf="$HOME/.config/crew/credentials.env"
+tag=""
+while IFS=' ' read -r tag files64 env64 _; do [ "$tag" = CREDS1 ] && break; done
+[ "$tag" = CREDS1 ] || { echo "credentials: not a carry — nothing carried" >&2; exit 1; }
+set -- "$HOME/.config/gh/hosts.yml"
 # shellcheck disable=SC1091
-[ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf"
+[ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf" >/dev/null 2>&1
 conf="$DUTY_DIR/conf/agents/${BOT_AGENT:-}.conf"
 if [ -n "${BOT_AGENT:-}" ] && [ -r "$conf" ]; then
   # shellcheck disable=SC1090
-  . "$conf"
+  . "$conf" >/dev/null 2>&1
   for s in ${AGENT_CRED_KINDS:-}; do
     how="${s#*:}"; where="${how#*:}"; how="${how%%:*}"
     case "$how" in
@@ -209,47 +228,47 @@ if [ -n "${BOT_AGENT:-}" ] && [ -r "$conf" ]; then
   done
 fi
 allow=" "; for f in "$@"; do allow="$allow${f#/} "; done
-arc="$(mktemp "$HOME/.crew-carry.XXXXXX")" || { echo "credentials: no room to stage the archive" >&2; exit 1; }
-trap 'rm -f "$arc"' EXIT
-base64 -d >"$arc" 2>/dev/null || { echo "credentials: the archive did not decode" >&2; exit 1; }
-# Names listed literally where the tar can (GNU escapes other bytes by
-# default; busybox has no such option and lists them as they are).
-entries="$(tar --quoting-style=literal -tzvf "$arc" 2>/dev/null || tar -tzvf "$arc" 2>/dev/null)" \
-  || { echo "credentials: the archive did not list" >&2; exit 1; }
-names=()
-while IFS= read -r line; do
-  [ -n "$line" ] || continue
-  # The five listing columns cut off as they stand: a field rewrite would
-  # collapse a run of spaces inside the name itself (round 11).
-  name="$(printf '%s\n' "$line" | sed -E 's/^([^ ]+ +){5}//')"
-  case "$line" in -*) ;; *) echo "credentials: '$name' is not a regular file — nothing carried" >&2; exit 1 ;; esac
-  case "$allow" in *" $name "*) names+=("$name") ;; *) echo "credentials: '$name' is not a credential file — nothing carried" >&2; exit 1 ;; esac
-done <<<"$entries"
-[ "${#names[@]}" -gt 0 ] || { echo "carried 0"; exit 0; }
-# The env kinds cross as `NAME base64` lines (the export's carry file), and
-# only as that: a name that is not an env name, or a value that is not
-# base64, refuses the import before a byte is written.
-carryname="${carry#/}"
-case " ${names[*]} " in *" $carryname "*)
-  bad="$(tar -xzOf "$arc" -- "$carryname" 2>/dev/null | grep -cvE '^[A-Z_][A-Z0-9_]* [A-Za-z0-9+/]*=*$' || true)"
+# The env data first, all checked before anything is written.
+pairs=""
+if [ "${env64:--}" != - ]; then
+  pairs="$(printf '%s' "$env64" | base64 -d 2>/dev/null)" || { echo "credentials: the env data did not decode — nothing carried" >&2; exit 1; }
+  bad="$(printf '%s\n' "$pairs" | grep -cvE '^([A-Z_][A-Z0-9_]* [A-Za-z0-9+/]*=*|)$' || true)"
   if [ "${bad:-0}" -ne 0 ]; then
-    echo "credentials: the env carry holds a line that is not a name and its value — nothing carried" >&2; exit 1
-  fi ;;
-esac
-tar -C / -xzf "$arc" -- "${names[@]}" 2>/dev/null || { echo "credentials: the archive did not unpack" >&2; exit 1; }
+    echo "credentials: the env data holds a line that is not a name and its value — nothing carried" >&2; exit 1
+  fi
+fi
+names=()
+if [ "${files64:--}" != - ]; then
+  arc="$(mktemp "$HOME/.crew-carry.XXXXXX")" || { echo "credentials: no room to stage the archive" >&2; exit 1; }
+  trap 'rm -f "$arc"' EXIT
+  printf '%s' "$files64" | base64 -d >"$arc" 2>/dev/null || { echo "credentials: the archive did not decode" >&2; exit 1; }
+  # Names listed literally where the tar can (GNU escapes other bytes by
+  # default; busybox has no such option and lists them as they are).
+  entries="$(tar --quoting-style=literal -tzvf "$arc" 2>/dev/null || tar -tzvf "$arc" 2>/dev/null)" \
+    || { echo "credentials: the archive did not list" >&2; exit 1; }
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # The five listing columns cut off as they stand: a field rewrite would
+    # collapse a run of spaces inside the name itself (round 11).
+    name="$(printf '%s\n' "$line" | sed -E 's/^([^ ]+ +){5}//')"
+    case "$line" in -*) ;; *) echo "credentials: '$name' is not a regular file — nothing carried" >&2; exit 1 ;; esac
+    case "$allow" in *" $name "*) names+=("$name") ;; *) echo "credentials: '$name' is not a credential file — nothing carried" >&2; exit 1 ;; esac
+  done <<<"$entries"
+  if [ "${#names[@]}" -gt 0 ]; then
+    tar -C / -xzf "$arc" -- "${names[@]}" 2>/dev/null || { echo "credentials: the archive did not unpack" >&2; exit 1; }
+  fi
+fi
 n="${#names[@]}"
-# The env file, written again HERE from the carried data, each value quoted
-# by printf %q — what the credentials shell itself writes.
-if [ -f "$carry" ]; then
-  tmp="$(mktemp "$envf.XXXXXX")" || { rm -f "$carry"; echo "credentials: credentials.env could not be written" >&2; exit 1; }
+if [ "${env64:--}" != - ]; then
+  mkdir -p "$(dirname "$envf")"
+  tmp="$(mktemp "$envf.XXXXXX")" || { echo "credentials: credentials.env could not be written" >&2; exit 1; }
   while read -r cname cval; do
     [ -n "$cname" ] || continue
-    printf 'export %s=%q\n' "$cname" "$(printf '%s' "$cval" | base64 -d 2>/dev/null)" >>"$tmp"
-  done <"$carry"
-  chmod 600 "$tmp" && mv -f "$tmp" "$envf"
-  rm -f "$carry"
-fi
-if [ -f "$HOME/.config/crew/credentials.env" ]; then
+    printf 'export %s=%q\n' "$cname" "$(printf '%s' "$cval" | base64 -d 2>/dev/null)" >>"$tmp" \
+      || { rm -f "$tmp"; echo "credentials: credentials.env could not be written" >&2; exit 1; }
+  done <<<"$pairs"
+  chmod 600 "$tmp" && mv -f "$tmp" "$envf" || { rm -f "$tmp"; echo "credentials: credentials.env could not be written" >&2; exit 1; }
+  n=$((n + 1))
   for p in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do [ -f "$p" ] && break; done
   [ -f "$p" ] || p="$HOME/.profile"
   grep -qF '.config/crew/credentials.env' "$p" 2>/dev/null \

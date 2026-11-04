@@ -451,7 +451,7 @@ OUT="$(printf '\n' | run_crew login alpha gh 2>&1)"; RC=$?
 t login-nothing-read-sets-nothing 1 "$RC"
 # A gold is cut credential-free: an agent login refuses it as gh's does
 # (round 10) — the carry's export is the list of where credentials live.
-echo running >"$STATE/alpha.state"; printf 'Q1JFRFM=\n' >"$STATE/alpha.creds-export"
+echo running >"$STATE/alpha.state"; printf 'a banner\nCREDS1 Q1JFRFM= -\n' >"$STATE/alpha.creds-export"
 OUT="$(run_crew gold alpha 2>&1)"; RC=$?
 t gold-an-agent-credential-refuses-the-cut 1 "$RC"
 t gold-the-refusal-names-it 1 "$(grep -c 'alpha holds credentials (an agent login or ~/.config/crew/credentials.env) — golds are cut PRE-login' <<<"$OUT")"

