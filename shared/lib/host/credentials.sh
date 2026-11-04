@@ -144,7 +144,21 @@ host_credentials_export_sh() {
   cat <<'CREDENTIALS_EXPORT_SH'
 # ---CREDENTIALS_EXPORT_SH---
 DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
-set -- "$HOME/.config/gh/hosts.yml" "$HOME/.config/crew/credentials.env"
+# credentials.env crosses as DATA, never as shell text (round 12): each export
+# is read here, in the box's own shell, and carried as `NAME base64(value)`;
+# the import writes the file again itself, quoting each value with printf %q.
+# So nothing that crosses is ever sourced.
+envf="$HOME/.config/crew/credentials.env"; carry="$HOME/.config/crew/credentials.carry"
+trap 'rm -f "$carry"' EXIT
+if [ -f "$envf" ]; then
+  umask 077
+  # shellcheck disable=SC1090
+  ( . "$envf"
+    for n in $(sed -n 's/^export \([A-Z_][A-Z0-9_]*\)=.*/\1/p' "$envf"); do
+      printf '%s %s\n' "$n" "$(printf '%s' "${!n}" | base64 -w0)"
+    done ) >"$carry" 2>/dev/null || rm -f "$carry"
+fi
+set -- "$HOME/.config/gh/hosts.yml" "$carry"
 # shellcheck disable=SC1091
 [ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf"
 conf="$DUTY_DIR/conf/agents/${BOT_AGENT:-}.conf"
@@ -178,7 +192,8 @@ host_credentials_import_sh() {
 # ---CREDENTIALS_IMPORT_SH---
 umask 077
 DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
-set -- "$HOME/.config/gh/hosts.yml" "$HOME/.config/crew/credentials.env"
+carry="$HOME/.config/crew/credentials.carry"; envf="$HOME/.config/crew/credentials.env"
+set -- "$HOME/.config/gh/hosts.yml" "$carry"
 # shellcheck disable=SC1091
 [ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf"
 conf="$DUTY_DIR/conf/agents/${BOT_AGENT:-}.conf"
@@ -211,20 +226,29 @@ while IFS= read -r line; do
   case "$allow" in *" $name "*) names+=("$name") ;; *) echo "credentials: '$name' is not a credential file — nothing carried" >&2; exit 1 ;; esac
 done <<<"$entries"
 [ "${#names[@]}" -gt 0 ] || { echo "carried 0"; exit 0; }
-# credentials.env is SOURCED by every tick: it crosses as comments and the
-# lines the credentials shell itself writes — `export NAME=` and a value as
-# `printf %q` quotes it (no bare `$`, backtick or space; `$'…'` for control
-# bytes) — or not at all. Shape AND value: `export A=$(cmd)` is refused
-# (round 11).
-envname="${HOME#/}/.config/crew/credentials.env"
-case " ${names[*]} " in *" $envname "*)
-  bad="$(tar -xzOf "$arc" -- "$envname" 2>/dev/null | grep -cvE "^(export [A-Z_][A-Z0-9_]*=(\\\$'([^'\\\\]|\\\\.)*'|([^\$\`\\\\[:space:]'\"]|\\\\.)*)|#.*|)\$" || true)"
+# The env kinds cross as `NAME base64` lines (the export's carry file), and
+# only as that: a name that is not an env name, or a value that is not
+# base64, refuses the import before a byte is written.
+carryname="${carry#/}"
+case " ${names[*]} " in *" $carryname "*)
+  bad="$(tar -xzOf "$arc" -- "$carryname" 2>/dev/null | grep -cvE '^[A-Z_][A-Z0-9_]* [A-Za-z0-9+/]*=*$' || true)"
   if [ "${bad:-0}" -ne 0 ]; then
-    echo "credentials: credentials.env carries a line that is not an export — nothing carried" >&2; exit 1
+    echo "credentials: the env carry holds a line that is not a name and its value — nothing carried" >&2; exit 1
   fi ;;
 esac
 tar -C / -xzf "$arc" -- "${names[@]}" 2>/dev/null || { echo "credentials: the archive did not unpack" >&2; exit 1; }
 n="${#names[@]}"
+# The env file, written again HERE from the carried data, each value quoted
+# by printf %q — what the credentials shell itself writes.
+if [ -f "$carry" ]; then
+  tmp="$(mktemp "$envf.XXXXXX")" || { rm -f "$carry"; echo "credentials: credentials.env could not be written" >&2; exit 1; }
+  while read -r cname cval; do
+    [ -n "$cname" ] || continue
+    printf 'export %s=%q\n' "$cname" "$(printf '%s' "$cval" | base64 -d 2>/dev/null)" >>"$tmp"
+  done <"$carry"
+  chmod 600 "$tmp" && mv -f "$tmp" "$envf"
+  rm -f "$carry"
+fi
 if [ -f "$HOME/.config/crew/credentials.env" ]; then
   for p in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do [ -f "$p" ] && break; done
   [ -f "$p" ] || p="$HOME/.profile"

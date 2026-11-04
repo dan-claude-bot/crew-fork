@@ -619,6 +619,7 @@ case "${1:-}" in
     # shellcheck disable=SC2016  # the patterns are LITERAL fragments of the
     # scripts being matched, not strings to expand: $HOME is the box's.
     case "$script" in
+      *'echo floor-ready'*) echo floor-ready ;;  # a started guest answering (#763 round 12)
       *'---CREDENTIALS_SH---'*)                  # the credentials shell (#765)
         # The header is the first stdin line; the rest is the secret, kept
         # apart under the state dir so a suite can prove it arrived as stdin

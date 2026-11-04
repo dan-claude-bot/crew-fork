@@ -1585,10 +1585,12 @@ function repoURL(repo){
 }
 function apiURL(path){return (location.origin&&location.origin!=="null"?location.origin:"")+path;}
 /* No request waits forever (round 11): a command's longest server path is a
-   restart's stop and start at the action timeout each, so it is given well
-   past that; a read is given a minute. On the deadline the request is
+   restart's stop and start at the action timeout each, and a fleet action
+   runs its boxes eight at a time, so it is given fifteen minutes and its
+   expiry is said as "may still be running", never "failed"; a read is given
+   a minute. On the deadline the request is
    aborted, the promise rejects, and act() releases the control it held. */
-var API_CMD_TIMEOUT_MS=300000, API_READ_TIMEOUT_MS=60000;
+var API_CMD_TIMEOUT_MS=900000, API_READ_TIMEOUT_MS=60000;
 function api(path,opts){
   opts=Object.assign({},opts||{});
   var ctl=(typeof AbortController!=="undefined")?new AbortController():null,timer=null;
@@ -1873,7 +1875,13 @@ function cmd(action,extra){
       pollFleet();
       return r;
     })
-    .catch(function(e){setStatus(action+" failed: "+e.message,true);});
+    /* A deadline is not a verdict (round 12): a fleet action on a large fleet
+       can outlast any number picked here, and the collector is still doing
+       it. Said as that — /api/actions keeps showing it while it runs. */
+    .catch(function(e){
+      if(e&&e.name==="AbortError")setStatus(action+": no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running on the collector (shown here while it is)",true);
+      else setStatus(action+" failed: "+e.message,true);
+    });
 }
 /* ---- Actions in flight (#766) -------------------------------------------------
    One model for every control that changes something. A key names what an

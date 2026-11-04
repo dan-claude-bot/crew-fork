@@ -127,6 +127,11 @@ def _paused_marker_set(box):
 
 RESUME_SH = _host_shell_block("RESUME_SH")
 
+# A started guest answering at all (#763 round 12): asked before a paused,
+# stopped box's crontab is resumed. Its own marker, so the stub box answers it.
+READY_SH = "echo floor-ready"
+WAKE_READY_S = int(os.environ.get("CREW_FLOOR_WAKE_READY_S", "90"))
+
 # The operator's message becomes a real session of the box's own vendor CLI,
 # detached so the HTTP request does not hold a model run open, and logged where
 # every other session logs so it shows up in the console's history.
@@ -439,15 +444,37 @@ def _do_command(fleet, body, actor=""):
     # The host's pause marker is lifted INSIDE the woken box's own claimed
     # call (#766, round 11): lifted while planning, a box another action
     # held — and that this action then left alone — lost its pause anyway.
+    #
+    # A PAUSED box that is stopped is started AND resumed (round 12): its
+    # crontab was commented by the pause, so a start alone left it running
+    # with its own cron off — reported ok, still painted paused, and never
+    # idle-stopped. The CLI's start path resumes for the same reason. The
+    # marker goes only once the resume took: a box that could not be resumed
+    # is still paused, and the host keeps it that way.
     def wake_start(name, unpause=False):
-        if unpause:
+        row = one(name, ["box", "start", name], step="start")
+        if not unpause or not row["ok"]:
+            return row
+        deadline = time.time() + WAKE_READY_S
+        while time.time() < deadline:
+            rc, out, _err = run(["box", "exec", name, "--", "bash", "-lc", READY_SH], 15)
+            if rc == 0 and "floor-ready" in (out or ""):
+                break
+            time.sleep(3)
+        else:
+            return {"box": name, "ok": False, "step": "resume",
+                    "out": "started, but its guest did not answer within %ds — still paused "
+                           "(its crontab and the host's marker); Resume it once it answers" % WAKE_READY_S}
+        resumed = in_box(name, RESUME_SH, step="resume")
+        if resumed["ok"]:
             _paused_marker(name, False)
-        return one(name, ["box", "start", name], step="start")
+        return resumed
 
     def wake_resume(name, unpause=False):
-        if unpause:
+        row = in_box(name, RESUME_SH, step="resume")
+        if unpause and row["ok"]:
             _paused_marker(name, False)
-        return in_box(name, RESUME_SH, step="resume")
+        return row
 
     results = []
 

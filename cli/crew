@@ -4690,7 +4690,8 @@ cmd_login() {
   # Asked as a word, so a guest that does not answer is not mistaken for an
   # unhired one (round 11).
   if [ "$svc" = agent ]; then
-    case "$(bxn "$b" 'if test -r ~/duty/conf/instance.conf; then echo hired; else echo unhired; fi' 2>/dev/null | tr -d '\r')" in
+    # The LAST line: a login shell's profile may print a banner first (round 12).
+    case "$(bxn "$b" 'if test -r ~/duty/conf/instance.conf; then echo hired; else echo unhired; fi' 2>/dev/null | tr -d '\r' | tail -1)" in
       hired) ;;
       unhired) die "$b is not hired yet — its agent credential is set against the profile hire installs: crew hire $b, then crew login $b agent" ;;
       *) die "$b did not answer — nothing set (is its guest up? box shell $b)" ;;
