@@ -3795,7 +3795,7 @@ restore_box() { # NAME
     case "$creds" in
       "CREDS1 - -") creds=""; creds_read=1 ;;
       "CREDS1 "*) creds_read=1 ;;
-      *) echo "  $name: NOTE — its live credentials could not be read (${creds#CREDS-FAIL }); the checkpoint's come back with the restore"
+      *) echo "  $name: NOTE — its live credentials could not be read ($( [ -n "$creds" ] && printf '%s' "${creds#CREDS-FAIL }" || printf 'the box gave no answer' )); the checkpoint's come back with the restore"
          creds="" ;;
     esac
     if ! box down "$name" </dev/null; then
@@ -5381,6 +5381,10 @@ cmd_gold() {
   local name="${1:-}" force="${2:-}"
   [ -n "$name" ] || usage_error "usage: crew gold <box> [--force]"
   require_operator_config "crew gold"
+  # Both checks below ask the box itself, so a stopped box answers neither —
+  # said as that, rather than as unreadable credentials whose way out is
+  # --force, which would skip the gh check too (round 15).
+  [ "$(box_state "$name")" = running ] || die "$name is not running — start it first (box start $name): a gold is checked for credentials on the live box"
   # Gold images are the bake cache and must carry ZERO credentials — cut
   # them pre-auth. A logged-in box is refused.
   if bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then

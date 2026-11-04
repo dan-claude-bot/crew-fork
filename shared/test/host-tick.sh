@@ -466,6 +466,10 @@ printf 'CREDS-FAIL credentials.env did not read\n' >"$STATE/alpha.creds-export"
 OUT="$(run_crew gold alpha 2>&1)"; RC=$?
 t gold-an-unreadable-env-refuses-the-cut 1 "$RC"
 rm -f "$STATE/alpha.creds-export"
+echo stopped >"$STATE/alpha.state"
+OUT="$(run_crew gold alpha 2>&1)"; RC=$?
+t gold-a-stopped-box-is-told-to-start 1 "$(grep -c 'alpha is not running — start it first (box start alpha)' <<<"$OUT")"
+echo running >"$STATE/alpha.state"
 t help-names-login 1 "$(run_crew help 2>&1 | grep -c "^  login  *Set a member's GitHub or agent credential")"
 
 # --- wiring pins ----------------------------------------------------------------
