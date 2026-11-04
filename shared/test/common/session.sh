@@ -2274,8 +2274,13 @@ mem_pgid_naive() { awk '{ print $5 }' "/proc/$1/stat" 2>/dev/null; }
 t mem-pgid-of-a-dead-pid-is-nothing '' "$(_session_proc_pgid 2147483647)"
 sleep 30 & mem_plain_pid=$!
 MEM_PAREN_BIN="$TMP/a (b) c"
-cp "$(command -v sleep)" "$MEM_PAREN_BIN"
-"$MEM_PAREN_BIN" 30 & mem_paren_pid=$!
+# A copy of bash, not of sleep: a multi-call coreutils (uutils, ubuntu-26.04's
+# default) dispatches on argv[0], so a renamed sleep exits at once. The copy
+# waits on a fifo with a builtin and forks nothing.
+MEM_PAREN_FIFO="$TMP/mem-paren.fifo"; mkfifo "$MEM_PAREN_FIFO"
+cp "$(command -v bash)" "$MEM_PAREN_BIN"
+# shellcheck disable=SC2016  # $1 is the copy's own argument
+"$MEM_PAREN_BIN" -c 'read -r -t 30 _ <>"$1"' _ "$MEM_PAREN_FIFO" & mem_paren_pid=$!
 # Both are background children of THIS shell, and job control is off in a
 # script, so `&` creates no group: they are both in the suite's own group. That
 # is the oracle — no external `ps` and no second copy of the parse.

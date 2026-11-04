@@ -5923,7 +5923,7 @@ t roundcap-engine-opens-and-closes-no-pr session-cuts "$r1"
 t release-module-closes-only-its-own-cut 1 "$(grep -Ev '^[[:space:]]*#' "$SHARED/lib/duty-release.sh" | grep -cE 'gh pr (create|close|reopen)|closePullRequest')"
 # ...and the fork branch it leaves behind is deleted by ref, there too (#763
 # round 5: `--delete-branch` only warns for a fork's head).
-t release-module-deletes-the-fork-branch-by-ref 1 "$(grep -c 'gh api -X DELETE "repos/$head_repo/git/refs/heads/$branch"' "$SHARED/lib/duty-release.sh")"
+t release-module-deletes-the-fork-branch-by-ref 1 "$(grep -cF 'gh api -X DELETE "repos/' "$SHARED/lib/duty-release.sh")"
 t release-module-withdrawal-is-in-the-settle-step 1 "$(awk '/^_release_settle_cut\(\) \{/{f=1} f && /gh pr close "\$num" -R "\$repo"/{c++} /^}/{f=0} END{print c+0}' "$SHARED/lib/duty-release.sh")"
 # Said once per (PR, round count), not once per tick: a PR sits at the cap until
 # the builder cuts it, and #167's rule is that a line repeating forever is

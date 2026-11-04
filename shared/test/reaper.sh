@@ -98,8 +98,13 @@ H2="$(reaper_home h2)"
 head -c 100 /dev/zero >"$H2/.claude/projects/proj-a/aged.jsonl"
 touch -d '30 days ago' "$H2/.claude/projects/proj-a/aged.jsonl"
 LIVE_CLI="$TMP/reaper-live-cli"
-cp "$(command -v sleep)" "$LIVE_CLI"
-"$LIVE_CLI" 30 &
+# A copy of bash, not of sleep: a multi-call coreutils (uutils, ubuntu-26.04's
+# default) dispatches on argv[0], so a renamed sleep does not run at all. The
+# copy waits on a fifo with a builtin, so it forks nothing a kill leaves behind.
+REAPER_FIFO="$TMP/reaper-live.fifo"; mkfifo "$REAPER_FIFO"
+cp "$(command -v bash)" "$LIVE_CLI"
+# shellcheck disable=SC2016  # $1 is the copy's own argument
+"$LIVE_CLI" -c 'read -r -t 30 _ <>"$1"' _ "$REAPER_FIFO" &
 LIVE_PID=$!
 OUT2="$(reaper_run "$H2" "$LIVE_CLI")"
 kill "$LIVE_PID" 2>/dev/null
@@ -316,8 +321,9 @@ H14="$(reaper_home h14)"
 head -c 100 /dev/zero >"$H14/.claude/projects/proj-a/aged.jsonl"
 touch -d '30 days ago' "$H14/.claude/projects/proj-a/aged.jsonl"
 ENV_CLI="$TMP/reaper-env-cli"
-cp "$(command -v sleep)" "$ENV_CLI"
-"$ENV_CLI" 30 &
+cp "$(command -v bash)" "$ENV_CLI"
+# shellcheck disable=SC2016  # $1 is the copy's own argument
+"$ENV_CLI" -c 'read -r -t 30 _ <>"$1"' _ "$REAPER_FIFO" &
 ENV_PID=$!
 OUT14="$(
   HOME="$H14"
