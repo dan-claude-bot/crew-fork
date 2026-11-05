@@ -434,11 +434,14 @@ floor.box_states = lambda: {"wake-stopped": "stopped", "wake-unmeasured": "runni
                             "wake-wedged": "running", "wake-answering": "running"}
 floor.run = wake_run
 status, payload = floor.do_command(WakeFleet(WAKE_UNITS), {"action": "wake-silent"})
+# The decisive one: nothing at all is fired at the wedged box. A reply that
+# merely NAMES it is what the timed-out row already did.
+assert not any("wake-wedged" in call for call in wake_calls), wake_calls
 # The calls run on the action's threads, so they land in any order; the
 # REPLY's order is the stable one, asserted below. The call log is judged by
-# one rule no interleaving can change (#604): nothing at all fired at the
-# wedged box — a reply that merely NAMES it is what the timed-out row already
-# did — and exactly one verb per woken box, the verb its state calls for.
+# one rule no interleaving can change (#604): the decisive assertion above,
+# kept standalone and untouched, and exactly one verb per woken box, the verb
+# its state calls for.
 WAKE_EXPECTED = ["box start wake-stopped", "box exec wake-unmeasured",
                  "box exec wake-answering"]
 
