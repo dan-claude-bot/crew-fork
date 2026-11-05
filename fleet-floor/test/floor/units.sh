@@ -300,7 +300,15 @@ t "clock: session age survives positive skew within sampling uncertainty" True \
   "$(uf ff-skew-ahead "abs(u['sessions'][0]['ago'] - 10) <= u['clock_uncertainty']")"
 t "clock: negative-skew session lands in newest spark bucket" 1.0 "$(uf ff-skew-behind "u['spark'][21]")"
 t "clock: positive-skew session lands in newest spark bucket" 1.0 "$(uf ff-skew-ahead "u['spark'][21]")"
-t "clock: displayed last tick is on host timeline" True "$(ufg ff-skew-behind "g - __import__('datetime').datetime.strptime(u['cron']['last'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=__import__('datetime').timezone.utc).timestamp() < 120")"
+# `last` is stamped at the poll's start (now - tick_age) and `generated` at
+# its end, so their gap is the fixture's 110 s PLUS the poll's own duration,
+# which a loaded runner stretches past the 10 s the old `< 120` allowed: under
+# #626's two-tree load this row red in 5 of 6 runs while the box's timeline
+# was never in question (#767 review). What the row tells apart is the HOST
+# timeline from the box's, three hours (10800 s) away, so the window is sized
+# to that skew, not to a poll's speed: never earlier than the box's own age
+# (seconds truncate, hence 109), and far short of the skew either way.
+t "clock: displayed last tick is on host timeline" True "$(ufg ff-skew-behind "109 <= g - __import__('datetime').datetime.strptime(u['cron']['last'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=__import__('datetime').timezone.utc).timestamp() < 110 + 10800 / 4")"
 t "clock: skewed stopped box behind is silent" offline "$(uf ff-silent-behind "u['state']")"
 t "clock: skewed stopped box ahead is silent" offline "$(uf ff-silent-ahead "u['state']")"
 t "clock: invalid tickage never invents cron freshness" False "$(uf ff-invalid-age "u['cron']['ok']")"
