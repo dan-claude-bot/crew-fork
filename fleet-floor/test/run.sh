@@ -40,15 +40,19 @@ command -v python3 >/dev/null || { echo "python3 required"; exit 1; }
 # which reads like the collector is broken rather than like another copy of
 # this suite is already running. Say so plainly, and name the way out.
 port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3<&- 3>&-; return 0; }; return 1; }
-# Every port this suite binds: the main collector, the collector-death one, the
-# fast-polling churn one, and #204's empty-floor one. Checked up front, because
-# a busy port discovered four minutes in reads as a broken collector.
-for _p in "${FLOOR_TEST_PORT:-8791}" $(( ${FLOOR_TEST_PORT:-8791} + 1 )) \
-          $(( ${FLOOR_TEST_PORT:-8791} + 2 )) $(( ${FLOOR_TEST_PORT:-8791} + 3 )) \
-          $(( ${FLOOR_TEST_PORT:-8791} + 4 )); do
+# Every port this suite binds is its band, FLOOR_TEST_PORT+0 to +25: the main
+# collector, the collector-death one, the fast-polling churn one and #204's
+# empty-floor one at +0..+4, and cli.sh's at +5..+25. A second run overlaps
+# that band only from a base within 25 of this one, and its main collector
+# holds its base for its whole run, so +-25 is probed up front: a busy port
+# discovered four minutes in reads as a broken collector, and a band shared
+# with a live run reads as a collector answering the wrong suite (#767).
+_base="${FLOOR_TEST_PORT:-8791}"
+for _p in $(seq $((_base - 25)) $((_base + 25))); do
   if port_busy "$_p"; then
-    echo "port $_p is already in use — another run of this suite is probably still going." >&2
-    echo "  re-run with a different base:  FLOOR_TEST_PORT=8991 $0 $*" >&2
+    echo "port $_p is already in use — another run of this suite is probably still going," >&2
+    echo "  and this suite's ports are FLOOR_TEST_PORT+0..25, so a base within 25 of it meets it." >&2
+    echo "  re-run with a different base:  FLOOR_TEST_PORT=$((_base + 200)) $0 $*" >&2
     exit 1
   fi
 done
@@ -344,7 +348,7 @@ walk_count_report() {
   local label="$1" verdict="$2" recorded="$3"
   case "$verdict" in
     missing) fail "$label: reported its assertion count" "no '-- browser: N ok' line; the walk exited 0 without a summary" ;;
-    below\ *) fail "$label: asserted enough to be meaningful" "only ${verdict#below } checks ran, expected $recorded — a block returned early" ;;
+    below\ *) fail "$label: asserted enough to be meaningful" "only ${verdict#below } checks ran, expected >= $recorded — a block returned early" ;;
     above\ *) fail "$label: asserted exactly the recorded count" "the walk asserted ${verdict#above } checks and run.sh records $recorded: set the literal at this walk's call site to ${verdict#above } and add its ledger line. This is the upkeep the exact count asks for, not a defect in your change" ;;
     *) ok "$label: asserted ${verdict#exact } checks (exactly the recorded $recorded)" ;;
   esac
@@ -373,7 +377,7 @@ case "$(wc_row "above 154" 153)" in
   *) fail "walk count: the above-count row names the count, the literal and the ledger line" "$(wc_row "above 154" 153)" ;;
 esac
 case "$(wc_row "below 150" 153)" in
-  FAIL*"only 150 checks ran"*"a block returned early"*) ok "walk count: the below-count row keeps its message" ;;
+  "FAIL w: asserted enough to be meaningful  — only 150 checks ran, expected >= 153 — a block returned early") ok "walk count: the below-count row keeps its message" ;;
   *) fail "walk count: the below-count row keeps its message" "$(wc_row "below 150" 153)" ;;
 esac
 case "$(wc_row "exact 153" 153)" in

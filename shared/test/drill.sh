@@ -3984,6 +3984,23 @@ if RL_GREEN="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0
 t release-leg-green-run-returns-0 0 "$rl_rc"
 t release-leg-green-run-has-no-red-row 0 "$(grep -c '^FAIL' <<<"$RL_GREEN" | tr -d ' ')"
 t release-leg-green-run-records-ok "triage ok " "$(cat "$RL_STATUS")"
+# Every graded row ran, in order, and was green: a row deleted from the leg,
+# or one whose red no longer reaches the verdict, changes this list.
+t release-leg-green-run-grades-every-row "release: a fresh track tagged drill1-0.0.1, armed 0.0.2-dev, one fragment merged|\
+release: one tick opened one release PR (#17)|\
+release: the board carries exactly one release PR for the track|\
+release: the PR is the cut — labelled, against main, from drillbot's fork|\
+release: VERSION, CHANGELOG.md and the drill record changed; the fragment consumed|\
+release: VERSION at the PR's head reads 0.0.2|\
+release: a second tick opens nothing — the engine's own cut holds the track|\
+release: still exactly one release PR after the second tick|\
+release: a cut closed unmerged is recorded as refused|\
+release: the refused cut's branch is deleted on the fork|\
+release: the refused track is not cut again" \
+  "$(grep -E '^ok ' <<<"$RL_GREEN" | sed -E 's/^ok +//' | paste -sd'|')"
+# The VERSION at the cut's head is read where the head lives: the box's fork.
+t release-leg-version-read-from-the-fork 1 \
+  "$(grep -cF 'api repos/drillbot/crew-drill-triage/contents/release-drill/1/VERSION?ref=' "$RL/gh.log" | tr -d ' ')"
 t release-leg-seeds-the-track-before-arming-it 1 \
   "$(grep -c '^ok   release: a fresh track tagged drill1-0.0.1, armed 0.0.2-dev, one fragment merged' <<<"$RL_GREEN" | tr -d ' ')"
 # The first-release edge is an ORDER: VERSION at 0.0.1, then the tag, then
@@ -4035,32 +4052,42 @@ t release-leg-second-cut-reds-the-hold-row 1 \
   "$(grep -c "^FAIL release: a second tick opens nothing" <<<"$RL_RED" | tr -d ' ')"
 t release-leg-second-cut-records-fail 1 "$(grep -c '^triage fail ' "$RL_STATUS" | tr -d ' ')"
 t release-leg-second-cut-returns-1 1 "$rl_rc"
+# Each red case below must reach the leg's verdict, not only print its row:
+# rl_verdict NAME RC checks the leg returned 1 and recorded one `fail`.
+rl_verdict() {
+  t "$1" "rc=1 fail=1" "rc=$2 fail=$(grep -c '^triage fail ' "$RL_STATUS" | tr -d ' ')"
+}
 # A refusal the engine forgets, and a branch it leaves: two rows, both red.
 : >"$RL_STATUS"
-RL_FORGOT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT3="" rl_run 2>&1)" || true
+if RL_FORGOT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT3="" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+rl_verdict release-leg-forgotten-refusal-records-fail "$rl_rc"
 t release-leg-forgotten-refusal-reds 1 \
   "$(grep -c '^FAIL release: a cut closed unmerged is recorded as refused' <<<"$RL_FORGOT" | tr -d ' ')"
 # A refused cut whose branch the duty leaves on the fork reds the branch row
 # and only it, with what it read.
 : >"$RL_STATUS"
-RL_LEFT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_BRANCH_LEFT=1 rl_run 2>&1)" || true
+if RL_LEFT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_BRANCH_LEFT=1 rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+rl_verdict release-leg-branch-left-records-fail "$rl_rc"
 t release-leg-branch-left-on-the-fork-reds "  read: refs/heads/release/drill1-0.0.2 still on drillbot/crew-drill-triage|FAIL release: the refused cut's branch is deleted on the fork" \
   "$(grep -E '^FAIL|read: refs/heads' <<<"$RL_LEFT" | paste -sd'|')"
 # A third tick that refuses AND cuts again reds the not-cut-again row.
 : >"$RL_STATUS"
-RL_RECUT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT3="$RL_LINE_REFUSED
-$RL_LINE_CUTTING" rl_run 2>&1)" || true
+if RL_RECUT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT3="$RL_LINE_REFUSED
+$RL_LINE_CUTTING" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+rl_verdict release-leg-refused-track-cut-again-records-fail "$rl_rc"
 t release-leg-refused-track-cut-again-reds "FAIL release: the refused track is not cut again" \
   "$(grep -E '^FAIL' <<<"$RL_RECUT" | paste -sd'|')"
 # A cut whose head still reads the armed VERSION reds the VERSION row.
 : >"$RL_STATUS"
-RL_UNSTAMPED="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_HEAD_VERSION=0.0.2-dev rl_run 2>&1)" || true
+if RL_UNSTAMPED="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_HEAD_VERSION=0.0.2-dev rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+rl_verdict release-leg-unstamped-version-records-fail "$rl_rc"
 t release-leg-unstamped-version-reds "  read: VERSION reads [0.0.2-dev]|FAIL release: VERSION at the PR's head reads 0.0.2" \
   "$(grep -E "^FAIL|read: VERSION" <<<"$RL_UNSTAMPED" | paste -sd'|')"
 # A file set that is not the cut reds its row, with what it read.
 : >"$RL_STATUS"
 jq -c 'map(select(.filename|test("drills/")|not))' <<<"$RL_FILES" >"$RL/files.json"
-RL_SHAPE="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)" || true
+if RL_SHAPE="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+rl_verdict release-leg-file-set-records-fail "$rl_rc"
 printf '%s\n' "$RL_FILES" >"$RL/files.json"
 t release-leg-file-set-row-reds-with-its-reading 2 \
   "$( { grep -c '^FAIL release: VERSION, CHANGELOG.md and the drill record changed' <<<"$RL_SHAPE"; \

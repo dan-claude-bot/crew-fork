@@ -22,6 +22,26 @@ t "ping: floor.ping resolves the suite's derived stale bound" \
      PYTHONPATH="$FLOOR/server" python3 -c 'from floor.ping import PING_STALE_AFTER_S as s; print(s)')"
 t "ping: the suite's stale bound clears the tier's worst published age" True \
   "$([ "$CREW_FLOOR_PING_STALE_AFTER" -ge $(( 2 * (FLOOR_TEST_PING_TIMEOUT + 5) + 2 )) ] && echo True || echo False)"
+# The force-stop block's flake, on the product's own predicate rather than on
+# the clock (#626's must-fail, #757 AC3's second arm): a wedged heartbeat as
+# old as the tier ever publishes one, 2 * (PING_TIMEOUT + 5) + 2, is still
+# wedged under the bound the suite runs with, so restart's force POST cannot
+# read it as stale and refuse. Under main's interval default of 8 the same
+# heartbeat is not wedged, which is the refusal the block met ~2 runs in 20.
+fs_wedged_at_worst() { # [CREW_FLOOR_PING_STALE_AFTER] -> True/False
+  CREW_FLOOR_PING_STALE_AFTER="${1:-$CREW_FLOOR_PING_STALE_AFTER}" \
+  CREW_FLOOR_PING_INTERVAL="$FLOOR_TEST_PING_INTERVAL" CREW_FLOOR_PING_FAILS="$FLOOR_TEST_PING_FAILS" \
+  CREW_FLOOR_PING_TIMEOUT="$FLOOR_TEST_PING_TIMEOUT" PYTHONPATH="$FLOOR/server" python3 -c '
+import time
+from floor.fleet import wedged
+from floor.ping import PING_TIMEOUT_S, PING_FAILS_TO_WEDGE
+now = time.time()
+print(wedged({"ts": now - (2 * (PING_TIMEOUT_S + 5) + 2), "ok": False, "fails": PING_FAILS_TO_WEDGE}, now))'
+}
+t "ping: a wedged heartbeat at the tier's worst published age is still wedged under the suite's bound" \
+  True "$(fs_wedged_at_worst)"
+t "ping: under main's interval default of 8 the same heartbeat reads stale, not wedged (the #626 inversion)" \
+  False "$(fs_wedged_at_worst 8)"
 t "ping: a longer timeout raises run.sh's derived bound" 30 \
   "$(FLOOR_TEST_PING_TIMEOUT=9 bash -c 'unset FLOOR_TEST_PING_STALE_AFTER; eval "$(grep -m1 "^FLOOR_TEST_PING_STALE_AFTER=" "$1")"; echo "$FLOOR_TEST_PING_STALE_AFTER"' _ "$HERE/run.sh")"
 

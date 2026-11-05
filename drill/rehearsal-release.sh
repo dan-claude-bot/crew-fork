@@ -371,9 +371,11 @@ rehearsal_release_drill() {
   files="$(gh api --paginate "repos/$repo/pulls/$pr/files?per_page=100" 2>/dev/null | jq -s 'add // []' 2>/dev/null || printf '[]')"
   rehearsal_release_graded "release: VERSION, CHANGELOG.md and the drill record changed; the fragment consumed" \
     rehearsal_release_files_shape "$files" "$path" 0.0.2 1.md || release_ok=1
+  # Read on the fork, where the head commit was pushed: the base repository
+  # serves a fork's commit only through the network's shared objects.
   rehearsal_release_graded "release: VERSION at the PR's head reads 0.0.2" \
     bash -c 'v="$(gh api "repos/$1/contents/$2/VERSION?ref=$3" --jq .content 2>/dev/null | base64 -d 2>/dev/null | tr -d "[:space:]")"; [ "$v" = 0.0.2 ] && echo ok || echo "VERSION reads [$v]"' \
-    _ "$repo" "$path" "$(jq -r '.head.sha // empty' <<<"$pull")" || release_ok=1
+    _ "$fork" "$path" "$(jq -r '.head.sha // empty' <<<"$pull")" || release_ok=1
 
   # -- tick 2: the open cut holds the track --
   out2="$(rehearsal_release_invoke "$repo" "$path" "$prefix")" || true

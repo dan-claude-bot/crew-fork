@@ -85,10 +85,9 @@ export CREW_YES=1 HOME="$WORK"
 export CREW_HOME="$WORK/share" CREW_BIN="$WORK/bin"
 
 VA=0.0.0-lifecycle-a VB=0.0.0-lifecycle-b
-# The copy carries what git would ship and nothing the developer's checkout
-# merely holds (#536): tracked files as they stand in the working tree, plus
-# untracked files git does not ignore, so an uncommitted change is still the
-# thing under test. A plain filesystem copy also carried ignored paths — a real
+# The copy carries only tracked content (#536 D1): the files git tracks, as
+# they stand in the working tree, so an uncommitted edit is still the thing
+# under test; a new file is under test once it is `git add`ed. A plain filesystem copy also carried ignored paths — a real
 # fleet-floor/server/floor/__pycache__/ or a node_modules/ — into every
 # fixture, and the refusal case below, which disables pruning on purpose, then
 # refused the developer's path instead of the one it planted. CI's fresh
@@ -98,9 +97,14 @@ VA=0.0.0-lifecycle-a VB=0.0.0-lifecycle-b
 mk_src() {  # <dir> <version> — the tree under test, with VERSION rewritten
   mkdir -p "$1"
   if git -C "$SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "$SRC" ls-files -z --cached --others --exclude-standard \
-      | tar -C "$SRC" --null --ignore-failed-read -T - -cf - 2>/dev/null \
+    # Tracked files only (#536 D1), as they are on disk, uncommitted edits
+    # included. --ignore-failed-read covers a tracked file deleted in the work
+    # tree and nothing else: any other failure of the three stops the suite.
+    git -C "$SRC" ls-files -z --cached \
+      | tar -C "$SRC" --null --ignore-failed-read -T - -cf - \
       | tar -xf - -C "$1"
+    local st="${PIPESTATUS[*]}"
+    [ "$st" = "0 0 0" ] || { echo "mk_src: copying $SRC's tracked files into $1 failed (status $st)" >&2; exit 1; }
   else
     tar -C "$SRC" --exclude=.git -cf - . | tar -xf - -C "$1"
   fi
