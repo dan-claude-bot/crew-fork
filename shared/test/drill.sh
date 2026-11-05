@@ -4092,6 +4092,22 @@ printf '%s\n' "$RL_FILES" >"$RL/files.json"
 t release-leg-file-set-row-reds-with-its-reading 2 \
   "$( { grep -c '^FAIL release: VERSION, CHANGELOG.md and the drill record changed' <<<"$RL_SHAPE"; \
         grep -c 'read: no drill record drills/0.0.2.md' <<<"$RL_SHAPE"; } | awk '$1 > 0' | wc -l | tr -d ' ')"
+# Two release PRs on the board for the track red the count row, and an
+# unlabelled cut reds the shape row; each reaches the verdict.
+: >"$RL_STATUS"
+printf '[%s,%s]\n' "$RL_PULL" "$RL_PULL" >"$RL/pulls.json"
+if RL_TWO="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+printf '[%s]\n' "$RL_PULL" >"$RL/pulls.json"
+t release-leg-two-cuts-on-the-board-red-the-count-row 1 \
+  "$(grep -c '^FAIL release: the board carries exactly one release PR for the track' <<<"$RL_TWO" | tr -d ' ')"
+rl_verdict release-leg-two-cuts-on-the-board-records-fail "$rl_rc"
+: >"$RL_STATUS"
+jq -c '.labels=[]' <<<"$RL_PULL" >"$RL/pull.json"
+if RL_UNLABELLED="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+printf '%s\n' "$RL_PULL" >"$RL/pull.json"
+t release-leg-unlabelled-cut-reds-the-shape-row "  read: no release label|FAIL release: the PR is the cut — labelled, against main, from drillbot's fork" \
+  "$(grep -E '^FAIL|read: no release' <<<"$RL_UNLABELLED" | paste -sd'|')"
+rl_verdict release-leg-unlabelled-cut-records-fail "$rl_rc"
 # No cut at all stops the leg at its first row and cleans up.
 : >"$RL_STATUS"
 if REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT1="" rl_run >/dev/null 2>&1; then rl_rc=0; else rl_rc=$?; fi
