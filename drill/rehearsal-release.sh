@@ -392,7 +392,7 @@ rehearsal_release_drill() {
   rehearsal_release_graded "release: a cut closed unmerged is recorded as refused" \
     bash -c '[ "$1" = refused ] && echo ok || echo "the tick after the close read: $1"' _ "$refusal" || release_ok=1
   rehearsal_release_graded "release: the refused cut's branch is deleted on the fork" \
-    bash -c 'if gh api "repos/$1/git/refs/heads/$2" >/dev/null 2>&1; then echo "refs/heads/$2 still on $1"; else echo ok; fi' \
+    bash -c 'if gh api "repos/$1/git/ref/heads/$2" >/dev/null 2>&1; then echo "refs/heads/$2 still on $1"; else echo ok; fi' \
     _ "$fork" "$branch" || release_ok=1
   if grep -F "release: $repo — cutting " <<<"$out3" >/dev/null; then
     echo "  read: $(grep -F "release: $repo — cutting " <<<"$out3" | head -1)"

@@ -172,6 +172,9 @@ t "limited: the newest record wins across lanes in the same second" \
 # `max` that keeps the LAST-seen item on a tie: with that, only the tuple can
 # put the log record first. Under the shipped builtin the same fixture must
 # still publish the log record, so the pair pins the tuple and not the order.
+# The patch is only a probe while derive_limited still picks through `max`: a
+# refactor to `sorted()` would make it inert and the pair green for nothing,
+# so the row also requires the patched `max` to have been called.
 limited_sentinel_case="$(PYTHONPATH="$FLOOR/server" python3 -c '
 import builtins
 from datetime import datetime, timezone
@@ -180,7 +183,9 @@ now = 1800000000
 stamp = lambda seconds: datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 logs = [stamp(now - 60) + " SESSION END kind=build key=x rc=1 dur=1s outcome=TERMINAL"]
 event = {"id":"1-1-1", "timestamp":stamp(now - 60), "severity":"error", "name":"event-limit"}
+calls = []
 def last_on_tie(items, key):
+    calls.append(1)
     best = None
     for item in items:
         if best is None or key(item) >= key(best):
@@ -192,10 +197,10 @@ def verdict():
 shipped = verdict()
 units.max = lambda *a, **k: last_on_tie(*a, **k) if "key" in k else builtins.max(*a, **k)
 reversed_tie = verdict()
-print(shipped + " " + reversed_tie)
+print(shipped + " " + reversed_tie + (" patched-max-used" if calls else " PATCH-INERT"))
 ')"
 t "limited: a same-second log record at window position 0 beats an event on the tuple, not append order" \
-  "terminal/build terminal/build" "$limited_sentinel_case"
+  "terminal/build terminal/build patched-max-used" "$limited_sentinel_case"
 t "limited: STUCK keeps collector state precedence" working \
   "$(uf ff-stuck "u['state']")"
 t "limited: STUCK keeps the collector note" True \

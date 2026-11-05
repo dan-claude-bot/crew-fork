@@ -3836,17 +3836,41 @@ t fleet-leg-is-in-the-runbook-prose 1 \
 # shellcheck source=drill/rehearsal-release.sh
 . "$ROOT/drill/rehearsal-release.sh"
 RL_REPO=drillhost/crew-drill-triage
-RL_OPENED="2026-11-05T10:00:00Z release: $RL_REPO — cutting drill1-0.0.2 from abc1234 (since drill1-0.0.1; ceremony@0.7.11)
-2026-11-05T10:09:00Z release: $RL_REPO#17 opened (release/drill1-0.0.2 at abc1234) — the approval is a person's; the engine stops here"
+# rl_duty_line NEEDLE [path prefix] — the duty's OWN log line holding NEEDLE,
+# read out of shared/lib/duty-release.sh and rendered with this suite's
+# values. The classifiers match fixed strings; feeding them hand-copied ones
+# would let the duty reword a line and leave the live leg grading `unknown`
+# while every row here stays green (#767 review). Rendered from the source, a
+# reworded duty line reds the classifier rows below.
+rl_duty_line() (
+  # shellcheck disable=SC2034  # read by the eval'd template
+  repo="$RL_REPO" num=17 branch=release/drill1-0.0.2 head=abc1234abc1234 \
+    path="${2:-release-drill/1}" prefix="${3:-drill1-}" RELEASE_VERSION=0.0.2 \
+    RELEASE_MAIN_HEAD=abc1234abc1234 RELEASE_LAST_TAG=drill1-0.0.1 RELEASE_PIN=0.7.11
+  # shellcheck disable=SC2034  # read by the eval'd template
+  name="$repo ${prefix:-<bare>}@$path"
+  tmpl="$(grep -F -- "$1" "$ROOT/shared/lib/duty-release.sh" | grep -oE 'log "[^"]*"' | head -1)"
+  [ -n "$tmpl" ] || { printf 'NO DUTY LINE HOLDS: %s\n' "$1"; return 0; }
+  log() { printf '2026-11-05T10:00:00Z %s\n' "$*"; }
+  eval "$tmpl"
+)
+RL_LINE_CUTTING="$(rl_duty_line ' — cutting ')"
+RL_LINE_OPENED="$(rl_duty_line ' opened (')"
+RL_LINE_HELD="$(rl_duty_line 'open and current')"
+RL_LINE_REFUSED="$(rl_duty_line 'was closed without merging')"
+t release-leg-duty-lines-are-rendered-from-the-duty 0 \
+  "$(printf '%s\n' "$RL_LINE_CUTTING" "$RL_LINE_OPENED" "$RL_LINE_HELD" "$RL_LINE_REFUSED" | grep -c '^NO DUTY LINE' | tr -d ' ')"
+RL_OPENED="$RL_LINE_CUTTING
+$RL_LINE_OPENED"
 t release-leg-opened-pr-reads-the-one-cut 17 "$(rehearsal_release_opened_pr "$RL_OPENED" "$RL_REPO")"
 t release-leg-opened-pr-no-cut-is-empty "" \
   "$(rehearsal_release_opened_pr "2026-11-05T10:00:00Z no release duty: $RL_REPO drill1-@release-drill/1 — CI at abc1234 is red; a cut is bought on a green head" "$RL_REPO")"
 t release-leg-opened-pr-two-cuts-is-empty "" \
   "$(rehearsal_release_opened_pr "$RL_OPENED
-2026-11-05T10:10:00Z release: $RL_REPO#18 opened (release/drill1-0.0.2 at abc1234) — the approval is a person's; the engine stops here" "$RL_REPO")"
+${RL_LINE_OPENED//#17/#18}" "$RL_REPO")"
 t release-leg-opened-pr-ignores-another-repository "" \
   "$(rehearsal_release_opened_pr "2026-11-05T10:09:00Z release: ${RL_REPO}2#5 opened (release/x at abc1234) — the approval is a person's; the engine stops here" "$RL_REPO")"
-RL_HELD="2026-11-05T10:20:00Z no release duty: $RL_REPO drill1-@release-drill/1 — the engine's own release PR is open and current; the approval is a person's"
+RL_HELD="$RL_LINE_HELD"
 t release-leg-second-tick-held "held" \
   "$(rehearsal_release_second_tick "$RL_HELD" "$RL_REPO" release-drill/1 drill1-)"
 t release-leg-second-tick-cutting-again-is-a-cut "cut" \
@@ -3857,7 +3881,7 @@ t release-leg-second-tick-another-track-held-proves-nothing "unknown" \
 t release-leg-second-tick-silence-proves-nothing "unknown" \
   "$(rehearsal_release_second_tick "" "$RL_REPO" release-drill/1 drill1-)"
 t release-leg-refusal-recorded "refused" \
-  "$(rehearsal_release_refused "2026-11-05T10:30:00Z release: $RL_REPO#17 was closed without merging (release/drill1-0.0.2) — refused; the track at abc1234 is not cut again until it moves" "$RL_REPO" 17)"
+  "$(rehearsal_release_refused "$RL_LINE_REFUSED" "$RL_REPO" 17)"
 t release-leg-withdrawal-is-not-a-refusal "unknown" \
   "$(rehearsal_release_refused "2026-11-05T10:30:00Z release: $RL_REPO#17 withdrawn (release/drill1-0.0.2) — main moved 1 merge(s) past abc1234; the new head is cut next tick" "$RL_REPO" 17)"
 RL_PULL='{"state":"open","labels":[{"name":"release"}],"base":{"ref":"main"},"head":{"ref":"release/drill1-0.0.2","sha":"f00","repo":{"full_name":"drillbot/crew-drill-triage","owner":{"login":"drillbot"}}}}'
@@ -3890,16 +3914,28 @@ RL="$TMP/release-leg"
 mkdir -p "$RL/bin"
 cat >"$RL/bin/gh" <<'GH'
 #!/usr/bin/env bash
+# The sandbox as state: $RL/present holds one entry per file on main (PUT
+# makes it, DELETE removes it), $RL/branch-alive is the cut's branch on the
+# fork. A stub that answers every read the same way cannot tell a cleanup
+# that ran from one that did not.
 printf '%s\n' "$*" >>"$RL/gh.log"
-case "$*" in
-  *"/git/refs/heads/"*) [ -e "$RL/branch-alive" ] && exit 0; exit 1 ;;
-  "api repos/"*"/contents/"*"/VERSION?ref="*) printf '%s' "${RL_HEAD_VERSION:-0.0.2}" | base64 ;;
-  "api repos/"*"/contents/"*) exit 1 ;;
-  "api -X PUT "*) exit "${RL_PUT_RC:-0}" ;;
-  "api repos/"*"/commits/main --jq .sha") printf 'abc1234abc1234\n' ;;
-  "api repos/"*"/pulls?state=open"*) cat "$RL/pulls.json" ;;
-  "api --paginate repos/"*"/files"*) cat "$RL/files.json" ;;
-  "api repos/"*"/pulls/"*) cat "$RL/pull.json" ;;
+[ "${1:-}" = api ] || exit 0
+shift
+verb=GET
+if [ "$1" = -X ]; then verb="$2"; shift 2; fi
+[ "$1" = --paginate ] && shift
+url="$1"
+file="${url#repos/*/*/contents/}"; file="${file%%\?*}"; file="${file//\//%}"
+case "$verb $url" in
+  "GET repos/"*"/git/ref/heads/"*) [ -e "$RL/branch-alive" ]; exit $? ;;
+  "GET repos/"*"/contents/"*"?ref=main") [ -e "$RL/present/$file" ] || exit 1; printf 'sha-%s\n' "$file" ;;
+  "GET repos/"*"/contents/"*"/VERSION?ref="*) printf '%s' "${RL_HEAD_VERSION:-0.0.2}" | base64 ;;
+  "PUT repos/"*"/contents/"*) [ "${RL_PUT_RC:-0}" = 0 ] || exit "$RL_PUT_RC"; touch "$RL/present/$file" ;;
+  "DELETE repos/"*"/contents/"*) rm -f "$RL/present/$file" ;;
+  "GET repos/"*"/commits/main") printf 'abc1234abc1234\n' ;;
+  "GET repos/"*"/pulls?state=open"*) cat "$RL/pulls.json" ;;
+  "GET repos/"*"/files"*) cat "$RL/files.json" ;;
+  "GET repos/"*"/pulls/"*) cat "$RL/pull.json" ;;
 esac
 exit 0
 GH
@@ -3911,6 +3947,7 @@ rl_run() (
   export RL PATH="$RL/bin:$PATH"
   ROLE=triage
   rm -f "$RL/gh.log" "$RL/n"
+  rm -rf "$RL/present"; mkdir -p "$RL/present"
   ok()   { printf 'ok   %s\n' "$1"; }
   fail() { printf 'FAIL %s\n' "$1"; }
   skip() { printf 'skip %s\n' "$1"; }
@@ -3919,10 +3956,13 @@ rl_run() (
   rehearsal_create_builder_fork() { :; }
   date() { if [ "${1:-}" = -u ]; then printf '1\n'; else command date "$@"; fi; }
   bx() {
+    printf 'bx %s\n' "$1" >>"$RL/gh.log"
     case "$1" in
       *duty_release*)
         local n; n=$(( $(cat "$RL/n" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$RL/n"
-        [ "$n" -ne 3 ] || rm -f "$RL/branch-alive"
+        # The duty deletes a refused cut's branch on its third tick; with
+        # RL_BRANCH_LEFT it does not, which the branch row must catch.
+        [ "$n" -ne 3 ] || [ -n "${RL_BRANCH_LEFT:-}" ] || rm -f "$RL/branch-alive"
         eval "printf '%s\n' \"\${RL_OUT$n:-}\"" ;;
     esac
   }
@@ -3933,9 +3973,10 @@ printf '[%s]\n' "$RL_PULL" >"$RL/pulls.json"
 printf '%s\n' "$RL_PULL" >"$RL/pull.json"
 printf '%s\n' "$RL_FILES" >"$RL/files.json"
 RL_T="release-drill/1"
-export RL_OUT1="2026-11-05T10:09:00Z release: $RL_REPO#17 opened (release/drill1-0.0.2 at abc1234) — the approval is a person's; the engine stops here"
-export RL_OUT2="2026-11-05T10:20:00Z no release duty: $RL_REPO drill1-@$RL_T — the engine's own release PR is open and current; the approval is a person's"
-export RL_OUT3="2026-11-05T10:30:00Z release: $RL_REPO#17 was closed without merging (release/drill1-0.0.2) — refused; the track at abc1234 is not cut again until it moves"
+export RL_OUT1="$RL_OPENED"
+RL_OUT2="$(rl_duty_line 'open and current' "$RL_T" drill1-)"
+export RL_OUT2
+export RL_OUT3="$RL_LINE_REFUSED"
 RL_STATUS="$TMP/release-leg-verdicts"
 : >"$RL_STATUS"
 if RL_GREEN="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
@@ -3944,11 +3985,48 @@ t release-leg-green-run-has-no-red-row 0 "$(grep -c '^FAIL' <<<"$RL_GREEN" | tr 
 t release-leg-green-run-records-ok "triage ok " "$(cat "$RL_STATUS")"
 t release-leg-seeds-the-track-before-arming-it 1 \
   "$(grep -c '^ok   release: a fresh track tagged drill1-0.0.1, armed 0.0.2-dev, one fragment merged' <<<"$RL_GREEN" | tr -d ' ')"
-t release-leg-tags-before-arming "refs/tags/drill1-0.0.1" \
-  "$(grep -oE 'refs/tags/drill1-0\.0\.1' "$RL/gh.log" | head -1)"
-t release-leg-cleanup-deletes-tag-and-branch 2 \
-  "$( { grep -c 'DELETE repos/drillhost/crew-drill-triage/git/refs/tags/drill1-0.0.1' "$RL/gh.log"; \
-        grep -c 'pr close 17' "$RL/gh.log"; } | awk '$1 > 0' | wc -l | tr -d ' ')"
+# The first-release edge is an ORDER: VERSION at 0.0.1, then the tag, then
+# VERSION armed 0.0.2-dev. A grep for the tag alone is green with the tag made
+# after the arming, which is a track the duty refuses as the operator's cut.
+rl_line() { grep -nF -- "$1" "$RL/gh.log" | head -1 | cut -d: -f1; }
+RL_AT_001="$(rl_line 'message=drill: track release-drill/1 at 0.0.1')"
+RL_AT_TAG="$(rl_line 'ref=refs/tags/drill1-0.0.1')"
+RL_AT_ARM="$(rl_line 'message=drill: arm release-drill/1 for 0.0.2')"
+t release-leg-tags-between-0.0.1-and-arming "in order" \
+  "$([ -n "$RL_AT_001" ] && [ -n "$RL_AT_TAG" ] && [ -n "$RL_AT_ARM" ] \
+     && [ "$RL_AT_001" -lt "$RL_AT_TAG" ] && [ "$RL_AT_TAG" -lt "$RL_AT_ARM" ] \
+     && echo "in order" || echo "0.0.1@$RL_AT_001 tag@$RL_AT_TAG arm@$RL_AT_ARM")"
+# What the round leaves on the sandbox: the three shared files and nothing of
+# the track — every file the seed registered was deleted by cleanup.
+t release-leg-cleanup-leaves-only-the-shared-files ".ceremony%RELEASES.md .github%workflows%release.yml AGENTS.md" \
+  "$(find "$RL/present" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | paste -sd' ')"
+t release-leg-cleanup-deletes-the-seed-tag 1 \
+  "$(grep -cF 'api -X DELETE repos/drillhost/crew-drill-triage/git/refs/tags/drill1-0.0.1' "$RL/gh.log" | tr -d ' ')"
+t release-leg-cleanup-deletes-the-fork-branch-as-the-box 1 \
+  "$(grep -cF "bx gh api -X DELETE 'repos/drillbot/crew-drill-triage/git/refs/heads/release/drill1-0.0.2'" "$RL/gh.log" | tr -d ' ')"
+t release-leg-cleanup-drops-the-box-track-memory 1 \
+  "$(grep -cF 'bx rm -f ~/duty/.release-cut-drillhost_crew-drill-triage-drill1-' "$RL/gh.log" | tr -d ' ')"
+# Cleanup on its own, as the EXIT trap runs it after a leg died mid-round: the
+# cut still open is closed. The green round's own close (the refusal step)
+# comes before the third tick and proves nothing about this one.
+RL_CLEAN="$(
+  # shellcheck disable=SC2031  # this subshell's PATH is its own on purpose
+  export RL PATH="$RL/bin:$PATH"
+  rm -f "$RL/gh.log"; rm -rf "$RL/present"; mkdir -p "$RL/present"
+  touch "$RL/present/release-drill%1%VERSION" "$RL/present/release-drill%1%changelog.d%1.md"
+  bx() { printf 'bx %s\n' "$1" >>"$RL/gh.log"; }
+  REHEARSAL_RELEASE_REPO="$RL_REPO" REHEARSAL_RELEASE_PR=17 REHEARSAL_RELEASE_TAG=drill1-0.0.1
+  REHEARSAL_RELEASE_FORK=drillbot/crew-drill-triage REHEARSAL_RELEASE_BRANCH=release/drill1-0.0.2
+  REHEARSAL_RELEASE_FILES="release-drill/1/VERSION release-drill/1/changelog.d/1.md" REHEARSAL_RELEASE_SLUG=s1
+  rehearsal_release_cleanup
+  printf 'close=%s files=%s fork=%s tag=%s memory=%s\n' \
+    "$(grep -cF "pr close 17 -R $RL_REPO" "$RL/gh.log")" \
+    "$(find "$RL/present" -mindepth 1 | wc -l | tr -d ' ')" \
+    "$(grep -cF "git/refs/heads/release/drill1-0.0.2'" "$RL/gh.log")" \
+    "$(grep -cF 'git/refs/tags/drill1-0.0.1' "$RL/gh.log")" \
+    "$(grep -cF 'bx rm -f ~/duty/.release-cut-s1 ' "$RL/gh.log")"
+)"
+t release-leg-cleanup-unwinds-a-dead-round "close=1 files=0 fork=1 tag=1 memory=1" "$RL_CLEAN"
 # A second tick that cuts again is the defect itself: red, and on the record.
 : >"$RL_STATUS"
 if RL_RED="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT2="$RL_OUT1" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
@@ -3961,6 +4039,23 @@ t release-leg-second-cut-returns-1 1 "$rl_rc"
 RL_FORGOT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT3="" rl_run 2>&1)" || true
 t release-leg-forgotten-refusal-reds 1 \
   "$(grep -c '^FAIL release: a cut closed unmerged is recorded as refused' <<<"$RL_FORGOT" | tr -d ' ')"
+# A refused cut whose branch the duty leaves on the fork reds the branch row
+# and only it, with what it read.
+: >"$RL_STATUS"
+RL_LEFT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_BRANCH_LEFT=1 rl_run 2>&1)" || true
+t release-leg-branch-left-on-the-fork-reds "  read: refs/heads/release/drill1-0.0.2 still on drillbot/crew-drill-triage|FAIL release: the refused cut's branch is deleted on the fork" \
+  "$(grep -E '^FAIL|read: refs/heads' <<<"$RL_LEFT" | paste -sd'|')"
+# A third tick that refuses AND cuts again reds the not-cut-again row.
+: >"$RL_STATUS"
+RL_RECUT="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_OUT3="$RL_LINE_REFUSED
+$RL_LINE_CUTTING" rl_run 2>&1)" || true
+t release-leg-refused-track-cut-again-reds "FAIL release: the refused track is not cut again" \
+  "$(grep -E '^FAIL' <<<"$RL_RECUT" | paste -sd'|')"
+# A cut whose head still reads the armed VERSION reds the VERSION row.
+: >"$RL_STATUS"
+RL_UNSTAMPED="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_HEAD_VERSION=0.0.2-dev rl_run 2>&1)" || true
+t release-leg-unstamped-version-reds "  read: VERSION reads [0.0.2-dev]|FAIL release: VERSION at the PR's head reads 0.0.2" \
+  "$(grep -E "^FAIL|read: VERSION" <<<"$RL_UNSTAMPED" | paste -sd'|')"
 # A file set that is not the cut reds its row, with what it read.
 : >"$RL_STATUS"
 jq -c 'map(select(.filename|test("drills/")|not))' <<<"$RL_FILES" >"$RL/files.json"

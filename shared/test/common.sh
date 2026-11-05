@@ -3962,8 +3962,8 @@ agg_run() {  # $1 roles, then extra flags
   local roles="$1"; shift
   # Every sibling leg the notify fold is not under test with is switched off,
   # --no-hygiene-drill (#422), --no-breaker-drill (#424),
-  # --no-attention-drill (#440) and --no-attention-audit-drill --no-release-drill (#441)
-  # included: these
+  # --no-attention-drill (#440), --no-attention-audit-drill (#441) and
+  # --no-release-drill (#762) included: these
   # cases assert what the NOTIFY
   # verdict does to `overall`, and a neighbour's row moving it would red them
   # for a reason that is not theirs. The composition of the two folds gets its

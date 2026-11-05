@@ -99,6 +99,7 @@ any of them does not cover that leg's contract.
 | `--no-breaker-drill` | the terminal-failure `breaker` leg |
 | `--no-notify-drill` | the operator-notification `notify` leg |
 | `--no-fleet-drill` | the fleet-lifecycle `fleet` leg |
+| `--no-release-drill` | the triage `release` leg |
 | `--keep` | teardown: boxes and sandboxes are retained deliberately |
 
 ## Phase 0 — acquire the exact tree, then run static checks
@@ -508,7 +509,14 @@ dispatch-only, so nothing ever runs on it.
 - **Needs** `triage` in `--roles`, that box's phase 2, and a triage identity
   that is NOT the sandbox's owner: the cut is pushed from a fork the identity
   owns, which the leg resolves or creates. The ceremony pin is crew's own,
-  read from `.github/workflows/release.yml`.
+  read from `.github/workflows/release.yml`. The HOST identity (the
+  sandbox's owner) seeds the track through the contents API, and the first
+  seed writes `.github/workflows/release.yml`: GitHub refuses a write under
+  `.github/workflows/` from a token without workflow permission (a classic
+  token lacking the `workflow` scope, a fine-grained one lacking *Workflows:
+  write*), so check that identity's `gh auth status` and add it with `gh auth
+  refresh -s workflow` if missing. Without it the row reads `the track could
+  not be seeded`.
 - **Produces** the `release` row: `ok (one cut per tick on a fresh track, held
   by its open PR, refused when closed)`, `FAIL`, `INCOMPLETE (triage role
   omitted)`, `INCOMPLETE (triage phase 2 never reached the leg)`, `INCOMPLETE
@@ -519,9 +527,13 @@ dispatch-only, so nothing ever runs on it.
   is not the cut (label, base, fork, its file set), or a refusal the engine
   forgets. The record is graded present, never its prose; the consumer's own
   approval door is the seven-day run's reading, not this leg's.
-- **Cleans up** its pull request, fork branch, tag and track files; the shared
-  release caller, `.ceremony/RELEASES.md` and `AGENTS.md` it wrote stay for
-  the next round.
+- **Cleans up** its pull request, fork branch, tag, track files and the
+  box's per-track memory (`.release-cut-`, `.release-tried-`, `.release-due-`
+  for the round's slug). What stays, on purpose: the shared release caller,
+  `.ceremony/RELEASES.md` and `AGENTS.md` it wrote, for the next round; the
+  identity's fork of the sandbox, which the builder block owns and reuses; and
+  the round's row in the box's `.seen-release` ledger, keyed by the stamped
+  track path and so never matching a later round's track.
 
 ### notify — `drill/rehearsal-notify.sh`
 
