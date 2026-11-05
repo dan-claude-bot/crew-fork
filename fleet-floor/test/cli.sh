@@ -69,9 +69,12 @@ echo "== crew floor CLI"
 # comments, (a) no literal in the floor's 8600-8999 port range appears at all
 # (any shape: --port, a probe argument, a URL, /dev/tcp, a bind tuple), and
 # (b) every use of CL_PORT_BASE is exactly $((CL_PORT_BASE + N)) with N in
-# 5..25, not followed by another digit, and (c) run.sh's own PORT and
-# FLOOR_TEST_PORT never appear: a port built on them lands in run.sh's +0..4
-# or past the band (#767 rounds 3 and 4: a PORT-line filter missed
+# 5..25, neither followed by a digit nor nested in more arithmetic, (c)
+# run.sh's own PORT and FLOOR_TEST_PORT never appear as a word (the help
+# text's "IP:PORT" is the one exemption), and (d) no --port or *PORT= takes a
+# number literally: a port built on them lands in run.sh's +0..4 or past the
+# band (#767 round 5: `(( p = PORT + 3 ))` got past an operand-only match;
+# rounds 3 and 4: a PORT-line filter missed
 # `cl_refuses … 8880` and `$((CL_PORT_BASE+30))`, a CL_PORT_BASE-only count
 # missed `$((PORT + 3))`). The definition line is the one exception. The census
 # does not follow arithmetic through a variable that holds a port: such a
@@ -86,7 +89,10 @@ cl_port_census() { # FILE -> "<floor-range literals> <port bases or offsets off 
     "$(grep -oE '(^|[^0-9])8[6-9][0-9]{2}([^0-9]|$)' <<<"$code" | wc -l | tr -d ' ')" \
     "$(( $(grep -oE 'CL_PORT_BASE' <<<"$code" | wc -l) \
        - $(grep -oE '\$\(\(CL_PORT_BASE \+ ([5-9]|1[0-9]|2[0-5])\)\)([^0-9]|$)' <<<"$code" | wc -l) \
-       + $(grep -oE '(\$\{?|\(\([[:space:]]*|[-+*/][[:space:]]*)(PORT|FLOOR_TEST_PORT)([^A-Za-z0-9_]|$)' <<<"$code" | wc -l) ))"
+       + $(grep -vF '"IP:PORT"' <<<"$code" | grep -oE '(^|[^A-Za-z0-9_])(PORT|FLOOR_TEST_PORT)([^A-Za-z0-9_]|$)' | wc -l) \
+       + $(grep -oE '(\(\(|[-+*/])[[:space:]]*\$\(\(CL_PORT_BASE' <<<"$code" | wc -l) \
+       + $(grep -oE 'CL_PORT_BASE \+ [0-9]+\)\)[[:space:]]*[-+*/][[:space:]]*[0-9$(]' <<<"$code" | wc -l) \
+       + $(grep -oE '(--port[= ]+|PORT=)"?[0-9]' <<<"$code" | wc -l) ))"
 }
 t "cli: no floor-range port literal, and every CL_PORT_BASE use is + 5..25" "0 0" "$(cl_port_census "$CL_HERE/cli.sh")"
 CL_PC_TMP="$(mktemp)"
@@ -96,7 +102,10 @@ for cl_bad in 'cl_refuses "x" 8880 \' 'cl_listening 8880' 'curl http://localhost
               'crew_floor --port $((CL_PORT_BASE+30))' 'crew_floor --port $((CL_PORT_BASE + 5 + 30))' \
               'crew_floor --port $((CL_PORT_BASE + 26))' 'crew_floor --port $((CL_PORT_BASE + 4))' \
               'crew_floor --port $((PORT + 3))' 'crew_floor --port $((FLOOR_TEST_PORT + 30))' \
-              'crew_floor --port "${PORT}"' 'crew_floor --port $((8 + PORT))' 'crew_floor --port "$((CL_PORT_BASE + 5))0"'; do
+              'crew_floor --port "${PORT}"' 'crew_floor --port $((8 + PORT))' \
+              '(( p = PORT + 3 ))' 'let p=PORT+3' 'x=$((CL_X=PORT+3))' 'x=$(( (PORT + 3) ))' \
+              'x=$(( 1 ? PORT+3 : 0 ))' 'x=$(( $((CL_PORT_BASE + 5)) + 30 ))' \
+              'crew_floor --port 8591' 'CREW_FLOOR_PORT=9100 python3 x' 'crew_floor --port "$((CL_PORT_BASE + 5))0"'; do
   { cat "$CL_HERE/cli.sh"; printf '%s\n' "$cl_bad"; } >"$CL_PC_TMP"
   [ "$(cl_port_census "$CL_PC_TMP")" != "0 0" ] || CL_PC_MISSED="${CL_PC_MISSED:-}${CL_PC_MISSED:+ | }$cl_bad"
 done
