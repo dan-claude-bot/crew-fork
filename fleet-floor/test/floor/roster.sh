@@ -178,7 +178,7 @@ for _ in 1 2 3 4 5; do
   rm -f "$RS_STATE/on-list.ran"
   printf '#!/usr/bin/env bash\nprintf "rs-late        kimi    reviewer\\n" >>"%s"\n' "$RS_ROSTER" >"$RS_STATE/on-list"
   RS_LATE="$(rs_set "$RS_FRESH" "$RS_LATE_ETAG")"
-  printf '%s\n' "$RS_LATE" | sed '$d' | grep -q 'since the editor opened it' || break
+  grep -q 'since the editor opened it' <<<"$RS_LATE" || break
   sed -i '/^rs-late /d' "$RS_ROSTER"
 done
 rm -f "$RS_STATE/on-list"
