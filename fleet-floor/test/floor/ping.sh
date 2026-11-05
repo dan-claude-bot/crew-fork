@@ -42,6 +42,23 @@ t "ping: a wedged heartbeat at the tier's worst published age is still wedged un
   True "$(fs_wedged_at_worst)"
 t "ping: under main's interval default of 8 the same heartbeat reads stale, not wedged (the #626 inversion)" \
   False "$(fs_wedged_at_worst 8)"
+# ...and the collector the force block talks to was started with that bound:
+# its own environment, read off the running process, not the suite's copy of
+# it, so a launch line that drops or overrides the bound reds here.
+if [ -r "/proc/$SRV/environ" ]; then
+  t "ping: the running collector was started with the suite's stale bound" \
+    "CREW_FLOOR_PING_STALE_AFTER=$CREW_FLOOR_PING_STALE_AFTER" \
+    "$(tr '\0' '\n' <"/proc/$SRV/environ" | grep '^CREW_FLOOR_PING_STALE_AFTER=' || echo unset)"
+else
+  skip "ping: the running collector was started with the suite's stale bound" "no /proc/$SRV/environ on this host"
+fi
+# The fix is the suite's environment, never ping.py's derivation (#626's
+# must-fail: widening the production default to fix a test tier): unset, the
+# module still derives interval * (fails + 2), main's 8 at this tier.
+t "ping: ping.py's own default is unchanged, interval * (fails + 2)" \
+  "$(( FLOOR_TEST_PING_INTERVAL * (FLOOR_TEST_PING_FAILS + 2) ))" \
+  "$(env -u CREW_FLOOR_PING_STALE_AFTER CREW_FLOOR_PING_INTERVAL="$FLOOR_TEST_PING_INTERVAL" CREW_FLOOR_PING_FAILS="$FLOOR_TEST_PING_FAILS" \
+     PYTHONPATH="$FLOOR/server" python3 -c 'from floor.ping import PING_STALE_AFTER_S as s; print(s)')"
 t "ping: a longer timeout raises run.sh's derived bound" 30 \
   "$(FLOOR_TEST_PING_TIMEOUT=9 bash -c 'unset FLOOR_TEST_PING_STALE_AFTER; eval "$(grep -m1 "^FLOOR_TEST_PING_STALE_AFTER=" "$1")"; echo "$FLOOR_TEST_PING_STALE_AFTER"' _ "$HERE/run.sh")"
 

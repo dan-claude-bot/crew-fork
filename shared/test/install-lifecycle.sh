@@ -115,6 +115,23 @@ mk_src() {  # <dir> <version> — the tree under test, with VERSION rewritten
   # below would pass whether or not the installer still excludes it.
   mkdir -p "$1/.git" && : > "$1/.git/HEAD"
 }
+# #536's regression, in the suite and not only on a developer's checkout: a
+# source tree carrying an ignored __pycache__/ and node_modules/ beside its
+# tracked files. CI's clean checkout has neither, so without this case a
+# reverted mk_src (a filesystem copy again) stays green everywhere.
+MK536="$WORK/mk536-src"
+mkdir -p "$MK536/lib/__pycache__" "$MK536/lib/node_modules/x"
+printf '__pycache__/\nnode_modules/\n' >"$MK536/.gitignore"
+printf 'tracked\n' >"$MK536/lib/kept.sh"
+: >"$MK536/lib/__pycache__/m.cpython-311.pyc"; : >"$MK536/lib/node_modules/x/index.js"
+printf 'stray\n' >"$MK536/lib/untracked.sh"
+git -C "$MK536" init -q && git -C "$MK536" add .gitignore lib/kept.sh \
+  && git -C "$MK536" -c user.name=t -c user.email=t@t commit -qm seed
+MK536_KEEP="$SRC"; SRC="$MK536"; mk_src "$WORK/mk536-out" 0.0.0-mk536; SRC="$MK536_KEEP"
+MK536_SEEN="$(cd "$WORK/mk536-out" && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort | paste -sd' ')"
+same mk-src-copies-tracked-files-only "./.gitignore ./VERSION ./lib/kept.sh" "$MK536_SEEN"
+rm -rf "$MK536" "$WORK/mk536-out"
+
 SA="$WORK/src-a"; SB="$WORK/src-b"; SC="$WORK/src-clean"
 mk_src "$SA" "$VA"
 mk_src "$SB" "$VB"

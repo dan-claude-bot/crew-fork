@@ -13,7 +13,8 @@ CL_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CL_FLOOR="$(dirname "$CL_HERE")"
 CL_ROOT="$(dirname "$CL_FLOOR")"
 # Every port this file binds sits in the suite's own band, FLOOR_TEST_PORT+5
-# to +25 (run.sh binds +0 to +4), so two runs on bases more than 25 apart
+# to +25 (run.sh binds +0 to +4; roster.sh's +5 is gone before this file
+# runs), so two runs on bases more than 25 apart
 # never meet, and run.sh refuses to start beside a live run whose band could
 # overlap. With fixed literals here two runs' version collectors answered each
 # other's requests (#767 review, the #626 load run); with a plain offset of an
@@ -64,15 +65,35 @@ fi
 
 echo
 echo "== crew floor CLI"
-# Pinned, below the standalone block so a hand run has its `t`: a port
-# enters this file only as CL_PORT_BASE + 5..25, and a bare four-digit literal
-# on a port-bearing line outside a comment is a collision waiting for a second
-# run.
-t "cli: every port this suite binds is CL_PORT_BASE + 5..25" "0 0" \
-  "$(grep -vE '^[[:space:]]*#' "$CL_HERE/cli.sh" | grep -v 'FLOOR_TEST_PORT:-8791' \
-       | grep -E -- '(--port|(^|[^A-Z])PORT|_PORT|127\.0\.0\.1:)' | grep -cE '(^|[^0-9])[0-9]{4,5}([^0-9]|$)' || true) \
-$(grep -oE 'CL_PORT_BASE \+ [0-9]+' "$CL_HERE/cli.sh" | awk '$3 < 5 || $3 > 25' | wc -l | tr -d ' ')"
-
+# Pinned, below the standalone block so a hand run has its `t`. Outside
+# comments, (a) no literal in the floor's 8600-8999 port range appears at all
+# (any shape: --port, a probe argument, a URL, /dev/tcp, a bind tuple), and
+# (b) every use of CL_PORT_BASE is exactly $((CL_PORT_BASE + N)) with N in
+# 5..25 (#767 round 3: a PORT-line filter missed `cl_refuses … 8880` and
+# `$((CL_PORT_BASE+30))`). The definition line is the one exception to both.
+# shellcheck disable=SC2016  # the patterns are literal text, matched, never expanded
+cl_port_census() { # FILE -> "<floor-range literals> <CL_PORT_BASE uses off the band>"
+  local code
+  # The census and its own self-test below are not ports; everything else is.
+  code="$(sed '/^cl_port_census() {/,/^ok "cli: the port census reds/d' "$1" \
+    | grep -vE '^[[:space:]]*#' | grep -vF 'CL_PORT_BASE="${FLOOR_TEST_PORT:-8791}"')"
+  printf '%s %s\n' \
+    "$(grep -oE '(^|[^0-9])8[6-9][0-9]{2}([^0-9]|$)' <<<"$code" | wc -l | tr -d ' ')" \
+    "$(( $(grep -oE 'CL_PORT_BASE' <<<"$code" | wc -l) \
+       - $(grep -oE '\$\(\(CL_PORT_BASE \+ ([5-9]|1[0-9]|2[0-5])\)\)' <<<"$code" | wc -l) ))"
+}
+t "cli: no floor-range port literal, and every CL_PORT_BASE use is + 5..25" "0 0" "$(cl_port_census "$CL_HERE/cli.sh")"
+CL_PC_TMP="$(mktemp)"
+# shellcheck disable=SC2016,SC1003  # each shape is literal source text, never run
+for cl_bad in 'cl_refuses "x" 8880 \' 'cl_listening 8880' 'curl http://localhost:8880/' \
+              'exec 3<>/dev/tcp/127.0.0.1/8880' 's.bind(("127.0.0.1", 8880))' \
+              'crew_floor --port $((CL_PORT_BASE+30))' 'crew_floor --port $((CL_PORT_BASE + 5 + 30))' \
+              'crew_floor --port $((CL_PORT_BASE + 26))' 'crew_floor --port $((CL_PORT_BASE + 4))'; do
+  { cat "$CL_HERE/cli.sh"; printf '%s\n' "$cl_bad"; } >"$CL_PC_TMP"
+  [ "$(cl_port_census "$CL_PC_TMP")" != "0 0" ] || fail "cli: the port census reds on: $cl_bad"
+done
+rm -f "$CL_PC_TMP"
+ok "cli: the port census reds on each shape a port could enter by"
 
 # crew_floor ARGS... — runs a short-lived `crew floor`, leaving its combined
 # output in $CL_TMP/out and its exit status in $CL_RC.

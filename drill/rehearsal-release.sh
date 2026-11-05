@@ -155,23 +155,33 @@ rehearsal_release_put() {
     ${sha:+-f sha="$sha"} >/dev/null
 }
 
-rehearsal_release_exists() { gh api "repos/$1/contents/$2?ref=main" >/dev/null 2>&1; }
+# rehearsal_release_sync REPO PATH CONTENT MESSAGE — a shared sandbox file is
+# written when main does not already carry exactly CONTENT: absent, or left by
+# a round run at another ceremony pin or doctrine. A reused sandbox keeps one
+# copy, and that copy is always crew's current one (#767 round 3: written only
+# when absent, a later round cut at the first round's pin).
+rehearsal_release_sync() {
+  local cur
+  cur="$(gh api "repos/$1/contents/$2?ref=main" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)"
+  [ "$cur" = "$(printf '%s' "$3")" ] && return 0
+  rehearsal_release_put "$@"
+}
 
 # rehearsal_release_seed REPO TRACK_PATH PREFIX PIN — the track, built the way
 # a consumer's is: tagged at 0.0.1 BEFORE VERSION is armed (no tag yet is the
 # operator's first cut, which the duty refuses on purpose), then armed
 # 0.0.2-dev, then one change on the track — a fragment, the only shape a
 # final cut ships. The shared files — the release caller naming the pin and
-# the doctrine the session is told to read — are written only when absent, so
-# a reused sandbox keeps one copy. Registers as it goes; call it bare.
+# the doctrine the session is told to read — are synced to crew's own, so a
+# reused sandbox keeps one copy at crew's current pin. Registers as it goes;
+# call it bare.
 rehearsal_release_seed() {
   local repo="$1" path="$2" prefix="$3" pin="$4" main_sha
   REHEARSAL_RELEASE_REPO="$repo"
   # A workflow_dispatch-only caller: the duty reads the pin off it, and it
   # never runs, so no check run lands on the sandbox's main (the duty's CI
   # read then answers `none`, which RELEASE_CI_GRACE_S=0 lets it cut).
-  if ! rehearsal_release_exists "$repo" .github/workflows/release.yml; then
-    rehearsal_release_put "$repo" .github/workflows/release.yml "name: release
+  rehearsal_release_sync "$repo" .github/workflows/release.yml "name: release
 # Drill fixture (crew's release leg, #762): the duty reads the ceremony pin
 # below. Dispatch-only, so nothing ever runs on this sandbox.
 on: workflow_dispatch
@@ -179,18 +189,13 @@ jobs:
   release:
     uses: heavy-duty/ceremony/.github/workflows/release.yml@$pin
 " "drill: release caller at ceremony@$pin" || return 1
-  fi
-  if ! rehearsal_release_exists "$repo" .ceremony/RELEASES.md; then
-    rehearsal_release_put "$repo" .ceremony/RELEASES.md "$(cat "$ROOT/.ceremony/RELEASES.md")" \
-      "drill: release doctrine" || return 1
-  fi
-  if ! rehearsal_release_exists "$repo" AGENTS.md; then
-    rehearsal_release_put "$repo" AGENTS.md "# Drill sandbox
+  rehearsal_release_sync "$repo" .ceremony/RELEASES.md "$(cat "$ROOT/.ceremony/RELEASES.md")" \
+    "drill: release doctrine" || return 1
+  rehearsal_release_sync "$repo" AGENTS.md "# Drill sandbox
 
 A fixture repository for crew's drill. Its doctrine is \`.ceremony/\`; a track
 under \`release-drill/\` is a release fixture with its own VERSION, CHANGELOG.md,
 changelog.d/ and drills/." "drill: doctrine entrypoint" || return 1
-  fi
   rehearsal_release_put "$repo" "$path/VERSION" "0.0.1
 " "drill: track $path at 0.0.1" || return 1
   REHEARSAL_RELEASE_FILES="$path/VERSION"

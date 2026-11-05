@@ -42,7 +42,8 @@ command -v python3 >/dev/null || { echo "python3 required"; exit 1; }
 port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3<&- 3>&-; return 0; }; return 1; }
 # Every port this suite binds is its band, FLOOR_TEST_PORT+0 to +25: the main
 # collector, the collector-death one, the fast-polling churn one and #204's
-# empty-floor one at +0..+4, and cli.sh's at +5..+25. A second run overlaps
+# empty-floor one at +0..+4, roster.sh's editor collector at +5 (killed at the
+# end of its own block, before cli.sh starts), and cli.sh's at +5..+25. A second run overlaps
 # that band only from a base within 25 of this one, and its main collector
 # holds its base for its whole run, so +-25 is probed up front: a busy port
 # discovered four minutes in reads as a broken collector, and a band shared

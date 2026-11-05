@@ -3926,15 +3926,28 @@ verb=GET
 if [ "$1" = -X ]; then verb="$2"; shift 2; fi
 [ "$1" = --paginate ] && shift
 url="$1"
+# --jq and -f content= as the leg passes them: a file on main is stored with
+# its bytes, so a read can tell a stale shared file from a current one.
+jq_expr="" put_b64=""
+for ((i = 2; i <= $#; i++)); do
+  case "${!i}" in
+    --jq) j=$((i + 1)); jq_expr="${!j}" ;;
+    content=*) put_b64="${!i#content=}" ;;
+  esac
+done
 file="${url#repos/*/*/contents/}"; file="${file%%\?*}"; file="${file//\//%}"
 case "$verb $url" in
   "GET repos/"*"/git/ref/heads/"*) [ -e "$RL/branch-alive" ]; exit $? ;;
-  "GET repos/"*"/contents/"*"?ref=main") [ -e "$RL/present/$file" ] || exit 1; printf 'sha-%s\n' "$file" ;;
+  "GET repos/"*"/contents/"*"?ref=main") [ -e "$RL/present/$file" ] || exit 1
+    if [ "$jq_expr" = .content ]; then base64 <"$RL/present/$file"; else printf 'sha-%s\n' "$file"; fi ;;
   "GET repos/"*"/contents/"*"/VERSION?ref="*) printf '%s' "${RL_HEAD_VERSION:-0.0.2}" | base64 ;;
-  "PUT repos/"*"/contents/"*) [ "${RL_PUT_RC:-0}" = 0 ] || exit "$RL_PUT_RC"; touch "$RL/present/$file" ;;
+  "PUT repos/"*"/contents/"*) [ "${RL_PUT_RC:-0}" = 0 ] || exit "$RL_PUT_RC"; printf '%s' "$put_b64" | base64 -d >"$RL/present/$file"
+    printf 'put %s\n' "$file" >>"$RL/puts.log" ;;
   "DELETE repos/"*"/contents/"*) rm -f "$RL/present/$file" ;;
   "GET repos/"*"/commits/main") printf 'abc1234abc1234\n' ;;
-  "GET repos/"*"/pulls?state=open"*) cat "$RL/pulls.json" ;;
+  # pulls.next, when present, answers the NEXT board read only: one tick's
+  # board can differ from the other's, so each count row has its own red case.
+  "GET repos/"*"/pulls?state=open"*) if [ -e "$RL/pulls.next" ]; then cat "$RL/pulls.next"; rm -f "$RL/pulls.next"; else cat "$RL/pulls.json"; fi ;;
   "GET repos/"*"/files"*) cat "$RL/files.json" ;;
   "GET repos/"*"/pulls/"*) cat "$RL/pull.json" ;;
 esac
@@ -3948,7 +3961,9 @@ rl_run() (
   export RL PATH="$RL/bin:$PATH"
   ROLE=triage
   rm -f "$RL/gh.log" "$RL/n"
-  rm -rf "$RL/present"; mkdir -p "$RL/present"
+  rm -rf "$RL/present" "$RL/puts.log"; mkdir -p "$RL/present"
+  # RL_PRESEED: a sandbox reused from an earlier round, its files already on main.
+  [ -z "${RL_PRESEED:-}" ] || cp -a "$RL_PRESEED/." "$RL/present/"
   ok()   { printf 'ok   %s\n' "$1"; }
   fail() { printf 'FAIL %s\n' "$1"; }
   skip() { printf 'skip %s\n' "$1"; }
@@ -4024,6 +4039,19 @@ t release-leg-cleanup-deletes-the-fork-branch-as-the-box 1 \
   "$(grep -cF "bx gh api -X DELETE 'repos/drillbot/crew-drill-triage/git/refs/heads/release/drill1-0.0.2'" "$RL/gh.log" | tr -d ' ')"
 t release-leg-cleanup-drops-the-box-track-memory 1 \
   "$(grep -cF 'bx rm -f ~/duty/.release-cut-drillhost_crew-drill-triage-drill1-' "$RL/gh.log" | tr -d ' ')"
+# A reused sandbox: the shared files the green round left are kept as they
+# are, and a release caller left at another ceremony pin is rewritten to
+# crew's, so a later round never cuts at an earlier round's pin.
+RL_PIN="$(grep -oE 'heavy-duty/ceremony/\.github/workflows/release\.yml@[^[:space:]]+' "$ROOT/.github/workflows/release.yml" | head -1 | sed 's/.*@//')"
+rm -rf "$RL/reused"; cp -a "$RL/present" "$RL/reused"
+REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_PRESEED="$RL/reused" rl_run >/dev/null 2>&1 || true
+t release-leg-reused-sandbox-keeps-current-shared-files "" \
+  "$(grep -E 'put (\.github%workflows%release\.yml|\.ceremony%RELEASES\.md|AGENTS\.md)$' "$RL/puts.log" | paste -sd' ')"
+sed -i "s|release\.yml@$RL_PIN|release.yml@0.0.0-stale|" "$RL/reused/.github%workflows%release.yml"
+REHEARSAL_RELEASE_STATUS="$RL_STATUS" RL_PRESEED="$RL/reused" rl_run >/dev/null 2>&1 || true
+t release-leg-reused-sandbox-rewrites-a-stale-pin "put .github%workflows%release.yml 1" \
+  "$(grep -E 'put (\.github%workflows%release\.yml|\.ceremony%RELEASES\.md|AGENTS\.md)$' "$RL/puts.log" | paste -sd' ') $(grep -c "release\.yml@$RL_PIN\$" "$RL/present/.github%workflows%release.yml")"
+rm -rf "$RL/reused"
 # Cleanup on its own, as the EXIT trap runs it after a leg died mid-round: the
 # cut still open is closed. The green round's own close (the refusal step)
 # comes before the third tick and proves nothing about this one.
@@ -4092,15 +4120,25 @@ printf '%s\n' "$RL_FILES" >"$RL/files.json"
 t release-leg-file-set-row-reds-with-its-reading 2 \
   "$( { grep -c '^FAIL release: VERSION, CHANGELOG.md and the drill record changed' <<<"$RL_SHAPE"; \
         grep -c 'read: no drill record drills/0.0.2.md' <<<"$RL_SHAPE"; } | awk '$1 > 0' | wc -l | tr -d ' ')"
-# Two release PRs on the board for the track red the count row, and an
-# unlabelled cut reds the shape row; each reaches the verdict.
+# Two release PRs on the board red the count row of the tick that reads them,
+# and only it: after tick 1 (the next read alone), then after tick 2 (the
+# first read answered with one, every later one with two). Each reaches the
+# verdict on its own, so neither row's red can hide behind the other's.
 : >"$RL_STATUS"
-printf '[%s,%s]\n' "$RL_PULL" "$RL_PULL" >"$RL/pulls.json"
+printf '[%s,%s]\n' "$RL_PULL" "$RL_PULL" >"$RL/pulls.next"
 if RL_TWO="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
-printf '[%s]\n' "$RL_PULL" >"$RL/pulls.json"
-t release-leg-two-cuts-on-the-board-red-the-count-row 1 \
-  "$(grep -c '^FAIL release: the board carries exactly one release PR for the track' <<<"$RL_TWO" | tr -d ' ')"
-rl_verdict release-leg-two-cuts-on-the-board-records-fail "$rl_rc"
+rm -f "$RL/pulls.next"
+t release-leg-two-cuts-after-tick-1-red-only-the-first-count-row "FAIL release: the board carries exactly one release PR for the track" \
+  "$(grep -E '^FAIL' <<<"$RL_TWO" | paste -sd'|')"
+rl_verdict release-leg-two-cuts-after-tick-1-records-fail "$rl_rc"
+: >"$RL_STATUS"
+printf '[%s]\n' "$RL_PULL" >"$RL/pulls.next"
+printf '[%s,%s]\n' "$RL_PULL" "$RL_PULL" >"$RL/pulls.json"
+if RL_TWO2="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi
+rm -f "$RL/pulls.next"; printf '[%s]\n' "$RL_PULL" >"$RL/pulls.json"
+t release-leg-two-cuts-after-tick-2-red-only-the-second-count-row "FAIL release: still exactly one release PR after the second tick" \
+  "$(grep -E '^FAIL' <<<"$RL_TWO2" | paste -sd'|')"
+rl_verdict release-leg-two-cuts-after-tick-2-records-fail "$rl_rc"
 : >"$RL_STATUS"
 jq -c '.labels=[]' <<<"$RL_PULL" >"$RL/pull.json"
 if RL_UNLABELLED="$(REHEARSAL_RELEASE_STATUS="$RL_STATUS" rl_run 2>&1)"; then rl_rc=0; else rl_rc=$?; fi

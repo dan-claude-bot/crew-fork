@@ -509,9 +509,12 @@ dispatch-only, so nothing ever runs on it.
 - **Needs** `triage` in `--roles`, that box's phase 2, and a triage identity
   that is NOT the sandbox's owner: the cut is pushed from a fork the identity
   owns, which the leg resolves or creates. The ceremony pin is crew's own,
-  read from `.github/workflows/release.yml`. The HOST identity (the
-  sandbox's owner) seeds the track through the contents API, and the first
-  seed writes `.github/workflows/release.yml`: GitHub refuses a write under
+  read from `.github/workflows/release.yml`, and every round syncs the
+  sandbox's caller and doctrine to it: a file already carrying crew's current
+  content is left alone, one from a round at another pin is rewritten. The HOST
+  identity (the sandbox's owner) seeds the track through the contents API, and
+  a seed that writes `.github/workflows/release.yml` (the first round, or the
+  first after crew's pin moved) needs workflow permission: GitHub refuses a write under
   `.github/workflows/` from a token without workflow permission (a classic
   token lacking the `workflow` scope, a fine-grained one lacking *Workflows:
   write*), so check that identity's `gh auth status` and add it with `gh auth
@@ -530,7 +533,8 @@ dispatch-only, so nothing ever runs on it.
 - **Cleans up** its pull request, fork branch, tag, track files and the
   box's per-track memory (`.release-cut-`, `.release-tried-`, `.release-due-`
   for the round's slug). What stays, on purpose: the shared release caller,
-  `.ceremony/RELEASES.md` and `AGENTS.md` it wrote, for the next round; the
+  `.ceremony/RELEASES.md` and `AGENTS.md`, which the next round re-syncs to
+  crew's pin and doctrine rather than trusting; the
   identity's fork of the sandbox, which the builder block owns and reuses; and
   the round's row in the box's `.seen-release` ledger, keyed by the stamped
   track path and so never matching a later round's track.
