@@ -45,12 +45,14 @@ t "ping: under main's interval default of 8 the same heartbeat reads stale, not 
 # ...and the collector the force block talks to was started with that bound:
 # its own environment, read off the running process, not the suite's copy of
 # it, so a launch line that drops or overrides the bound reds here.
-if [ -r "/proc/$SRV/environ" ]; then
+if [ -d /proc/self ] && ! kill -0 "$SRV" 2>/dev/null; then
+  fail "ping: the running collector was started with the suite's stale bound" "the collector (pid $SRV) is not running"
+elif [ -r "/proc/$SRV/environ" ]; then
   t "ping: the running collector was started with the suite's stale bound" \
     "CREW_FLOOR_PING_STALE_AFTER=$CREW_FLOOR_PING_STALE_AFTER" \
     "$(tr '\0' '\n' <"/proc/$SRV/environ" | grep '^CREW_FLOOR_PING_STALE_AFTER=' || echo unset)"
 else
-  skip "ping: the running collector was started with the suite's stale bound" "no /proc/$SRV/environ on this host"
+  skip "ping: the running collector was started with the suite's stale bound" "no /proc on this host to read a process's environment from"
 fi
 # The fix is the suite's environment, never ping.py's derivation (#626's
 # must-fail: widening the production default to fix a test tier): unset, the

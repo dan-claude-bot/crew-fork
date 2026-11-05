@@ -69,18 +69,24 @@ echo "== crew floor CLI"
 # comments, (a) no literal in the floor's 8600-8999 port range appears at all
 # (any shape: --port, a probe argument, a URL, /dev/tcp, a bind tuple), and
 # (b) every use of CL_PORT_BASE is exactly $((CL_PORT_BASE + N)) with N in
-# 5..25 (#767 round 3: a PORT-line filter missed `cl_refuses … 8880` and
-# `$((CL_PORT_BASE+30))`). The definition line is the one exception to both.
+# 5..25, not followed by another digit, and (c) run.sh's own PORT and
+# FLOOR_TEST_PORT never appear: a port built on them lands in run.sh's +0..4
+# or past the band (#767 rounds 3 and 4: a PORT-line filter missed
+# `cl_refuses … 8880` and `$((CL_PORT_BASE+30))`, a CL_PORT_BASE-only count
+# missed `$((PORT + 3))`). The definition line is the one exception. The census
+# does not follow arithmetic through a variable that holds a port: such a
+# variable is assigned from an exact $((CL_PORT_BASE + N)), which (b) checks.
 # shellcheck disable=SC2016  # the patterns are literal text, matched, never expanded
-cl_port_census() { # FILE -> "<floor-range literals> <CL_PORT_BASE uses off the band>"
+cl_port_census() { # FILE -> "<floor-range literals> <port bases or offsets off the band>"
   local code
   # The census and its own self-test below are not ports; everything else is.
-  code="$(sed '/^cl_port_census() {/,/^ok "cli: the port census reds/d' "$1" \
+  code="$(sed '/^cl_port_census() {/,/^t "cli: the port census reds/d' "$1" \
     | grep -vE '^[[:space:]]*#' | grep -vF 'CL_PORT_BASE="${FLOOR_TEST_PORT:-8791}"')"
   printf '%s %s\n' \
     "$(grep -oE '(^|[^0-9])8[6-9][0-9]{2}([^0-9]|$)' <<<"$code" | wc -l | tr -d ' ')" \
     "$(( $(grep -oE 'CL_PORT_BASE' <<<"$code" | wc -l) \
-       - $(grep -oE '\$\(\(CL_PORT_BASE \+ ([5-9]|1[0-9]|2[0-5])\)\)' <<<"$code" | wc -l) ))"
+       - $(grep -oE '\$\(\(CL_PORT_BASE \+ ([5-9]|1[0-9]|2[0-5])\)\)([^0-9]|$)' <<<"$code" | wc -l) \
+       + $(grep -oE '(\$\{?|\(\([[:space:]]*|[-+*/][[:space:]]*)(PORT|FLOOR_TEST_PORT)([^A-Za-z0-9_]|$)' <<<"$code" | wc -l) ))"
 }
 t "cli: no floor-range port literal, and every CL_PORT_BASE use is + 5..25" "0 0" "$(cl_port_census "$CL_HERE/cli.sh")"
 CL_PC_TMP="$(mktemp)"
@@ -88,12 +94,14 @@ CL_PC_TMP="$(mktemp)"
 for cl_bad in 'cl_refuses "x" 8880 \' 'cl_listening 8880' 'curl http://localhost:8880/' \
               'exec 3<>/dev/tcp/127.0.0.1/8880' 's.bind(("127.0.0.1", 8880))' \
               'crew_floor --port $((CL_PORT_BASE+30))' 'crew_floor --port $((CL_PORT_BASE + 5 + 30))' \
-              'crew_floor --port $((CL_PORT_BASE + 26))' 'crew_floor --port $((CL_PORT_BASE + 4))'; do
+              'crew_floor --port $((CL_PORT_BASE + 26))' 'crew_floor --port $((CL_PORT_BASE + 4))' \
+              'crew_floor --port $((PORT + 3))' 'crew_floor --port $((FLOOR_TEST_PORT + 30))' \
+              'crew_floor --port "${PORT}"' 'crew_floor --port $((8 + PORT))' 'crew_floor --port "$((CL_PORT_BASE + 5))0"'; do
   { cat "$CL_HERE/cli.sh"; printf '%s\n' "$cl_bad"; } >"$CL_PC_TMP"
-  [ "$(cl_port_census "$CL_PC_TMP")" != "0 0" ] || fail "cli: the port census reds on: $cl_bad"
+  [ "$(cl_port_census "$CL_PC_TMP")" != "0 0" ] || CL_PC_MISSED="${CL_PC_MISSED:-}${CL_PC_MISSED:+ | }$cl_bad"
 done
 rm -f "$CL_PC_TMP"
-ok "cli: the port census reds on each shape a port could enter by"
+t "cli: the port census reds on each shape a port could enter by" "" "${CL_PC_MISSED:-}"
 
 # crew_floor ARGS... — runs a short-lived `crew floor`, leaving its combined
 # output in $CL_TMP/out and its exit status in $CL_RC.
