@@ -48,7 +48,7 @@ for _p in "${FLOOR_TEST_PORT:-8791}" $(( ${FLOOR_TEST_PORT:-8791} + 1 )) \
           $(( ${FLOOR_TEST_PORT:-8791} + 4 )); do
   if port_busy "$_p"; then
     echo "port $_p is already in use — another run of this suite is probably still going." >&2
-    echo "  re-run with a different base:  FLOOR_TEST_PORT=8891 $0 $*" >&2
+    echo "  re-run with a different base:  FLOOR_TEST_PORT=8991 $0 $*" >&2
     exit 1
   fi
 done

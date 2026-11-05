@@ -12,6 +12,16 @@ set -uo pipefail
 CL_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CL_FLOOR="$(dirname "$CL_HERE")"
 CL_ROOT="$(dirname "$CL_FLOOR")"
+# Every port this file binds is offset by the suite's own base, so two runs
+# on two bases never meet: run.sh tells a second run to take another
+# FLOOR_TEST_PORT, and with fixed literals here the two runs' version
+# collectors answered each other's requests (#767 review, the #626 load run).
+CL_PORT_OFF=$(( ${FLOOR_TEST_PORT:-8791} - 8791 ))
+# Pinned: a bare port literal outside a comment is a collision waiting for the
+# second run (the offset above is the only way a port enters this file). The
+# band is 8879-8899, the one this file has always bound.
+t "cli: every port this suite binds moves with FLOOR_TEST_PORT" 0 \
+  "$(grep -vE '^[[:space:]]*#' "$CL_HERE/cli.sh" | grep -cE '(^|[^0-9(])(88[0-9]{2}|887[9])([^0-9]|$)' || true)"
 
 if ! declare -F ok >/dev/null; then
   PASS=0 SKIP=0
@@ -103,8 +113,8 @@ if grep -q "^cmd_floor" <<<"$CL_OUT"; then
 else ok "cli: --help stops before the code"; fi
 
 # --- the banner an operator reads -----------------------------------------
-crew_floor --local --port 8899; CL_OUT="$(cl_out)"
-if grep -q "http://127.0.0.1:8899/" <<<"$CL_OUT"; then ok "cli: --local prints a loopback URL"
+crew_floor --local --port $((8899 + CL_PORT_OFF)); CL_OUT="$(cl_out)"
+if grep -q "http://127.0.0.1:$((8899 + CL_PORT_OFF))/" <<<"$CL_OUT"; then ok "cli: --local prints a loopback URL"
 else fail "cli: --local prints a loopback URL" "$CL_OUT"; fi
 if grep -qi "loopback only" <<<"$CL_OUT"; then ok "cli: --local says it is loopback only"
 else fail "cli: --local says it is loopback only" "$CL_OUT"; fi
@@ -112,7 +122,7 @@ if grep -q "plain HTTP" <<<"$CL_OUT"; then
   fail "cli: no cleartext warning on loopback" "warned about the network for a loopback bind"
 else ok "cli: no cleartext warning on loopback"; fi
 
-crew_floor --port 8898; CL_OUT="$(cl_out)"
+crew_floor --port $((8898 + CL_PORT_OFF)); CL_OUT="$(cl_out)"
 if grep -q "plain HTTP" <<<"$CL_OUT"; then ok "cli: warns that a bound port sends the password in clear"
 else fail "cli: warns that a bound port sends the password in clear" "$CL_OUT"; fi
 
@@ -124,7 +134,7 @@ mkdir -p "$CL_VERSION_ROOT/cli"
 cp "$CL_ROOT/cli/crew" "$CL_VERSION_ROOT/cli/crew"
 ln -s "$CL_ROOT/shared" "$CL_VERSION_ROOT/shared"
 ln -s "$CL_ROOT/fleet-floor" "$CL_VERSION_ROOT/fleet-floor"
-CL_VERSION_PORT=8879
+CL_VERSION_PORT=$((8879 + CL_PORT_OFF))
 cl_start_version_floor() {
   PATH="$CL_TMP/bin:$PATH" CREW_CONFIG_DIR="$CREW_CONFIG_DIR" \
   CREW_FLOOR_ROSTER="$CL_HERE/fixtures/roster.txt" CREW_FLOOR_PASS=version-test \
@@ -192,9 +202,9 @@ fi
 
 # --- the auth decision -----------------------------------------------------
 # A generated password must be generated, not a constant: two runs, two values.
-crew_floor --local --port 8897
+crew_floor --local --port $((8897 + CL_PORT_OFF))
 CL_P1="$(cl_out | sed -n 's/^  password  \([^ ]*\) .*/\1/p')"
-crew_floor --local --port 8896
+crew_floor --local --port $((8896 + CL_PORT_OFF))
 CL_P2="$(cl_out | sed -n 's/^  password  \([^ ]*\) .*/\1/p')"
 if [ -n "$CL_P1" ] && [ -n "$CL_P2" ] && [ "$CL_P1" != "$CL_P2" ]; then
   ok "cli: generated passwords differ between runs"
@@ -204,14 +214,14 @@ fi
 if [ "${#CL_P1}" -ge 16 ]; then ok "cli: generated password is long enough (${#CL_P1})"
 else fail "cli: generated password is long enough" "${#CL_P1} chars"; fi
 
-crew_floor --local --port 8895 --pass hunter2; CL_OUT="$(cl_out)"
+crew_floor --local --port $((8895 + CL_PORT_OFF)) --pass hunter2; CL_OUT="$(cl_out)"
 if grep -q "hunter2" <<<"$CL_OUT"; then
   fail "cli: an explicit password is not echoed" "the password was printed back"
 else ok "cli: an explicit password is not echoed"; fi
 
 # The collector itself must refuse to serve without one, whatever starts it.
 CL_RC2=0
-CREW_FLOOR_PASS="" CREW_FLOOR_PORT=8894 timeout 5 python3 "$CL_FLOOR/server/floor.py" \
+CREW_FLOOR_PASS="" CREW_FLOOR_PORT=$((8894 + CL_PORT_OFF)) timeout 5 python3 "$CL_FLOOR/server/floor.py" \
   > "$CL_TMP/nopass.out" 2>&1 || CL_RC2=$?
 if [ "$CL_RC2" -ne 0 ] && grep -q "refusing to serve" "$CL_TMP/nopass.out"; then
   ok "collector: refuses to serve with no password"
@@ -223,7 +233,7 @@ fi
 # A missing index.html must be named, not surfaced as a stack trace or a 500
 # on first request.
 CL_RC3=0
-CREW_FLOOR_PASS=x CREW_FLOOR_PORT=8893 CREW_FLOOR_INDEX=/nonexistent/index.html \
+CREW_FLOOR_PASS=x CREW_FLOOR_PORT=$((8893 + CL_PORT_OFF)) CREW_FLOOR_INDEX=/nonexistent/index.html \
   timeout 5 python3 -c "
 import os, sys
 sys.argv = ['floor.py']
@@ -2213,19 +2223,19 @@ fi
 echo
 echo "== roster overrides (drilling without touching fleet.roster)"
 
-crew_floor --local --port 8892 --roster "$CL_CREW_ROSTER"; CL_OUT="$(cl_out)"
+crew_floor --local --port $((8892 + CL_PORT_OFF)) --roster "$CL_CREW_ROSTER"; CL_OUT="$(cl_out)"
 if grep -qF "$CL_CREW_ROSTER" <<<"$CL_OUT"; then
   ok "cli: crew floor --roster is echoed in the banner"
 else
   fail "cli: crew floor --roster is echoed in the banner" "$CL_OUT"
 fi
-crew_floor --local --port 8891 --roster /nonexistent/roster.txt; CL_OUT="$(cl_out)"
+crew_floor --local --port $((8891 + CL_PORT_OFF)) --roster /nonexistent/roster.txt; CL_OUT="$(cl_out)"
 if [ "$CL_RC" -ne 0 ] && grep -q "no roster at" <<<"$CL_OUT"; then
   ok "cli: a missing --roster is named at startup"
 else
   fail "cli: a missing --roster is named at startup" "rc=$CL_RC out=$CL_OUT"
 fi
-crew_floor --local --port 8890; CL_OUT="$(cl_out)"
+crew_floor --local --port $((8890 + CL_PORT_OFF)); CL_OUT="$(cl_out)"
 if grep -q '^  roster ' <<<"$CL_OUT"; then
   ok "cli: crew floor always prints the roster it watches"
 else
@@ -3205,10 +3215,10 @@ case "$CL_FB_PROOF" in
 esac
 t "floor fallback: the fixture really reaches the fallback" fallback "$CL_R1"
 
-cl_refuses "floor fallback: crew floor refuses and binds nothing" 8880 \
-  cl_fb timeout 6 "$CL_ROOT/cli/crew" floor --port 8880
-cl_refuses "floor fallback: floor.py refuses the same way, run directly" 8881 \
-  cl_fb env CREW_FLOOR_PORT=8881 CREW_FLOOR_PASS=x timeout 6 python3 "$CL_FLOOR/server/floor.py"
+cl_refuses "floor fallback: crew floor refuses and binds nothing" $((8880 + CL_PORT_OFF)) \
+  cl_fb timeout 6 "$CL_ROOT/cli/crew" floor --port $((8880 + CL_PORT_OFF))
+cl_refuses "floor fallback: floor.py refuses the same way, run directly" $((8881 + CL_PORT_OFF)) \
+  cl_fb env CREW_FLOOR_PORT=$((8881 + CL_PORT_OFF)) CREW_FLOOR_PASS=x timeout 6 python3 "$CL_FLOOR/server/floor.py"
 
 # The refusal is a WORLD fault: `crew floor` under the fallback exits 1, and
 # floor.py matches it, so a caller of either reads the same status. Both are
@@ -3218,9 +3228,9 @@ cl_refuses "floor fallback: floor.py refuses the same way, run directly" 8881 \
 # "address already in use" traceback stand in for the refusal and report 1 for
 # the wrong reason.
 CL_RC=0
-cl_fb timeout 10 "$CL_ROOT/cli/crew" floor --port 8887 >"$CL_TMP/fb-cli.out" 2>&1 || CL_RC=$?
+cl_fb timeout 10 "$CL_ROOT/cli/crew" floor --port $((8887 + CL_PORT_OFF)) >"$CL_TMP/fb-cli.out" 2>&1 || CL_RC=$?
 CL_RC2=0
-cl_fb env CREW_FLOOR_PORT=8888 CREW_FLOOR_PASS=x timeout 10 python3 "$CL_FLOOR/server/floor.py" \
+cl_fb env CREW_FLOOR_PORT=$((8888 + CL_PORT_OFF)) CREW_FLOOR_PASS=x timeout 10 python3 "$CL_FLOOR/server/floor.py" \
   >"$CL_TMP/fb-py.out" 2>&1 || CL_RC2=$?
 t "floor fallback: the refusal is a world fault (exit 1)" 1 "$CL_RC"
 t "floor fallback: both processes exit the same way" "$CL_RC" "$CL_RC2"
@@ -3228,13 +3238,13 @@ t "floor fallback: both processes exit the same way" "$CL_RC" "$CL_RC2"
 # A roster is not a fleet definition. Both spellings of the override must
 # leave the refusal standing, or "but the operator passed a roster" quietly
 # reopens the whole path.
-cl_refuses "floor fallback: --roster does not lift the refusal" 8882 \
-  cl_fb timeout 6 "$CL_ROOT/cli/crew" floor --port 8882 --roster "$CL_HERE/fixtures/roster.txt"
-cl_refuses "floor fallback: CREW_FLOOR_ROSTER does not lift the refusal" 8883 \
+cl_refuses "floor fallback: --roster does not lift the refusal" $((8882 + CL_PORT_OFF)) \
+  cl_fb timeout 6 "$CL_ROOT/cli/crew" floor --port $((8882 + CL_PORT_OFF)) --roster "$CL_HERE/fixtures/roster.txt"
+cl_refuses "floor fallback: CREW_FLOOR_ROSTER does not lift the refusal" $((8883 + CL_PORT_OFF)) \
   cl_fb env CREW_FLOOR_ROSTER="$CL_HERE/fixtures/roster.txt" \
-    timeout 6 "$CL_ROOT/cli/crew" floor --port 8883
-cl_refuses "floor fallback: floor.py refuses with CREW_FLOOR_ROSTER set" 8884 \
-  cl_fb env CREW_FLOOR_ROSTER="$CL_HERE/fixtures/roster.txt" CREW_FLOOR_PORT=8884 \
+    timeout 6 "$CL_ROOT/cli/crew" floor --port $((8883 + CL_PORT_OFF))
+cl_refuses "floor fallback: floor.py refuses with CREW_FLOOR_ROSTER set" $((8884 + CL_PORT_OFF)) \
+  cl_fb env CREW_FLOOR_ROSTER="$CL_HERE/fixtures/roster.txt" CREW_FLOOR_PORT=$((8884 + CL_PORT_OFF)) \
     CREW_FLOOR_PASS=x timeout 6 python3 "$CL_FLOOR/server/floor.py"
 
 # The invocation fault is still diagnosed first: a malformed `crew floor` on an
@@ -3265,7 +3275,7 @@ fi
 # fleet outage; the bug it replaces is a console nobody should have had.
 CL_RC=0
 PATH="$CL_TMP/bin:$PATH" CREW_CONFIG_DIR="$CL_OPCONF" \
-  env -u CREW_FLOOR_ROSTER timeout 4 "$CL_ROOT/cli/crew" floor --local --port 8885 \
+  env -u CREW_FLOOR_ROSTER timeout 4 "$CL_ROOT/cli/crew" floor --local --port $((8885 + CL_PORT_OFF)) \
   </dev/null >"$CL_TMP/op-floor.out" 2>&1 || CL_RC=$?
 if grep -q 'refuses under the shipped example' "$CL_TMP/op-floor.out"; then
   fail "floor: an operator config dir is not refused" "$(cat "$CL_TMP/op-floor.out")"
@@ -3287,7 +3297,7 @@ t "floor: --help still exits 0 with an operator config dir" 0 "$CL_RC"
 CL_RC=0
 (cd "$CL_OPCONF" && env -u CREW_CONFIG_DIR -u XDG_CONFIG_HOME -u CREW_ROSTER \
    -u CREW_FLOOR_ROSTER HOME="$CL_FB_HOME" PATH="$CL_TMP/bin:$PATH" \
-   timeout 4 "$CL_ROOT/cli/crew" floor --local --port 8886 </dev/null) \
+   timeout 4 "$CL_ROOT/cli/crew" floor --local --port $((8886 + CL_PORT_OFF)) </dev/null) \
    >"$CL_TMP/pwd-floor.out" 2>&1 || CL_RC=$?
 if grep -q 'refuses under the shipped example' "$CL_TMP/pwd-floor.out"; then
   fail "floor: \$PWD discovery still counts as an operator definition" \
