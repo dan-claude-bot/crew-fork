@@ -3851,6 +3851,7 @@ rl_duty_line() (
   name="$repo ${prefix:-<bare>}@$path"
   tmpl="$(grep -F -- "$1" "$ROOT/shared/lib/duty-release.sh" | grep -oE 'log "[^"]*"' | head -1)"
   [ -n "$tmpl" ] || { printf 'NO DUTY LINE HOLDS: %s\n' "$1"; return 0; }
+  # shellcheck disable=SC2317  # called by the eval'd template
   log() { printf '2026-11-05T10:00:00Z %s\n' "$*"; }
   eval "$tmpl"
 )
@@ -4010,7 +4011,7 @@ t release-leg-cleanup-drops-the-box-track-memory 1 \
 # cut still open is closed. The green round's own close (the refusal step)
 # comes before the third tick and proves nothing about this one.
 RL_CLEAN="$(
-  # shellcheck disable=SC2031  # this subshell's PATH is its own on purpose
+  # shellcheck disable=SC2030,SC2031  # this subshell's PATH is its own on purpose
   export RL PATH="$RL/bin:$PATH"
   rm -f "$RL/gh.log"; rm -rf "$RL/present"; mkdir -p "$RL/present"
   touch "$RL/present/release-drill%1%VERSION" "$RL/present/release-drill%1%changelog.d%1.md"
