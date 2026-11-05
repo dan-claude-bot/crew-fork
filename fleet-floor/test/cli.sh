@@ -19,14 +19,6 @@ CL_ROOT="$(dirname "$CL_FLOOR")"
 # other's requests (#767 review, the #626 load run); with a plain offset of an
 # 88xx band, bases 84-108 apart still crossed (#767 round 2).
 CL_PORT_BASE="${FLOOR_TEST_PORT:-8791}"
-# Pinned: a port enters this file only as CL_PORT_BASE + 5..25; a bare
-# four-digit literal on a port-bearing line outside a comment is a collision
-# waiting for a second run.
-t "cli: every port this suite binds is CL_PORT_BASE + 5..25" "0 0" \
-  "$(grep -vE '^[[:space:]]*#' "$CL_HERE/cli.sh" | grep -v 'FLOOR_TEST_PORT:-8791' \
-       | grep -E -- '(--port|(^|[^A-Z])PORT|_PORT|127\.0\.0\.1:)' | grep -cE '(^|[^0-9])[0-9]{4,5}([^0-9]|$)' || true) \
-$(grep -oE 'CL_PORT_BASE \+ [0-9]+' "$CL_HERE/cli.sh" | awk '$3 < 5 || $3 > 25' | wc -l | tr -d ' ')"
-
 if ! declare -F ok >/dev/null; then
   PASS=0 SKIP=0
   declare -a FAILS=()
@@ -72,6 +64,15 @@ fi
 
 echo
 echo "== crew floor CLI"
+# Pinned, below the standalone block so a hand run has its `t`: a port
+# enters this file only as CL_PORT_BASE + 5..25, and a bare four-digit literal
+# on a port-bearing line outside a comment is a collision waiting for a second
+# run.
+t "cli: every port this suite binds is CL_PORT_BASE + 5..25" "0 0" \
+  "$(grep -vE '^[[:space:]]*#' "$CL_HERE/cli.sh" | grep -v 'FLOOR_TEST_PORT:-8791' \
+       | grep -E -- '(--port|(^|[^A-Z])PORT|_PORT|127\.0\.0\.1:)' | grep -cE '(^|[^0-9])[0-9]{4,5}([^0-9]|$)' || true) \
+$(grep -oE 'CL_PORT_BASE \+ [0-9]+' "$CL_HERE/cli.sh" | awk '$3 < 5 || $3 > 25' | wc -l | tr -d ' ')"
+
 
 # crew_floor ARGS... — runs a short-lived `crew floor`, leaving its combined
 # output in $CL_TMP/out and its exit status in $CL_RC.
