@@ -57,6 +57,7 @@ for _p in $(seq $((_base - 25)) $((_base + 25))); do
     exit 1
   fi
 done
+unset _base _p   # no later file may build a port on them (#767 round 6)
 
 TMP="$(mktemp -d)"
 unset CREW_CONFIG_DIR CREW_EXPECT_OPERATOR_CONFIG DUTY_DIR

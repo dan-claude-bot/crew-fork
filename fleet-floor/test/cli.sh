@@ -65,14 +65,21 @@ fi
 
 echo
 echo "== crew floor CLI"
+# A case that starts the floor without --port would bind crew floor's own
+# default, 8420 (an operator's real console), for as long as it lived: while
+# this file runs the default is the band's one unused offset, and run.sh's own
+# value comes back at the end (#767 round 6).
+CL_PRIOR_FLOOR_PORT="${CREW_FLOOR_PORT-__unset__}"
+export CREW_FLOOR_PORT=$((CL_PORT_BASE + 15))
 # Pinned, below the standalone block so a hand run has its `t`. Outside
 # comments, (a) no literal in the floor's 8600-8999 port range appears at all
 # (any shape: --port, a probe argument, a URL, /dev/tcp, a bind tuple), and
 # (b) every use of CL_PORT_BASE is exactly $((CL_PORT_BASE + N)) with N in
-# 5..25, neither followed by a digit nor nested in more arithmetic, (c)
+# 5..25, neither preceded nor followed by a digit nor nested in more arithmetic, (c)
 # run.sh's own PORT and FLOOR_TEST_PORT never appear as a word (the help
 # text's "IP:PORT" is the one exemption), and (d) no --port or *PORT= takes a
-# number literally: a port built on them lands in run.sh's +0..4 or past the
+# number literally, in any quoting. A bare literal outside 8600-8999 that is
+# not a --port or *PORT= argument is not refused: a port built on them lands in run.sh's +0..4 or past the
 # band (#767 round 5: `(( p = PORT + 3 ))` got past an operand-only match;
 # rounds 3 and 4: a PORT-line filter missed
 # `cl_refuses … 8880` and `$((CL_PORT_BASE+30))`, a CL_PORT_BASE-only count
@@ -92,7 +99,8 @@ cl_port_census() { # FILE -> "<floor-range literals> <port bases or offsets off 
        + $(grep -vF '"IP:PORT"' <<<"$code" | grep -oE '(^|[^A-Za-z0-9_])(PORT|FLOOR_TEST_PORT)([^A-Za-z0-9_]|$)' | wc -l) \
        + $(grep -oE '(\(\(|[-+*/])[[:space:]]*\$\(\(CL_PORT_BASE' <<<"$code" | wc -l) \
        + $(grep -oE 'CL_PORT_BASE \+ [0-9]+\)\)[[:space:]]*[-+*/][[:space:]]*[0-9$(]' <<<"$code" | wc -l) \
-       + $(grep -oE '(--port[= ]+|PORT=)"?[0-9]' <<<"$code" | wc -l) ))"
+       + $(grep -oE '[0-9]\$\(\(CL_PORT_BASE' <<<"$code" | wc -l) \
+       + $(grep -oE "(--port[= ]+|PORT=)[\"']?[0-9]" <<<"$code" | wc -l) ))"
 }
 t "cli: no floor-range port literal, and every CL_PORT_BASE use is + 5..25" "0 0" "$(cl_port_census "$CL_HERE/cli.sh")"
 CL_PC_TMP="$(mktemp)"
@@ -105,7 +113,10 @@ for cl_bad in 'cl_refuses "x" 8880 \' 'cl_listening 8880' 'curl http://localhost
               'crew_floor --port "${PORT}"' 'crew_floor --port $((8 + PORT))' \
               '(( p = PORT + 3 ))' 'let p=PORT+3' 'x=$((CL_X=PORT+3))' 'x=$(( (PORT + 3) ))' \
               'x=$(( 1 ? PORT+3 : 0 ))' 'x=$(( $((CL_PORT_BASE + 5)) + 30 ))' \
-              'crew_floor --port 8591' 'CREW_FLOOR_PORT=9100 python3 x' 'crew_floor --port "$((CL_PORT_BASE + 5))0"'; do
+              'crew_floor --port 8591' 'CREW_FLOOR_PORT=9100 python3 x' \
+              "crew_floor --port '9100'" "CREW_FLOOR_PORT='9100' python3 x" \
+              'x=$(( 30 + $((CL_PORT_BASE + 5)) ))' 'expr $((CL_PORT_BASE + 5)) + 30' \
+              'cl_listening 1$((CL_PORT_BASE + 5))' 'crew_floor --port "$((CL_PORT_BASE + 5))0"'; do
   { cat "$CL_HERE/cli.sh"; printf '%s\n' "$cl_bad"; } >"$CL_PC_TMP"
   [ "$(cl_port_census "$CL_PC_TMP")" != "0 0" ] || CL_PC_MISSED="${CL_PC_MISSED:-}${CL_PC_MISSED:+ | }$cl_bad"
 done
@@ -3582,6 +3593,7 @@ else
 fi
 
 rm -rf "$CL_TMP"
+if [ "$CL_PRIOR_FLOOR_PORT" = __unset__ ]; then unset CREW_FLOOR_PORT; else export CREW_FLOOR_PORT="$CL_PRIOR_FLOOR_PORT"; fi
 
 if [ -n "${CL_STANDALONE:-}" ]; then
   # The header's "runnable standalone" sentence, asserted (#664): a helper
