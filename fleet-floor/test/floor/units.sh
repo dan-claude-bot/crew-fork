@@ -163,6 +163,39 @@ print(" ".join([verdict([budget, breaker], []), verdict([breaker, budget], []),
 t "limited: the newest record wins across lanes in the same second" \
   "terminal-breaker/review budget/build budget/build budget/build event-limit/engine" \
   "$limited_tie_case"
+# THE SENTINEL ITSELF (#646). A durable event sits at `(ts, -1)` so a log
+# record at the same second wins on the tuple — and the row above cannot see
+# it: log candidates are always in the list before events, and `max` keeps its
+# first-seen item on a tie, so `(ts, 0)` would still publish the log record by
+# append order alone. The discriminating fixture is the log record at window
+# position 0, the one index where the sentinel and `0` differ, judged by a
+# `max` that keeps the LAST-seen item on a tie: with that, only the tuple can
+# put the log record first. Under the shipped builtin the same fixture must
+# still publish the log record, so the pair pins the tuple and not the order.
+limited_sentinel_case="$(PYTHONPATH="$FLOOR/server" python3 -c '
+import builtins
+from datetime import datetime, timezone
+import floor.units as units
+now = 1800000000
+stamp = lambda seconds: datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+logs = [stamp(now - 60) + " SESSION END kind=build key=x rc=1 dur=1s outcome=TERMINAL"]
+event = {"id":"1-1-1", "timestamp":stamp(now - 60), "severity":"error", "name":"event-limit"}
+def last_on_tie(items, key):
+    best = None
+    for item in items:
+        if best is None or key(item) >= key(best):
+            best = item
+    return best
+def verdict():
+    r = units.derive_limited(logs, [event], now, 0, "engine")
+    return r["reason"] + "/" + r["lane"]
+shipped = verdict()
+units.max = lambda *a, **k: last_on_tie(*a, **k) if "key" in k else builtins.max(*a, **k)
+reversed_tie = verdict()
+print(shipped + " " + reversed_tie)
+')"
+t "limited: a same-second log record at window position 0 beats an event on the tuple, not append order" \
+  "terminal/build terminal/build" "$limited_sentinel_case"
 t "limited: STUCK keeps collector state precedence" working \
   "$(uf ff-stuck "u['state']")"
 t "limited: STUCK keeps the collector note" True \

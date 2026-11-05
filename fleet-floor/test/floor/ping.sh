@@ -13,6 +13,18 @@
 # Round: the 60s evidence poll answered three questions at one cadence, one of
 # them over the network. These assert the three now arrive separately.
 
+# The bound the collector resolved is the one run.sh derived from the tier's
+# timeout, not the interval-based default this tier's 2 s / 4 s inverts (#626),
+# and it moves WITH the timeout: a 9 s timeout resolves 2 * (9 + 5) + 2.
+t "ping: floor.ping resolves the suite's derived stale bound" \
+  "$CREW_FLOOR_PING_STALE_AFTER" \
+  "$(CREW_FLOOR_PING_INTERVAL="$FLOOR_TEST_PING_INTERVAL" CREW_FLOOR_PING_FAILS="$FLOOR_TEST_PING_FAILS" \
+     PYTHONPATH="$FLOOR/server" python3 -c 'from floor.ping import PING_STALE_AFTER_S as s; print(s)')"
+t "ping: the suite's stale bound clears the tier's worst published age" True \
+  "$([ "$CREW_FLOOR_PING_STALE_AFTER" -ge $(( 2 * (FLOOR_TEST_PING_TIMEOUT + 5) + 2 )) ] && echo True || echo False)"
+t "ping: a longer timeout raises run.sh's derived bound" 30 \
+  "$(FLOOR_TEST_PING_TIMEOUT=9 bash -c 'unset FLOOR_TEST_PING_STALE_AFTER; eval "$(grep -m1 "^FLOOR_TEST_PING_STALE_AFTER=" "$1")"; echo "$FLOOR_TEST_PING_STALE_AFTER"' _ "$HERE/run.sh")"
+
 # The ping tier runs on its own thread and overlays the snapshot at read time,
 # so a healthy box reports a round-trip without the evidence poll re-running.
 # A wedged box fails BOTH tiers, and the two facts must not overwrite each

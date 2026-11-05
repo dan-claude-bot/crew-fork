@@ -85,9 +85,25 @@ export CREW_YES=1 HOME="$WORK"
 export CREW_HOME="$WORK/share" CREW_BIN="$WORK/bin"
 
 VA=0.0.0-lifecycle-a VB=0.0.0-lifecycle-b
+# The copy carries what git would ship and nothing the developer's checkout
+# merely holds (#536): tracked files as they stand in the working tree, plus
+# untracked files git does not ignore, so an uncommitted change is still the
+# thing under test. A plain filesystem copy also carried ignored paths — a real
+# fleet-floor/server/floor/__pycache__/ or a node_modules/ — into every
+# fixture, and the refusal case below, which disables pruning on purpose, then
+# refused the developer's path instead of the one it planted. CI's fresh
+# checkout never has one, so only a human running the suite ever saw that red.
+# A source that is not a git work tree (an unpacked tarball) has no ignored
+# paths to leak, and is copied whole.
 mk_src() {  # <dir> <version> — the tree under test, with VERSION rewritten
   mkdir -p "$1"
-  tar -C "$SRC" --exclude=.git -cf - . | tar -xf - -C "$1"
+  if git -C "$SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$SRC" ls-files -z --cached --others --exclude-standard \
+      | tar -C "$SRC" --null --ignore-failed-read -T - -cf - 2>/dev/null \
+      | tar -xf - -C "$1"
+  else
+    tar -C "$SRC" --exclude=.git -cf - . | tar -xf - -C "$1"
+  fi
   printf '%s\n' "$2" > "$1/VERSION"
   # A stand-in for the VCS state a real checkout carries. Without it the
   # fixture is the one tree install.sh's oldest exclusion could never be
