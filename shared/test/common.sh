@@ -11049,8 +11049,8 @@ t status-logged-out-paused-box-says-both both "$r1"
 # An ARMED logged-out box says only the login: nothing to add.
 status_out="$(crewstatus)"
 ms_row="$(printf '%s\n' "$status_out" | grep '^fixture-box' || true)"
-case "$ms_row" in *"⚠ log in:"*disarmed*|*"⚠ log in:"*paused*) r1="$ms_row" ;; *"⚠ log in:"*) r1=login-only ;; *) r1="$ms_row" ;; esac
-t status-logged-out-armed-box-says-only-the-login login-only "$r1"
+case "$ms_row" in *"⚠ log in:"*disarmed*|*"⚠ log in:"*paused*) r1="$ms_row" ;; *"⚠ log in:"*) r1=login_only ;; *) r1="$ms_row" ;; esac
+t status-logged-out-armed-box-says-only-the-login login_only "$r1"
 rm -f "$MSROOT/fixture-box/duty/.auth-fail.gh"
 
 # A modified box, end to end.

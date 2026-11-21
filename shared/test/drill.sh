@@ -449,7 +449,8 @@ t w776f-the-stub-goes-in-after-notify-and-before-the-wake-tick 1 \
   "$(awk '/^  rehearsal_notify_drill / {n=NR} /^  rehearsal_fast_install_stub$/ {i=NR} /^  # -- attention wake --$/ {w=NR} END {print (n && i && w && n < i && i < w) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
 t w776f-the-stub-comes-out-before-the-breaker 1 \
   "$(awk '/^rehearsal_fast_restore_cli \\$/ {r=NR} /^  rehearsal_breaker_drill / {b=NR} END {print (r && b && r < b) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
-t w776f-cleanup-removes-the-stub 1 "$(sed -n '/^cleanup_all() {/,/^}/p' "$ROOT/drill/rehearsal.sh" | grep -c 'rehearsal_fast_restore_cli')"
+t w776f-cleanup-removes-the-stub 1 \
+  "$(sed -n '/^cleanup_all() {/,/^}/p' "$ROOT/drill/rehearsal.sh" | grep -c '^      rehearsal_fast_restore_cli \\$')"
 
 # Not-executed is not a sufficient record by itself: the blocker is the fact
 # that makes an exclusion evidence. Remove one reason and require a red row.
