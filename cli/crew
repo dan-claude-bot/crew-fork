@@ -4843,7 +4843,7 @@ creds_list() {
 
 creds_add() {
   local svc="${1:-}" name="${2:-}" agent="${3:-}" kind="${4:-}" id secret login="" kinds
-  [ -n "$svc" ] && [ -n "$name" ] || usage_error "usage: crew creds add gh <name> | add agent <name> <agent> [<kind>]"
+  if [ -z "$svc" ] || [ -z "$name" ]; then usage_error "usage: crew creds add gh <name> | add agent <name> <agent> [<kind>]"; fi
   id="$svc:$name"
   pool_entry_valid "$id" || usage_error "an entry is gh:<name> or agent:<name>, the name letters, digits, . _ - (64 at most)"
   pool_entry_exists "$id" && die "$id is already in the pool — rotate it: crew creds rotate $id"
@@ -4872,7 +4872,7 @@ creds_add() {
 creds_rotate() {
   [ "$#" -eq 1 ] || usage_error "usage: crew creds rotate <entry>"
   local id="$1" secret login kind agent m rc=0
-  pool_entry_valid "$id" && pool_entry_exists "$id" || die "no pool entry $id — crew creds list"
+  if ! pool_entry_valid "$id" || ! pool_entry_exists "$id"; then die "no pool entry $id — crew creds list"; fi
   kind="$(pool_meta "$id" kind)"; agent="$(pool_meta "$id" agent)"
   secret="$(creds_read_secret "$id: the new value" "$kind")"
   login=""
@@ -4902,7 +4902,7 @@ creds_rotate() {
 creds_rm() {
   [ "$#" -eq 1 ] || usage_error "usage: crew creds rm <entry>"
   local id="$1" members
-  pool_entry_valid "$id" && pool_entry_exists "$id" || die "no pool entry $id — crew creds list"
+  if ! pool_entry_valid "$id" || ! pool_entry_exists "$id"; then die "no pool entry $id — crew creds list"; fi
   members="$(pool_members_of "$id" | paste -sd, -)"
   [ -z "$members" ] || die "$id is assigned to $members — unassign it first (crew creds unassign <box> $id); the boxes keep the value they hold"
   rm -rf -- "$(pool_entry_path "$id")"
@@ -4950,7 +4950,7 @@ creds_assign() {
 }
 
 creds_unassign() {
-  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage_error "usage: crew creds unassign <box> [<entry>]"
+  if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then usage_error "usage: crew creds unassign <box> [<entry>]"; fi
   local box="$1" drop="${2:-}" current kept id
   [ -n "$(roster_line "$box")" ] || die "$box is not on the roster ($ROSTER)"
   current="$(roster_creds_of "$box" | paste -sd, -)"
