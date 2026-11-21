@@ -202,9 +202,16 @@ fleet_restore_landing() { # NAME LABEL
     case "$line" in
       *": FAILED — "*) printf 'failed\n'; return 0 ;;
       *": REFUSED — "*) [ "$outcome" = failed ] || outcome=refused ;;
-      *": restored to "*" and started")
+      # Every ending of a restore that LANDED names its label the same way —
+      # `restored to <label> (crew@…)` — whatever came after it (#784): stayed
+      # up (`and started`), held past the cap or paused (`its memory written
+      # back, and stopped again`, `and started; it is …`), or a settle stop
+      # that did not take. The label is what D4 grades; where the box stands
+      # afterwards is the cap's business, and the leg reads it on its own.
+      "  $name: restored to "*)
         landed="${line#"  $name: restored to "}"
         landed="${landed%% *}"
+        landed="${landed%,}"
         if [ "$landed" = "$label" ]; then
           [ "$outcome" = unknown ] && outcome=restored
         else
@@ -225,12 +232,33 @@ fleet_restore_landing() { # NAME LABEL
 # the gate never ran on this boot at all, which is `unreadable` and not a pass:
 # a restored box that never reached its gate has proved nothing, and #589 D4
 # asks for the reading on the FIRST tick.
-fleet_boot_gate_reading() { # DUTY_LOG_TEXT BOOT_CHECK_TEXT
-  local duty_log="$1" boot_check="$2"
+fleet_boot_gate_reading() { # DUTY_LOG_TEXT BOOT_CHECK_TEXT [BOOT_ID]
+  local duty_log="$1" boot_check="$2" boot_id="${3:-}" gate_line
+  # THIS BOOT'S evidence only (#785). Both files are append-only across boots,
+  # and an `armed` checkpoint carries their history: on the rc2 round the
+  # restored boot passed, and the reader found phase 1's logged-out block from
+  # before the credentials arrived. boot-check.log is read from its LAST
+  # `== boot check` header; duty.log from its last line that opens a boot
+  # (`new boot id …` / `first tick on this box …`), so the gate's verdict
+  # lines that follow it are this boot's and no earlier one's.
+  boot_check="$(awk '/^== boot check /{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' <<<"$boot_check")"
   case "$boot_check" in
     *"== boot check "*) ;;
     *) printf 'unreadable\n'; return 0 ;;
   esac
+  if grep -qE 'boot gate: (new boot id |first tick on this box )' <<<"$duty_log"; then
+    duty_log="$(awk '/boot gate: (new boot id |first tick on this box )/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' <<<"$duty_log")"
+  fi
+  # With the box's own boot id, the opening line must NAME it: a tick that
+  # never ran on the restored boot leaves the previous boot's lines last, and
+  # that is not this boot's gate passing (D4 asks for the FIRST tick's).
+  if [ -n "$boot_id" ]; then
+    gate_line="$(grep -E 'boot gate: (new boot id |first tick on this box )' <<<"$duty_log" | tail -1)"
+    case "$gate_line" in
+      *"boot id ${boot_id:0:8}"*) ;;
+      *) printf 'unreadable\n'; return 0 ;;
+    esac
+  fi
   case "$duty_log" in
     *"boot gate: auth probe failed"*) printf 'failing\n'; return 0 ;;
   esac

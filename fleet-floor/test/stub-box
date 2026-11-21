@@ -631,7 +631,8 @@ case "${1:-}" in
           "gh token") echo "gh: set — logged in as ${name}-bot" ;;
           "agent "*-json) echo "agent: ${header#agent } set ($(roster_agent_of "$name")) — logged in" ;;
           "agent "*) echo "agent: ${header#agent } set ($(roster_agent_of "$name")) — it cannot be checked locally; the next session is the test" ;;
-          *) echo "credentials: the service is gh or agent — nothing set" >&2; exit 2 ;;
+          "tg bot "*) echo "tg: set — bot @stub_alerts_bot, group chat ${header#tg bot }" ;;  # #788
+          *) echo "credentials: the service is gh, agent or tg — nothing set" >&2; exit 2 ;;
         esac
         ;;
       *'destination="$HOME/.crew-engine.tgz"'*) # crew's engine archive upload

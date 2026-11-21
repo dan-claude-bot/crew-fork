@@ -487,7 +487,7 @@ CMDS=(
   "pause^<box>^Keep a box off: the host tick never starts it, and its own cron is commented until resume^cmd_pause"
   "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
   "login^<box> gh|agent [<kind>]^Set a member's GitHub or agent credential from stdin: write-only, never read back^cmd_login"
-  "creds^list [--json] | add gh <name> | add agent <name> <agent> [<kind>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
+  "creds^list [--json] | add gh <name> | add agent <name> <agent> [<kind>] | add tg <name> | chat [<chat-id>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
   "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
   "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
@@ -3907,14 +3907,45 @@ restore_box() { # NAME
     esac
     return 0
   fi
-  if ! box down "$name" </dev/null; then
-    echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its ${why%%:*} state asks for FAILED — the host tick will"
-    return 1
+  if ! reset_settle_down "$name"; then
+    case "$why" in
+      # A paused box is the host's to keep down and the host tick never
+      # touches it: a stop that did not take is the operator's to repeat.
+      paused)
+        echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its paused state asks for FAILED twice — its crontab is paused; stop it with: box down $name"
+        return 1 ;;
+      # Past the cap the restore LANDED: the box is on its checkpoint with its
+      # memory back, and the host tick's idle rule stops a box that buys
+      # nothing (#786: a stop sent while the guest was still settling timed
+      # out, and a landed restore read as a failed reset).
+      *)
+        echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is ${why%%:*} (${why#held:} of $FLEET_MAX_RUNNING boxes running), but its stop did not take after a retry — left running for the host tick, which stops it once idle"
+        return 0 ;;
+    esac
   fi
   case "$why" in
     paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — it is paused" ;;
     *) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — ${why#held:} of $FLEET_MAX_RUNNING boxes running; the host tick starts it when there is work" ;;
   esac
+}
+
+# reset_settle_down NAME — the settle's stop, given the guest's boot a chance
+# to finish first (#786). A stop sent to a guest still starting its units can
+# be ignored until systemd is up, and `box down` then gives up on its own
+# deadline; the restore has just booted this guest. So: wait (bounded) for
+# systemd to call the boot done, stop, and on a refusal wait once more and
+# retry. rc 0 when the box went down.
+RESET_SETTLE_BOOT_S="${CREW_RESET_SETTLE_BOOT_S:-90}"
+RESET_STOP_RETRY_S="${CREW_RESET_STOP_RETRY_S:-15}"
+reset_settle_down() {
+  local name="$1"
+  # `--wait` blocks until the boot transaction ends, whatever it ends in;
+  # its answer is not graded here — `degraded` is a booted guest too.
+  bxn "$name" "timeout $RESET_SETTLE_BOOT_S systemctl is-system-running --wait >/dev/null 2>&1; true" >/dev/null 2>&1 || true
+  box down "$name" </dev/null && return 0
+  echo "  $name: the stop did not take; retrying once in ${RESET_STOP_RETRY_S}s"
+  sleep "$RESET_STOP_RETRY_S"
+  box down "$name" </dev/null
 }
 
 # reset_settle_why NAME — why a freshly restored box goes back down: `paused`
@@ -4790,6 +4821,16 @@ creds_roster_set() {
   mv -f "$tmp" "$target"
 }
 
+# creds_tg_bot TOKEN — the username a Telegram bot token answers as, asked of
+# Telegram's getMe from the host. The token rides curl's config on stdin, so
+# it is in no argv; nothing when Telegram refuses it or does not answer.
+creds_tg_bot() {
+  local me
+  me="$(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$1" | curl -sS -m 20 -K - 2>/dev/null)" || me="" # Decision-path empty fallback: no answer is no bot, and the caller refuses it
+  case "$me" in *'"ok":true'*) ;; *) return 0 ;; esac
+  printf '%s' "$me" | jq -r '.result.username // empty' 2>/dev/null | tr -d '\r\n'
+}
+
 creds_journal() { # ACTION ENTRY [DETAIL]
   printf '%s actor=cli:%s pool=%s entry=%s%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     "${USER:-?}" "$1" "$2" "${3:+ $3}" >>"$CONFIG_DIR/.credentials-journal.log" 2>/dev/null || true
@@ -4802,6 +4843,7 @@ cmd_creds() {
     list) creds_list "$@" ;;
     add) creds_add "$@" ;;
     rotate) creds_rotate "$@" ;;
+    chat) creds_chat "$@" ;;
     rm) creds_rm "$@" ;;
     assign) creds_assign "$@" ;;
     unassign) creds_unassign "$@" ;;
@@ -4832,13 +4874,13 @@ creds_list_json() {
       '{id: $id, service: ($id | split(":")[0]), name: ($id | split(":")[1:] | join(":")),
         kind: $kind, agent: $agent, login: $login, set_at: $set_at, members: $members}')"$'\n'
   done < <(pool_entries)
-  jq -n --arg pool "$(pool_dir)" --argjson entries "$(printf '%s' "$entries" | jq -sc .)" \
+  jq -n --arg pool "$(pool_dir)" --arg tg_chat "$(pool_tg_chat)" --argjson entries "$(printf '%s' "$entries" | jq -sc .)" \
     --argjson roster "$(while read -r m agent _; do
         [ -n "$m" ] || continue
         jq -nc --arg box "$m" --arg agent "$agent" --arg creds "$(roster_creds_of "$m" | paste -sd, -)" \
           '{box: $box, agent: $agent, creds: ($creds | split(",") | map(select(. != "")))}'
       done < <(read_roster) | jq -sc .)" \
-    '{pool: $pool, entries: $entries, members: $roster}'
+    '{pool: $pool, tg_chat: $tg_chat, entries: $entries, members: $roster}'
 }
 
 creds_list() {
@@ -4846,11 +4888,17 @@ creds_list() {
   [ "$#" -eq 0 ] || usage_error "usage: crew creds list [--json]"
   local id members m v fails n=0 who
   echo "credential pool: $(pool_dir) (write-only — no value is ever shown)"
+  if [ -n "$(pool_tg_chat)" ]; then
+    echo "  telegram group chat: $(pool_tg_chat) (every tg entry delivers it)"
+  elif [ -n "$(pool_entries | grep '^tg:' || true)" ]; then
+    echo "  telegram group chat: NOT SET — no tg entry can be delivered until it is: crew creds chat <chat-id>"
+  fi
   while read -r id; do
     [ -n "$id" ] || continue
     n=$((n + 1))
     case "${id%%:*}" in
       gh) who="answers as $(pool_meta "$id" login)" ;;
+      tg) who="telegram bot @$(pool_meta "$id" login)" ;;
       *) who="$(pool_meta "$id" agent) $(pool_meta "$id" kind)" ;;
     esac
     printf '  %-28s %-34s set %s\n' "$id" "$who" "$(pool_meta "$id" set_at)"
@@ -4870,14 +4918,14 @@ creds_list() {
     # token is one problem, not N.
     [ -z "$fails" ] || echo "      ⚠ refused on: $fails — rotate it: crew creds rotate $id"
   done < <(pool_entries)
-  [ "$n" -gt 0 ] || echo "  (empty — add one: crew creds add gh <name>, or crew creds add agent <name> <agent>)"
+  [ "$n" -gt 0 ] || echo "  (empty — add one: crew creds add gh <name>, crew creds add agent <name> <agent>, or crew creds add tg <name>)"
 }
 
 creds_add() {
   local svc="${1:-}" name="${2:-}" agent="${3:-}" kind="${4:-}" id secret login="" kinds
-  if [ -z "$svc" ] || [ -z "$name" ]; then usage_error "usage: crew creds add gh <name> | add agent <name> <agent> [<kind>]"; fi
+  if [ -z "$svc" ] || [ -z "$name" ]; then usage_error "usage: crew creds add gh <name> | add agent <name> <agent> [<kind>] | add tg <name>"; fi
   id="$svc:$name"
-  pool_entry_valid "$id" || usage_error "an entry is gh:<name> or agent:<name>, the name letters, digits, . _ - (64 at most)"
+  pool_entry_valid "$id" || usage_error "an entry is gh:<name>, agent:<name> or tg:<name>, the name letters, digits, . _ - (64 at most)"
   pool_entry_exists "$id" && die "$id is already in the pool — rotate it: crew creds rotate $id"
   case "$svc" in
     gh)
@@ -4894,11 +4942,22 @@ creds_add() {
       kind="${kind:-${kinds%% *}}"
       case " $kinds " in *" $kind "*) ;; *) usage_error "agent $agent takes: $kinds" ;; esac
       secret="$(creds_read_secret "$id: $agent $kind" "$kind")" ;;
+    tg)
+      [ -z "$agent" ] || usage_error "usage: crew creds add tg <name> (the group chat is the fleet's: crew creds chat <chat-id>)"
+      kind=bot
+      secret="$(creds_read_secret "$id: a Telegram bot token" bot)"
+      login="$(creds_tg_bot "$secret")" || login="" # Decision-path empty fallback: a token Telegram refuses has no bot, and is refused just below
+      [[ "$login" =~ ^[A-Za-z0-9_]{1,64}$ ]] \
+        || { secret=""; die "Telegram refused the token for $id (getMe), or did not answer — nothing stored"; } ;;
   esac
   printf '%s' "$secret" | pool_put "$id" "$kind" "$agent" "$login" || { secret=""; die "could not write $id into $(pool_dir)"; }
   secret=""
   creds_journal add "$id" "kind=$kind${login:+ login=$login}"
-  echo "pool: $id stored ($kind${login:+, answers as $login}) — assign it: crew creds assign <box> $id"
+  case "$svc" in
+    tg) echo "pool: $id stored (bot @$login) — assign it: crew creds assign <box> $id"
+        [ -n "$(pool_tg_chat)" ] || echo "pool: NOTE — the fleet has no Telegram group chat yet; set it before any box can get this: crew creds chat <chat-id>" ;;
+    *) echo "pool: $id stored ($kind${login:+, answers as $login}) — assign it: crew creds assign <box> $id" ;;
+  esac
 }
 
 creds_rotate() {
@@ -4915,6 +4974,13 @@ creds_rotate() {
     if [ "$login" != "$(pool_meta "$id" login)" ]; then
       echo "pool: NOTE — $id answered as $(pool_meta "$id" login) and now answers as $login"
     fi
+  elif [ "${id%%:*}" = tg ]; then
+    login="$(creds_tg_bot "$secret")" || login="" # Decision-path empty fallback: a token Telegram refuses has no bot, and is refused just below
+    [[ "$login" =~ ^[A-Za-z0-9_]{1,64}$ ]] \
+      || { secret=""; die "Telegram refused the new token for $id (getMe), or did not answer — the old value stands"; }
+    if [ "$login" != "$(pool_meta "$id" login)" ]; then
+      echo "pool: NOTE — $id was bot @$(pool_meta "$id" login) and is now bot @$login"
+    fi
   fi
   printf '%s' "$secret" | pool_put "$id" "$kind" "$agent" "$login" || { secret=""; die "could not write $id"; }
   secret=""
@@ -4928,6 +4994,36 @@ creds_rotate() {
       echo "  $m: not running — it gets the new value when it is next up"
     fi
   done < <(pool_members_of "$id")
+  return "$rc"
+}
+
+# chat [CHAT] — the fleet's Telegram group chat (#788): shown, or set. One
+# chat for the whole fleet, delivered with whichever bot a member holds; a
+# change reaches every running tg holder at once (each now owes its value),
+# and a stopped one when it is next up.
+creds_chat() {
+  [ "$#" -le 1 ] || usage_error "usage: crew creds chat [<chat-id>]"
+  local chat="${1:-}" id m rc=0
+  if [ -z "$chat" ]; then
+    if [ -n "$(pool_tg_chat)" ]; then echo "telegram group chat: $(pool_tg_chat)"; else echo "telegram group chat: not set (crew creds chat <chat-id>)"; fi
+    return 0
+  fi
+  [[ "$chat" =~ $POOL_TG_CHAT_RE ]] || usage_error "'$chat' is not a Telegram chat id (digits, negative for a group — e.g. -1001234567890)"
+  if [ "$chat" = "$(pool_tg_chat)" ]; then echo "telegram group chat: already $chat"; return 0; fi
+  pool_tg_chat_set "$chat" || die "could not write the group chat into $(pool_dir)"
+  creds_journal chat tg "chat=$chat"
+  echo "pool: telegram group chat set to $chat"
+  while read -r id; do
+    [ -n "$id" ] || continue
+    while read -r m; do
+      [ -n "$m" ] || continue
+      if box_exists "$m" && [ "$(box_state "$m")" = running ]; then
+        pool_fanout "$m" stale "chat" "$id" || rc=1
+      else
+        echo "  $m: not running — it gets the new chat when it is next up"
+      fi
+    done < <(pool_members_of "$id")
+  done < <(pool_entries | grep '^tg:' || true)
   return "$rc"
 }
 
@@ -4951,9 +5047,9 @@ creds_assign() {
   # One entry per service, and the new one of a service replaces the old: a
   # member answers as ONE login and runs ONE agent credential.
   for id in ${add//,/ }; do
-    pool_entry_valid "$id" || usage_error "'$id' is not an entry (gh:<name> or agent:<name>)"
+    pool_entry_valid "$id" || usage_error "'$id' is not an entry (gh:<name>, agent:<name> or tg:<name>)"
     svc="${id%%:*}"
-    case " $seen " in *" $svc "*) usage_error "two $svc entries for $box — a member answers as one login and runs one agent credential" ;; esac
+    case " $seen " in *" $svc "*) usage_error "two $svc entries for $box — a member answers as one login, runs one agent credential and notifies through one bot" ;; esac
     seen="$seen $svc"
   done
   for id in $(roster_creds_of "$box"); do

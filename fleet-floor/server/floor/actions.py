@@ -291,7 +291,7 @@ BOX_CLAIMED = {"pause", "resume", "restart", "power-on", "power-off", "force-sto
 BOX_RESPECTED = {"message"}
 # A rotation reaches every running member the entry feeds, so it holds the
 # fleet slot as a fleet-wide action does (#780).
-FLEET_CLAIMED = {"start-all", "stop-all", "wake-silent", "pool-rotate"}
+FLEET_CLAIMED = {"start-all", "stop-all", "wake-silent", "pool-rotate", "pool-chat"}
 
 
 def do_command(fleet, body, actor=""):
@@ -338,7 +338,7 @@ def _do_command(fleet, body, actor=""):
 
     roster = {u["box"]: u for u in read_roster()}
     fleet_wide = {"start-all", "stop-all", "wake-silent", "registry-set", "roster-set",
-                  "pool-add", "pool-rotate", "pool-rm"}
+                  "pool-add", "pool-rotate", "pool-rm", "pool-chat"}
     registry = {"registry-set", "registry-override", "registry-inherit"}
 
     if action not in fleet_wide:

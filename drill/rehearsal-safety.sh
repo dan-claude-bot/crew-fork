@@ -638,6 +638,17 @@ rehearsal_attention_census_take() {
 # An identity carrying nothing outside the sandbox asserts nothing and says so
 # through the census row alone (D4) — the positive case is the whole leg, as
 # it was before this issue.
+# rehearsal_attention_sibling_sandbox SANDBOX REPO — REPO is the sandbox of a
+# role ticking alongside this one (REHEARSAL_SIBLING_ROLES, set by
+# rehearsal-all.sh under --parallel only), under the same owner as SANDBOX.
+rehearsal_attention_sibling_sandbox() {
+  local owner="${1%%/*}" r
+  for r in ${REHEARSAL_SIBLING_ROLES:-}; do
+    [ "$2" != "$owner/crew-drill-$r" ] || return 0
+  done
+  return 1
+}
+
 rehearsal_attention_census_assert() {
   local sandbox="$1" scope raw log pickups_after rc=0 repo num id before after
   [ "$REHEARSAL_ATTENTION_OUTSIDE_N" -gt 0 ] || return 0
@@ -683,6 +694,20 @@ rehearsal_attention_census_assert() {
     fi
     before="$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$REHEARSAL_ATTENTION_PICKUPS_BEFORE")"
     after="$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$pickups_after")"
+    # A SIBLING'S OWN FIXTURE (#783). Under --parallel every role answers as
+    # one login, and a sibling role ticking alongside this one picks up its
+    # own sandbox's demand inside this tick — legitimately, and indiscernibly
+    # from this box: the pickup comment names its login, not its box. When
+    # such a demand has also LEFT the identity's demands (the sibling's ack
+    # took the label), the comment count cannot be attributed and is not
+    # graded. The session row above stays graded: it reads only THIS box's
+    # duty.log and is exact about which box acted. A demand outside every
+    # sibling sandbox is graded as before, standing or not.
+    if [ "$standing_ok" -eq 1 ] && ! grep -qxF -- "$repo $num" <<<"$standing" \
+       && rehearsal_attention_sibling_sandbox "$sandbox" "$repo"; then
+      skip "attention census: $id drew no pickup (not graded: a sibling role's own fixture, picked up by its box on this login during the tick — the session row above is the exact reading)"
+      continue
+    fi
     rehearsal_attention_graded "attention census: $id drew no pickup" \
       rehearsal_attention_no_pickup "$id" "$before" "$after" "$REHEARSAL_ATTENTION_MARK" || rc=1
   done 3<<<"$REHEARSAL_ATTENTION_OUTSIDE"

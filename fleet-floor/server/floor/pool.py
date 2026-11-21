@@ -25,10 +25,11 @@ CLI = os.path.join(CREW_ROOT, "cli", "crew")
 POOL_TIMEOUT_S = 180
 SECRET_MAX = 32 * 1024
 RE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-RE_ENTRY = re.compile(r"^(gh|agent):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RE_ENTRY = re.compile(r"^(gh|agent|tg):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+RE_CHAT = re.compile(r"^-?[0-9]{1,20}$")
 RE_KIND = re.compile(r"^[a-z][a-z0-9-]{0,39}$")
 RE_AGENT = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
-ACTIONS = ("pool-add", "pool-rotate", "pool-rm", "pool-assign", "pool-unassign")
+ACTIONS = ("pool-add", "pool-rotate", "pool-rm", "pool-assign", "pool-unassign", "pool-chat")
 
 
 def _crew(args, stdin_data=None):
@@ -79,8 +80,8 @@ def pool_command(action, body, actor=""):
     if action == "pool-add":
         service = str(body.get("service", "") or "")
         name = str(body.get("name", "") or "")
-        if service not in ("gh", "agent"):
-            return _refuse(action, "the service is gh or agent")
+        if service not in ("gh", "agent", "tg"):
+            return _refuse(action, "the service is gh, agent or tg")
         if not RE_NAME.match(name):
             return _refuse(action, "a name is letters, digits, . _ - (64 at most), a letter or digit first")
         args = ["add", service, name]
@@ -96,9 +97,16 @@ def pool_command(action, body, actor=""):
     elif action == "pool-rotate":
         entry = str(body.get("entry", "") or "")
         if not RE_ENTRY.match(entry):
-            return _refuse(action, "an entry is gh:<name> or agent:<name>")
+            return _refuse(action, "an entry is gh:<name>, agent:<name> or tg:<name>")
         args = ["rotate", entry]
         secret = body.get("secret")
+    elif action == "pool-chat":
+        # The fleet's one Telegram group chat (#788): not a secret, and not
+        # per entry — every tg entry delivers it.
+        chat = str(body.get("chat", "") or "").strip()
+        if not RE_CHAT.match(chat):
+            return _refuse(action, "a Telegram chat id is digits, negative for a group (e.g. -1001234567890)")
+        args = ["chat", chat]
     elif action == "pool-rm":
         entry = str(body.get("entry", "") or "")
         if not RE_ENTRY.match(entry):
@@ -113,7 +121,7 @@ def pool_command(action, body, actor=""):
             entries = ",".join(str(e) for e in entries if str(e))
         entries = str(entries or "")
         if entries and not all(RE_ENTRY.match(e) for e in entries.split(",")):
-            return _refuse(action, "entries are gh:<name> and agent:<name>, comma-separated")
+            return _refuse(action, "entries are gh:<name>, agent:<name> and tg:<name>, comma-separated")
         if action == "pool-assign":
             if not entries:
                 return _refuse(action, "name the entries to assign")

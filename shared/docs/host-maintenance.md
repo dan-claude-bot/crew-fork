@@ -46,7 +46,14 @@ own rule applied to the one verb that could undo it:
   writes its memory back, pauses its crontab again and stops it.
 - **The cap holds.** A box restored while `FLEET_MAX_RUNNING` other boxes
   are running goes back down once its memory is written; the host tick
-  starts it when there is work for it.
+  starts it when there is work for it. The stop waits (up to
+  `CREW_RESET_SETTLE_BOOT_S`, 90 s) for the freshly booted guest to finish
+  its boot, because a guest still starting its units can ignore the graceful
+  stop, and a stop that does not take is retried once
+  (`CREW_RESET_STOP_RETRY_S`, 15 s, later). If it still does not take, the
+  restore has landed anyway: the box is left running and counted restored,
+  and the host tick's idle rule stops it. A paused box whose stop fails twice
+  is a failed reset, because the host tick never stops a paused box (#786).
 - **The first tick waits for the memory.** `crew reset --cut` leaves
   `~/duty/.memory-pending` inside the checkpoint, so a box restored from it
   boots with the marker and `duty.sh` skips every tick (under its own lock)
@@ -369,6 +376,9 @@ crew creds list                              # names, kinds, logins, who holds w
 crew creds rotate agent:max-1                # the new value; every running member gets it now
 crew creds unassign reviewer-1 agent:max-1
 crew creds rm agent:max-1                    # refused while any member is assigned it
+crew creds chat -1001234567890               # the fleet's Telegram group chat, set once
+crew creds add tg alerts                     # a bot token on stdin; the bot it answers as is recorded
+crew creds assign builder-1 tg:alerts        # any number of members may share one bot
 ```
 
 - **Where it lives.** It lives under `<config>/credentials/`, mode 0700,
@@ -411,11 +421,32 @@ crew creds rm agent:max-1                    # refused while any member is assig
 - **A refused entry is said once.** When the verdict on an entry is a refusal
   on some member, `crew creds list` names the entry once, lists every member
   it feeds, and says how to rotate it.
+- **Telegram is a service too (#788).** A `tg:<name>` entry is a bot token,
+  the operator channel a box alerts through (`~/.tg_bot_token` and
+  `~/.tg_chat_id`, read by `shared/bin/notify.sh`).
+  - The pool holds as many bots as you like. Each member is assigned one, and
+    any number of members may share one, whatever their agent or
+    repositories.
+  - The **chat is the fleet's**, not the entry's: one group chat, set once
+    with `crew creds chat <chat-id>` (digits, negative for a group) and
+    delivered with whichever bot a member holds. It is not a secret, and
+    lives beside the entries as `credentials/tg-chat`.
+  - Changing the chat reaches every running bot holder at once; a stopped one
+    gets it when it is next up. A bot assigned before the chat is set is
+    refused at the box, by name, until it is.
+  - `crew creds add` and `rotate` ask Telegram's `getMe` from the host and
+    record the bot's username. The box asks `getMe` again for its verdict.
+    The token reaches `curl` on its config (stdin), so it is never in a
+    process listing.
+  - The floor's pool section offers `tg` on Add, a telegram column on
+    Assign, and the group chat field.
 - **Another fleet definition.** `CREW_CREDENTIALS_DIR` points one at an
   existing pool. `crew creds push <box> --entries …` reaches a box no roster
   names. The drill uses both: `drill/rehearsal-all.sh --creds
-  gh:<name>,agent:<name>` logs its boxes in from your pool, after the
-  creds-free rows have read them logged out, and never writes the pool.
+  gh:<name>,agent:<name>[,tg:<name>]` logs its boxes in from your pool, after the
+  creds-free rows have read them logged out, and never writes the pool. With a
+  `tg` entry the notify leg reads a real channel; the round refuses it at the
+  start if the pool has no group chat.
 
 ## The host tick — `crew tick` (#759)
 

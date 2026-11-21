@@ -738,7 +738,7 @@ if [ "$QUICK" -eq 0 ]; then
 fi
 
 # --- the pool logs the box in (#774) ---------------------------------------
-# `rehearsal-all.sh --creds gh:<name>,agent:<name>` hands the round the
+# `rehearsal-all.sh --creds gh:<name>,agent:<name>[,tg:<name>]` hands the round the
 # operator's pool (CREW_CREDENTIALS_DIR). Pushed HERE, after the creds-free
 # rows above have read the box logged out and before phase 2 decides whether
 # it may run: one pass then proves both halves, and no box is logged in by
@@ -765,6 +765,19 @@ if [ -n "${REHEARSAL_CREDS:-}" ]; then
       ok "creds: the box answers as $creds_entry's recorded login ($creds_want)"
     else
       fail "creds: the box answers as $creds_entry's recorded login (${creds_want:-unrecorded}; the box answers ${creds_have:-nothing})"
+    fi
+  done
+  # A tg entry (#788): the operator channel the notify leg reads. The box
+  # must hold a token and the pool's one group chat, in the files notify.sh
+  # reads; the value itself is never read back, only that it is there.
+  for creds_entry in ${REHEARSAL_CREDS//,/ }; do
+    [ "${creds_entry%%:*}" = tg ] || continue
+    creds_want="$(head -1 "${CREW_CREDENTIALS_DIR:-}/tg-chat" 2>/dev/null | tr -d '\r\n')"
+    creds_have="$(bx 'test -s ~/.tg_bot_token && cat ~/.tg_chat_id 2>/dev/null' | tr -d '\r' | tail -1)" || creds_have=""
+    if [ -n "$creds_want" ] && [ "$creds_have" = "$creds_want" ]; then
+      ok "creds: the box holds $creds_entry's bot and the fleet's group chat ($creds_want)"
+    else
+      fail "creds: the box holds $creds_entry's bot and the fleet's group chat (pool chat ${creds_want:-unset}; the box holds ${creds_have:-nothing})"
     fi
   done
   GH_AUTHED=0

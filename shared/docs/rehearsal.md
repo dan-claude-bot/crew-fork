@@ -110,7 +110,7 @@ changing what a full round proves:
 
 | flag | what it does |
 |---|---|
-| `--parallel` | Runs the three roles at once. Each role writes its own transcript, printed whole and in role order once all have ended, with a heartbeat while they run. Safe on one shared identity: the attention census grades suppression only for demands still standing after the tick. |
+| `--parallel` | Runs the three roles at once. Each role writes its own transcript, printed whole and in role order once all have ended, with a heartbeat while they run. Safe on one shared identity: the attention census grades suppression only for demands still standing after the tick, and skips the pickup count for a sibling role's own fixture that its box picked up and acked during the tick, since a comment by the shared login cannot name its box (#783). The session row, read from this box's own `duty.log`, stays graded. |
 | `--legs a,b,…` | Runs only the named legs. The role sections always run. Every other leg reads `not selected by --legs`, and teardown keeps the boxes. A name that is not a declared leg is refused before anything runs. |
 | `--only-failed <log>` | Runs only the legs that `<log>`'s `## leg …` block read FAIL or INCOMPLETE, and lists every other leg as `carried` with that log's state. A selective run can never be mistaken for a whole round. |
 | `--creds gh:<name>,agent:<name>` | Logs the boxes in from the operator's credential pool (`crew creds`, `shared/docs/host-maintenance.md`). The entries are pushed after the creds-free rows have read each box logged out and before phase 2 decides whether it may run, so one pass proves both halves. Rows check the delivery and the login each box answers as. The pool is never written and no entry is assigned. |
@@ -661,9 +661,9 @@ the same assertions can be driven red in CI without a host.
   the surface an operator actually looks at to decide the fleet is healthy is
   lying to them.
 
-A round's own drill boxes are freshly created and not armed, so the agreement
-reading a drill can reach is bounded by what those boxes are. That is what the
-`app-armed` leg below is for.
+A round's own drill boxes are freshly created and not armed, so the generated
+pass alone can reach only non-armed comparisons. The `app-armed` leg below
+supplies the armed one, by default on one of the round's own boxes.
 
 ### browser — the read-only page walk
 
@@ -673,7 +673,11 @@ The page halves of the console's surfaces, read off a rendered floor
 carry a version and a verdict the page drops.
 
 - **Needs** `playwright-core` *and* a browser — `playwright-core` deliberately
-  ships without one. The drill probes the usual Chrome/Chromium paths and skips
+  ships without one. The repository has no `package.json`: install the module
+  at the checkout's root with `npm i --no-save playwright-core`, where the page
+  reader resolves it from. `rehearsal-all.sh` checks both at the start of the
+  round and prints `preflight: the browser leg will read INCOMPLETE: …` naming
+  what is missing (#789). The drill probes the usual Chrome/Chromium paths and skips
   with a named reason if it finds none; `PW_CHROME=/path/to/chrome` overrides.
   Screenshots land in `.drill-shots/` — `--app-shots <dir>` through
   `rehearsal-all.sh`, `--shots <dir>` when running `rehearsal-app.sh` directly
@@ -692,22 +696,47 @@ targets by screen position and its `wake-silent` click is fleet-wide, so it
 cannot be bound to `--app-boxes` and is never the thing that exercises a
 control.
 
-### app-armed — the named-roster comparison
+### app-armed — the armed comparison
 
-A second, comparison-only agreement pass over a roster the operator names, and
-never a replacement for the generated pass above. It is the reading that needs
-a box the round did not create: armed, ticking, and far enough along to be
-clock-comparable.
+A second, comparison-only agreement pass, and never a replacement for the
+generated pass above. The criterion (#494, `drill/agreement.sh`) counts a box
+only when it is **armed**, its last tick is **fresh**, and the host-minus-box
+clock delta is **larger than the probe's own uncertainty**. A drill box is
+disarmed by design, and a VM's clock is kept in step by chrony, so without help
+no box on a drill host can present that state.
 
-- **Needs** `--app-roster <path>` naming a roster with such a member. It runs
-  `--no-browser`: repeating the walk would spend a second one and could mutate
+**By default the round presents it itself (#789).** With no `--app-roster`,
+after the generated pass the round takes its first drilled box and:
+
+1. arms its cron with the line `install.sh --arm-cron` writes (its
+   `repos.txt` names only its own sandbox, so a tick in the window works
+   nothing else);
+2. stops chrony and moves its clock `ARMED_SELF_SKEW_S` (120) seconds ahead,
+   as root through `box incus <box> -- exec {} -- …` (the tenant has no sudo);
+3. ticks it once, explicitly;
+4. runs the armed pass against a one-line roster naming it.
+
+Afterwards it puts back what it changed, whatever the pass said: cron disarmed,
+the clock set to the host's and chrony started, and each read back. A box left
+armed or skewed is a **FAIL** of this leg, naming the repair. An interrupted
+round restores it from its exit handler. `--no-app-armed-self` opts out.
+
+**`--app-roster <path>`** replaces the round's own box with a roster you name,
+such as a real armed member of your fleet.
+
+- **Needs** one drilled box and `box incus` on the host, or `--app-roster
+  <path>` naming a roster with such a member. It runs `--no-browser`: repeating the walk would spend a second one and could mutate
   the member this pass exists only to read. It remains readable even when no
   role reached a generated member, so a role-install failure cannot silently
   suppress independent evidence.
-- **Produces** the `app-armed` row: `ok (agreement compared; named roster, no
-  additional boxes)`, `INCOMPLETE (agreement could-not-compare: no armed,
-  ticking, clock-skewed box)`, `FAIL`, `skip (not requested: no --app-roster;
-  requires an armed member)`, or `skip (--no-app)`.
+- **Produces** the `app-armed` row: `ok (agreement compared; the round's own
+  box, armed and skewed 120s for the pass, then restored)`, `ok (agreement
+  compared; named roster, no additional boxes)`, `INCOMPLETE (not presented:
+  …)` when the round could not arm, skew or tick its box, `INCOMPLETE
+  (agreement could-not-compare …)`, `FAIL (the round's own box was not
+  restored: …)`, `FAIL`, `SKIPPED (no drill box reached: nothing to arm)`,
+  `skip (not requested: --no-app-armed-self and no --app-roster)`, or
+  `skip (--no-app)`.
 - **A failure means** the console misreads a box that is genuinely working —
   the case the drill's own fresh boxes cannot present.
 
@@ -796,7 +825,7 @@ waiting for:
 | `breaker` | the drilled agent profile declares no `bot_session_terminal` | a profile that classifies terminal vendor output; `shared/conf/agents/` says which do |
 | `breaker` | every tick it fired was refused by a lock a previous run still holds | a box whose duty lock is free — `~/duty/duty.log` names the holder, and a lock outliving its owner is its own defect |
 | `browser` | `playwright-core` absent, or no browser found | `npm i --no-save playwright-core`, and Chrome/Chromium or `PW_CHROME` |
-| `app-armed` | no `--app-roster`, or no armed, ticking member on it | a roster naming a real armed box — a drill's own fresh boxes are not one |
+| `app-armed` | no drilled box, `box incus` refused, or `--no-app-armed-self` without `--app-roster` | a round that reaches a box; the round arms and skews it itself (#789) |
 | `resume`, `attention` | the builder role was not in `--roles`, or its phase 2 never ran | a builder box that reaches phase 2 |
 | `attention-audit` | the triage role was not in `--roles`, or its phase 2 never ran | a triage box that reaches phase 2 |
 | `installer`, `config`, `app` | no role install produced a box to borrow | a role drill that reaches an installed box |

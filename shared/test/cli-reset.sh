@@ -146,6 +146,17 @@ case "$cmd" in
     name="$1"; shift || true
     printf 'down %s%s\n' "$name" "${1:+ $1}" >>"$calls"
     if [ "$name" = "${RST_DOWN_FAIL:-}" ]; then exit 1; fi
+    # RST_DOWN_FAIL_SETTLE: every stop of the settle — the ones after the
+    # restore wrote the memory back — times out (#786).
+    if [ "$name" = "${RST_DOWN_FAIL_SETTLE:-}" ] && grep -qx "memory-unpack $name" "$calls"; then exit 1; fi
+    # RST_DOWN_FAIL_ONCE: the first stop times out, as incus's did on the
+    # rc2 round (#786); every later one takes.
+    if [ "$name" = "${RST_DOWN_FAIL_ONCE:-}" ] && [ ! -e "$state_dir/down-failed-once-$name" ] \
+       && grep -qx "memory-unpack $name" "$calls"; then
+      : >"$state_dir/down-failed-once-$name"
+      echo 'Error: Failed shutting down instance, status is "Running": context deadline exceeded' >&2
+      exit 1
+    fi
     if [ "$name" != "${RST_STOP_NOT_TAKE:-}" ]; then printf 'stopped\n' >"$state_dir/state-$name"; fi
     ;;
   start)
@@ -283,6 +294,9 @@ case "$cmd" in
       printf 'pending-on %s\n' "$name" >>"$calls"
     elif [[ "$script" == *'rm -f ~/duty/.memory-pending'* ]]; then
       printf 'pending-off %s\n' "$name" >>"$calls"
+    elif [[ "$script" == *'systemctl is-system-running --wait'* ]]; then
+      # The settle's boot wait before its stop (#786).
+      printf 'settle-wait %s\n' "$name" >>"$calls"
     elif [[ "$script" == *'crontab -l'* ]]; then
       # The pause/resume shells (shared/lib/host/pause.sh) are logged by name:
       # the restore of a paused box must pause the crontab again whatever the
@@ -806,7 +820,41 @@ t reset-a-box-past-the-cap-goes-back-down-after-its-memory 1 \
 case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again — 1 of 1 boxes running; the host tick starts it when there is work"*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-the-cap-stop-is-said said "$r1"
 t reset-the-cap-stop-is-not-a-failure 0 "$RC"
+# #786 — the settle waits for the guest's boot before it stops, and a stop
+# that does not take is retried once.
+t w786-settle-waits-for-the-boot-before-the-stop 1 \
+  "$(awk '/^memory-unpack alpha/{m=NR} /^settle-wait alpha/{if(m && NR>m)w=NR} /^down alpha/{if(w && NR>w)d=NR} END{print (w && d) ? 1 : 0}' "$STATE/calls")"
+rm -f "$STATE"/down-failed-once-*
+printf 'running\n' >"$STATE/state-beta"
+: >"$STATE/calls"
+CREW_RESET_STOP_RETRY_S=0 RST_DOWN_FAIL_ONCE=alpha capture reset alpha
+t w786-a-stop-that-times-out-is-retried 2 \
+  "$(awk '/^memory-unpack alpha/{m=1} m && /^down alpha/{d++} END{print d+0}' "$STATE/calls")"
+t w786-a-retried-stop-that-takes-is-not-a-failure 0 "$RC"
+case "$OUT" in *"alpha: the stop did not take; retrying once in 0s"*"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again"*) r1=said ;; *) r1="$OUT" ;; esac
+t w786-the-retry-is-said said "$r1"
+# ...and one that never takes leaves a LANDED restore counted as restored,
+# running, for the host tick's idle rule — not a failed reset.
+printf 'running\n' >"$STATE/state-beta"
+: >"$STATE/calls"
+CREW_RESET_STOP_RETRY_S=0 RST_DOWN_FAIL_SETTLE=alpha capture reset alpha
+t w786-a-cap-stop-that-never-takes-is-not-a-failure 0 "$RC"
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started; it is held (1 of 1 boxes running), but its stop did not take after a retry — left running for the host tick, which stops it once idle"*) r1=said ;; *) r1="$OUT" ;; esac
+t w786-a-cap-stop-that-never-takes-is-said said "$r1"
+case "$OUT" in *"reset: 1 restored, 0 skipped-busy, 0 failed"*) r1=counted ;; *) r1="$OUT" ;; esac
+t w786-a-cap-stop-that-never-takes-counts-restored counted "$r1"
 sed -i '/^FLEET_MAX_RUNNING=1$/d' "$CONF/fleet.conf"
+# A PAUSED box whose stop never takes is still a failure: the host tick
+# never stops a paused box, so it is the operator's to repeat.
+reset_case
+arm alpha "$BOX_STAMP_VERSION"
+mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
+: >"$STATE/calls"
+CREW_RESET_STOP_RETRY_S=0 RST_DOWN_FAIL_SETTLE=alpha capture reset alpha
+t w786-a-paused-stop-that-never-takes-is-a-failure 1 "$RC"
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started, but the stop its paused state asks for FAILED twice — its crontab is paused; stop it with: box down alpha"*) r1=said ;; *) r1="$OUT" ;; esac
+t w786-a-paused-stop-that-never-takes-is-said said "$r1"
+rm -f "$CONF/store/paused/alpha"
 
 reset_case
 arm alpha

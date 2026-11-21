@@ -35,6 +35,16 @@
 # (repos.d/<box>.txt) where it has one, the fleet's repos.txt where it does
 # not — the same layering the floor's registry editor writes.
 #
+# TELEGRAM (#788). A `tg:<name>` entry is a bot token: the operator channel a
+# box notifies through (shared/bin/notify.sh reads ~/.tg_bot_token and
+# ~/.tg_chat_id). Bots are entries like any other — several may live in the
+# pool, each member is assigned one, and any number of members may share one.
+# The CHAT is not per entry: it is the fleet's one group chat (operator ruling
+# on #788), stored once beside the entries (credentials/tg-chat, not a secret)
+# and delivered with whichever bot a member holds. A changed chat makes every
+# tg holder owe its value again, because the digest a member is compared on
+# covers the token and the chat together.
+#
 # CREW_CREDENTIALS_DIR overrides where the pool lives: the drill points a
 # round's throwaway fleet definition at the operator's own pool with it, so
 # the round logs its boxes in from the pool without ever writing the
@@ -57,7 +67,7 @@ pool_init() {
 pool_entry_valid() {
   local svc="${1%%:*}" name="${1#*:}"
   case "$1" in *:*) ;; *) return 1 ;; esac
-  case "$svc" in gh|agent) ;; *) return 1 ;; esac
+  case "$svc" in gh|agent|tg) ;; *) return 1 ;; esac
   [[ "$name" =~ $POOL_NAME_RE ]]
 }
 
@@ -70,6 +80,29 @@ pool_meta() {
 }
 
 pool_digest() { printf '%s' "$1" | sha256sum | cut -c1-64; }
+
+# The fleet's Telegram group chat (#788): a chat id, negative for a group.
+# shellcheck disable=SC2034  # read by cli/crew's `crew creds chat`
+POOL_TG_CHAT_RE='^-?[0-9]{1,20}$'
+pool_tg_chat() { head -1 "$(pool_dir)/tg-chat" 2>/dev/null | tr -d '\r\n'; }
+pool_tg_chat_set() { # CHAT
+  local f tmp
+  pool_init || return 1
+  f="$(pool_dir)/tg-chat"
+  tmp="$(mktemp "$f.XXXXXX")" || return 1
+  if ! { printf '%s\n' "$1" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$f"; }; then
+    rm -f "$tmp"; return 1
+  fi
+}
+
+# pool_want_digest ID — what a member holding ID's current value was sent:
+# the secret's digest, and for a tg entry the chat's beside it.
+pool_want_digest() {
+  local d
+  d="$(pool_meta "$1" digest)"
+  [ -n "$d" ] || return 0
+  if [ "${1%%:*}" = tg ]; then pool_digest "$d:$(pool_tg_chat)"; else printf '%s' "$d"; fi
+}
 
 # pool_put ID KIND AGENT LOGIN — the secret on stdin, written atomically,
 # 0600, with its record. A rotation is a put over an existing entry.
@@ -173,7 +206,7 @@ pool_record_delivered() {
 # pool_is_stale BOX ID — the member does not hold the entry's current value.
 pool_is_stale() {
   local want have
-  want="$(pool_meta "$2" digest)"
+  want="$(pool_want_digest "$2")"
   have="$(awk -v e="$2" '$1 == e {print $2; exit}' "$(pool_dir)/delivered/$1" 2>/dev/null)"
   [ "$want" != "$have" ]
 }
@@ -181,10 +214,20 @@ pool_is_stale() {
 # pool_send BOX ID ACTOR — one entry onto one running box, through #765's
 # credentials shell. Prints the box's verdict line; rc 0 set, 1 refused.
 pool_send() {
-  local box="$1" id="$2" actor="$3" svc kind secret verdict rc=0 digest
+  local box="$1" id="$2" actor="$3" svc kind secret verdict rc=0 digest header
   svc="${id%%:*}"
   kind="$(pool_meta "$id" kind)"
-  digest="$(pool_meta "$id" digest)"
+  digest="$(pool_want_digest "$id")"
+  header="$svc $kind"
+  if [ "$svc" = tg ]; then
+    header="$header $(pool_tg_chat)"
+    if [ -z "$(pool_tg_chat)" ]; then
+      verdict="the fleet has no Telegram group chat yet (crew creds chat <id>) — nothing set"
+      pool_record_verdict "$box" "$id" fail "$verdict"
+      printf '%s\n' "$verdict"
+      return 1
+    fi
+  fi
   secret="$(cat "$(pool_entry_path "$id")/secret" 2>/dev/null)" || secret="" # Decision-path empty fallback: an unreadable entry sets nothing and is refused just below
   if [ -z "$secret" ] || [ -z "$kind" ]; then
     verdict="the pool entry $id could not be read — nothing set"
@@ -192,7 +235,7 @@ pool_send() {
     printf '%s\n' "$verdict"
     return 1
   fi
-  verdict="$(bxpipe "$box" "$(host_credentials_set_sh)" "$(printf '%s %s\n%s\n' "$svc" "$kind" "$secret")" 2>&1 \
+  verdict="$(bxpipe "$box" "$(host_credentials_set_sh)" "$(printf '%s\n%s\n' "$header" "$secret")" 2>&1 \
     | tr -d '\r' | tail -1)" || rc=$?
   secret=""
   [ "$rc" -ne 0 ] || case "$verdict" in *"NOT logged in"*|*refused*|*"nothing set"*) rc=1 ;; esac
