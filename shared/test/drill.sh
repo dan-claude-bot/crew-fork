@@ -3506,6 +3506,55 @@ t w769-the-teardown-and-fixtures-copies-agree "" \
 t w769-no-identity-read-keeps-a-failed-body 0 \
   "$(cat "$ROOT"/drill/*.sh | grep -cE 'gh api user --jq \.login.*(\|\| *true|\|\| *echo)')"
 
+# #776 — fail fast: a wait whose upstream row failed is refused at once.
+w776_run() {  # w776_run <failed-row> <upstream> <budget> <name> <cmd...>
+  (
+    # shellcheck disable=SC2317  # supplied to the extracted functions
+    ok()   { echo "ok   $1"; }
+    # shellcheck disable=SC2317,SC2031  # FAILS is this subshell's own
+    fail() { echo "FAIL $1"; FAILS+=("$1"); }
+    # shellcheck disable=SC2034  # read by the extracted wait_for
+    WAIT_FOR_INTERVAL=0
+    FAILS=()
+    [ -z "$1" ] || FAILS+=("$1")
+    shift
+    eval "$(sed -n '/^wait_for_duration() {/p; /^wait_for() {/,/^}/p; /^row_failed() {/,/^}/p; /^wait_for_after() {/,/^}/p' "$ROOT/drill/rehearsal.sh")"
+    wait_for_after "$@"; echo "rc=$?"
+  ) </dev/null
+}
+: >"$W749_COUNT"
+w776_out="$(w776_run 'review: verdict pinned to head (timeout 1200s; last observed: nothing)' \
+  'review: verdict pinned to head' 1200 'downstream row' w749_counted 1)"
+t w776-a-blocked-wait-is-refused-at-once 1 \
+  "$(grep -cx 'FAIL downstream row (blocked by: review: verdict pinned to head)' <<<"$w776_out")"
+t w776-a-blocked-wait-never-polls 0 "$(wc -l <"$W749_COUNT" | tr -d ' ')"
+t w776-a-blocked-wait-is-rc-2 1 "$(grep -cx 'rc=2' <<<"$w776_out")"
+w776_out="$(w776_run 'some other row' 'review: verdict pinned to head' 1 'downstream row' w749_say 0 '')"
+t w776-an-unblocked-wait-runs 1 "$(grep -cx 'ok   downstream row' <<<"$w776_out")"
+w776_out="$(w776_run '' 'review: verdict pinned to head' 1 'downstream row' w749_say 0 '')"
+t w776-no-failure-at-all-runs 1 "$(grep -cx 'ok   downstream row' <<<"$w776_out")"
+# A name that only shares a PREFIX is not the upstream row.
+w776_out="$(w776_run 'review: verdict pinned to head of something else' 'review: verdict pinned to head' 1 'downstream row' w749_say 0 '')"
+t w776-a-prefix-is-not-the-row 1 "$(grep -cx 'ok   downstream row' <<<"$w776_out")"
+t w776-the-duration-format "3m07s" \
+  "$(eval "$(sed -n '/^wait_for_duration() {/p' "$ROOT/drill/rehearsal.sh")"; wait_for_duration 187)"
+# The dependent rows that are wired: each names its upstream.
+for w776_pair in \
+    'attention: 📌 pickup comment|attention: label removed (ack re-arms)' \
+    'review: 🔎 announce at head|review: verdict pinned to head' \
+    'review: verdict pinned to head|re-request rule: auto off queues a real re-review' \
+    'review: verdict pinned to head|re-request: auto-approved (supersede)' \
+    'builder: host changes-requested review submitted|builder: changes-requested round returns PR to draft'; do
+  w776_up="${w776_pair%%|*}" w776_down="${w776_pair#*|}"
+  w776_flat="$(tr -d '\\\n' <"$ROOT/drill/rehearsal.sh")"
+  w776_wired=0
+  while [[ "$w776_flat" == *"_after \"$w776_up\""* ]]; do
+    w776_flat="${w776_flat#*_after \""$w776_up"\"}"
+    [[ "${w776_flat:0:160}" != *"\"$w776_down\""* ]] || { w776_wired=1; break; }
+  done
+  t "w776-wired-${w776_down// /-}" 1 "$w776_wired"
+done
+
 # #750 — the budget is the box's, read the way the engine reads it.
 w750_budget() {  # w750_budget <bx-stdout> <bx-rc> <kind> — "rc=N value=V"
   (
@@ -3552,7 +3601,8 @@ t w750-unreadable-budget-rc 1 "$(w750_lane '' | grep -cx 'rc=2')"
 t w750-readable-budget-grades-the-row 1 "$(w750_lane 1 | grep -cx 'ok   row')"
 # The two rows name the lane and carry no literal, so a literal cannot drift back.
 t w750-attention-row-grades-on-the-lane 1 \
-  "$(grep -c 'wait_for_lane ATTENTION "attention: label removed (ack re-arms)"' "$ROOT/drill/rehearsal.sh")"
+  "$(grep -cE '(wait_for_lane|^ +) ATTENTION "attention: label removed \(ack re-arms\)"' "$ROOT/drill/rehearsal.sh" \
+     | awk '{print ($1 == 1)}')"
 t w750-builder-row-grades-on-the-lane 1 \
   "$(grep -c 'wait_for_lane BUILD "builder: issue moved off ready (claimed)"' "$ROOT/drill/rehearsal.sh")"
 t w750-neither-row-carries-a-literal 0 \

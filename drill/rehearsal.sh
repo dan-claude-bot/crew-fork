@@ -166,6 +166,7 @@ check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else
 # the transcript alone: the two label rows print the label set they read.
 # The interval is a variable so the suite can drive the loop without sleeping.
 WAIT_FOR_INTERVAL="${WAIT_FOR_INTERVAL:-10}"
+wait_for_duration() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
 wait_for() {
   local t="$1" name="$2"; shift 2
   local end=$((SECONDS + t)) rc=1 seen=""
@@ -173,7 +174,16 @@ wait_for() {
     seen="$("$@" 2>&1 >/dev/null)"; rc=$?
     seen="${seen//$'\n'/ | }"
     case "$rc" in
-      0) ok "$name"; return 0 ;;
+      0)
+        # A row that waited a minute or more says how long (#776): the waits
+        # are where a round's wall time goes, and the transcript is the only
+        # place a later cut of them can be measured from.
+        if [ $((SECONDS + t - end)) -ge 60 ]; then
+          ok "$name (after $(wait_for_duration $((SECONDS + t - end))))"
+        else
+          ok "$name"
+        fi
+        return 0 ;;
       2) fail "$name (cannot grade: ${seen:-the predicate refused to grade})"; return 2 ;;
     esac
     sleep "$WAIT_FOR_INTERVAL"
@@ -197,6 +207,37 @@ wait_for_lane() {
     return 2
   fi
   wait_for "$budget" "$name" "$@"
+}
+# row_failed NAME — whether a row of this run already FAILED under NAME, with
+# or without the parenthesised reason wait_for appends.
+row_failed() {
+  local f
+  for f in ${FAILS[@]+"${FAILS[@]}"}; do
+    case "$f" in "$1"|"$1 ("*) return 0 ;; esac
+  done
+  return 1
+}
+# wait_for_after <upstream row> <seconds> <name> <cmd...> — fail fast (#776).
+# A wait whose upstream row already failed is refused at once as `blocked by`,
+# never polled out: on a round where the agent never acted, every downstream
+# wait spent its whole budget proving the same absence again (the rc1 round's
+# pass 2 spent about 3.5 h that way). Blocked is a FAIL — it is a reading not
+# taken, never a pass — and it names the row that blocked it.
+wait_for_after() {
+  local upstream="$1"; shift
+  if row_failed "$upstream"; then
+    fail "$2 (blocked by: $upstream)"
+    return 2
+  fi
+  wait_for "$@"
+}
+wait_for_lane_after() {
+  local upstream="$1"; shift
+  if row_failed "$upstream"; then
+    fail "$2 (blocked by: $upstream)"
+    return 2
+  fi
+  wait_for_lane "$@"
 }
 bx() { box exec "$BOX_NAME" -- bash -lc "$1"; }
 # shellcheck disable=SC2034  # read and updated by rehearsal-safety.sh
@@ -851,7 +892,8 @@ else
   # data, never into the filter as source text, and the answer comes back as an
   # exit status rather than through `gh api --jq`, which marshals a null to
   # NOTHING and so cannot carry a boolean at all.
-  wait_for_lane ATTENTION "attention: label removed (ack re-arms)" \
+  wait_for_lane_after "attention: 📌 pickup comment" \
+    ATTENTION "attention: label removed (ack re-arms)" \
     rehearsal_attention_flag_cleared "$SANDBOX" "$inum"
 
   # The census's other half (#714, D2/D3). Deliberately AFTER the two rows
@@ -1035,7 +1077,8 @@ else
       # post-tick-only read can miss the visible state #139 shipped.
       bx "~/duty/bin/tick.sh" </dev/null &
       builder_tick_pid=$!
-      wait_for 900 "builder: changes-requested round returns PR to draft" \
+      wait_for_after "builder: host changes-requested review submitted" \
+        900 "builder: changes-requested round returns PR to draft" \
         rehearsal_builder_pr_is_draft "$SANDBOX" "$bpr"
       rehearsal_wait_builder_signal_window_with_prereqs \
         1800 "$SANDBOX" "$bpr" "$REHEARSAL_MARK_ANSWERED" \
@@ -1104,7 +1147,7 @@ else
   have_verdict()      { [ "$(verdicts)" -ge 1 ]; }
   verdicts_unchanged() { [ "$(verdicts)" = "$VREF" ]; }
   verdicts_grew()      { [ "$(verdicts)" -gt "$VREF" ]; }
-  wait_for 1200 "review: verdict pinned to head" have_verdict
+  wait_for_after "review: 🔎 announce at head" 1200 "review: verdict pinned to head" have_verdict
   check "review: announce precedes verdict" \
     rehearsal_review_announce_precedes_verdict "$SANDBOX" "$pr" "$ME2" "$head_sha"
 
@@ -1147,7 +1190,8 @@ else
   VREF="$(verdicts)"
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
   bx "~/duty/bin/tick.sh" || true
-  wait_for 1200 "re-request rule: auto off queues a real re-review" verdicts_grew
+  wait_for_after "review: verdict pinned to head" \
+    1200 "re-request rule: auto off queues a real re-review" verdicts_grew
   # ...and it is a considered verdict, not the auto-approval under another
   # name: the supersede path stamps "re-request rule" into its body. This is
   # the one edge the flag still governs, and nothing asserted it before.
@@ -1160,7 +1204,7 @@ else
   # -- re-request at unchanged head -> auto-approve through the gate --
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
   bx "~/duty/bin/tick.sh" || true
-  wait_for 300 "re-request: auto-approved (supersede)" bash -c \
+  wait_for_after "review: verdict pinned to head" 300 "re-request: auto-approved (supersede)" bash -c \
     "gh api 'repos/$SANDBOX/pulls/$pr/reviews' --paginate | jq -se --arg m \"$ME2\" \
       '[add[] | select(.user.login == \$m) | .body] | any(contains(\"re-request rule\"))'"
 
