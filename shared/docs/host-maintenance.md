@@ -384,7 +384,13 @@ crew creds rm agent:max-1                    # refused while any member is assig
   - A member holds one gh entry and one agent entry, and assigning a new one
     of a kind replaces the old.
   - The floor's roster editor shows the assignment and keeps it through a
-    save. Assigning is the host's job, where the rules below are checked.
+    save.
+- **From the floor (#780).** The **Credentials** overlay manages the pool: it
+  adds, rotates and removes entries, and assigns and clears them per member.
+  - Every action is this same `crew creds`, run by the collector against its
+    fleet definition with the value on stdin. So the rules below are checked
+    in one place, and a refusal reaches the page in the CLI's own words.
+  - The listing the overlay shows is `crew creds list --json`.
 - **When it is carried.** A member gets its entries:
   - when it is hired;
   - when the host tick wakes it, if an entry changed while it slept;

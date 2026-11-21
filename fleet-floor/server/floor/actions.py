@@ -14,6 +14,7 @@ from floor.ping import log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
 from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
 from floor.credentials import credentials_set
+from floor.pool import ACTIONS as POOL_ACTIONS, pool_command
 from floor.inflight import INFLIGHT, busy_reply
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
@@ -282,13 +283,15 @@ def registry_command(action, box, body, actor):
 # What claims what (#766). A box action holds its box for its duration; a
 # fleet action holds the fleet slot, and each box only while its own call runs.
 BOX_CLAIMED = {"pause", "resume", "restart", "power-on", "power-off", "force-stop",
-               "credentials-set"}
+               "credentials-set", "pool-assign", "pool-unassign"}
 # A message does not hold its box — concurrent messages are each their own
 # session, by design (a token per prompt file) — but it is refused while an
 # action that changes the box holds it: a prompt fired into a restart lands
 # nowhere anyone can see.
 BOX_RESPECTED = {"message"}
-FLEET_CLAIMED = {"start-all", "stop-all", "wake-silent"}
+# A rotation reaches every running member the entry feeds, so it holds the
+# fleet slot as a fleet-wide action does (#780).
+FLEET_CLAIMED = {"start-all", "stop-all", "wake-silent", "pool-rotate"}
 
 
 def do_command(fleet, body, actor=""):
@@ -334,7 +337,8 @@ def _do_command(fleet, body, actor=""):
     box = str(body.get("box", ""))
 
     roster = {u["box"]: u for u in read_roster()}
-    fleet_wide = {"start-all", "stop-all", "wake-silent", "registry-set", "roster-set"}
+    fleet_wide = {"start-all", "stop-all", "wake-silent", "registry-set", "roster-set",
+                  "pool-add", "pool-rotate", "pool-rm"}
     registry = {"registry-set", "registry-override", "registry-inherit"}
 
     if action not in fleet_wide:
@@ -353,6 +357,15 @@ def _do_command(fleet, body, actor=""):
         # path through this process is one function; a refresh is asked for
         # so the next poll's `authfail` reads the box after it.
         code, reply = credentials_set(body, actor)
+        if reply.get("ok"):
+            fleet.request_refresh()
+        return code, reply
+    if action in POOL_ACTIONS:
+        # The host credential pool (#780): every action is the CLI's own
+        # `crew creds`, the secret on its stdin. An assignment rewrites the
+        # roster line and may set a box's credentials, so a refresh is asked
+        # for, as after a roster save and a credentials set.
+        code, reply = pool_command(action, body, actor)
         if reply.get("ok"):
             fleet.request_refresh()
         return code, reply

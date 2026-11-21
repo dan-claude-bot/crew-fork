@@ -487,7 +487,7 @@ CMDS=(
   "pause^<box>^Keep a box off: the host tick never starts it, and its own cron is commented until resume^cmd_pause"
   "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
   "login^<box> gh|agent [<kind>]^Set a member's GitHub or agent credential from stdin: write-only, never read back^cmd_login"
-  "creds^list | add gh <name> | add agent <name> <agent> [<kind>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
+  "creds^list [--json] | add gh <name> | add agent <name> <agent> [<kind>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
   "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
   "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
@@ -4810,8 +4810,40 @@ cmd_creds() {
   esac
 }
 
+# creds_list_json — the listing, machine-readable, for the floor (#780): every
+# entry with its record (never the value), every roster member with its
+# assignment, and per assigned member its last verdict and whether it owes the
+# entry's current value. Built in jq from the pool's own files, so the floor
+# reads exactly what the CLI's listing reads.
+creds_list_json() {
+  local id members_json entries="" m line
+  while read -r id; do
+    [ -n "$id" ] || continue
+    members_json="$(while read -r m; do
+        [ -n "$m" ] || continue
+        line="$(awk -v e="$id" '$1 == e {print; exit}' "$(pool_dir)/verdicts/$m" 2>/dev/null)"
+        jq -nc --arg box "$m" --arg line "$line" --argjson stale "$(pool_is_stale "$m" "$id" && echo true || echo false)" \
+          '($line | split(" ")) as $f
+           | {box: $box, owes: $stale,
+              verdict: (if $line == "" then null else {at: $f[1], ok: ($f[2] == "ok"), text: ($f[3:] | join(" "))} end)}'
+      done < <(pool_members_of "$id") | jq -sc .)"
+    entries="$entries$(jq -nc --arg id "$id" --arg kind "$(pool_meta "$id" kind)" --arg agent "$(pool_meta "$id" agent)" \
+      --arg login "$(pool_meta "$id" login)" --arg set_at "$(pool_meta "$id" set_at)" --argjson members "$members_json" \
+      '{id: $id, service: ($id | split(":")[0]), name: ($id | split(":")[1:] | join(":")),
+        kind: $kind, agent: $agent, login: $login, set_at: $set_at, members: $members}')"$'\n'
+  done < <(pool_entries)
+  jq -n --arg pool "$(pool_dir)" --argjson entries "$(printf '%s' "$entries" | jq -sc .)" \
+    --argjson roster "$(while read -r m agent _; do
+        [ -n "$m" ] || continue
+        jq -nc --arg box "$m" --arg agent "$agent" --arg creds "$(roster_creds_of "$m" | paste -sd, -)" \
+          '{box: $box, agent: $agent, creds: ($creds | split(",") | map(select(. != "")))}'
+      done < <(read_roster) | jq -sc .)" \
+    '{pool: $pool, entries: $entries, members: $roster}'
+}
+
 creds_list() {
-  [ "$#" -eq 0 ] || usage_error "usage: crew creds list"
+  if [ "${1:-}" = --json ]; then creds_list_json; return; fi
+  [ "$#" -eq 0 ] || usage_error "usage: crew creds list [--json]"
   local id members m v fails n=0 who
   echo "credential pool: $(pool_dir) (write-only — no value is ever shown)"
   while read -r id; do
@@ -4852,7 +4884,7 @@ creds_add() {
       [ -z "$agent" ] || usage_error "usage: crew creds add gh <name>"
       kind=token
       secret="$(creds_read_secret "$id: a GitHub personal access token" token)"
-      login="$(creds_gh_login "$secret")"
+      login="$(creds_gh_login "$secret")" || login="" # Decision-path empty fallback: a token GitHub refuses has no login, and is refused just below
       [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
         || { secret=""; die "GitHub refused the token for $id — nothing stored"; } ;;
     agent)
@@ -4877,7 +4909,7 @@ creds_rotate() {
   secret="$(creds_read_secret "$id: the new value" "$kind")"
   login=""
   if [ "${id%%:*}" = gh ]; then
-    login="$(creds_gh_login "$secret")"
+    login="$(creds_gh_login "$secret")" || login="" # Decision-path empty fallback: a token GitHub refuses has no login, and is refused just below
     [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
       || { secret=""; die "GitHub refused the new token for $id — the old value stands"; }
     if [ "$login" != "$(pool_meta "$id" login)" ]; then

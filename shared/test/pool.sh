@@ -105,6 +105,7 @@ t pool-the-pool-is-0700 700 "$(stat -c %a "$POOL")"
 t pool-the-entries-dir-is-0700 700 "$(stat -c %a "$POOL/entries")"
 creds ghp_nope add gh nope
 t pool-a-refused-token-is-refused 1 "$RC"
+t pool-a-refused-token-says-so yes "$(has 'GitHub refused the token for gh:nope — nothing stored')"
 t pool-a-refused-token-stores-nothing absent "$([ -e "$POOL/entries/gh--nope" ] && echo present || echo absent)"
 creds ghp_bot add gh bot
 t pool-a-second-add-is-refused-naming-rotate yes "$(has 'rotate it: crew creds rotate gh:bot')"
@@ -170,6 +171,20 @@ t pool-two-gh-entries-at-once-is-a-usage-error 2 "$RC"
 creds '' assign nobody gh:bot
 t pool-an-off-roster-assign-is-refused 1 "$RC"
 
+# --- list --json, for the floor (#780) ----------------------------------------
+creds '' list --json
+t pool-json-parses 0 "$(jq -e . >/dev/null 2>&1 <<<"$OUT"; echo $?)"
+t pool-json-names-the-pool "$POOL" "$(jq -r .pool <<<"$OUT")"
+t pool-json-lists-every-entry "agent:max gh:bot gh:other gh:third" "$(jq -r '[.entries[].id] | sort | join(" ")' <<<"$OUT")"
+t pool-json-a-gh-entry-has-its-login dan-claude-bot "$(jq -r '.entries[] | select(.id == "gh:bot") | .login' <<<"$OUT")"
+t pool-json-an-agent-entry-has-its-agent-and-kind "claude oauth-token" "$(jq -r '.entries[] | select(.id == "agent:max") | "\(.agent) \(.kind)"' <<<"$OUT")"
+t pool-json-names-who-holds-an-entry "alpha beta" "$(jq -r '.entries[] | select(.id == "agent:max") | [.members[].box] | sort | join(" ")' <<<"$OUT")"
+t pool-json-carries-the-verdict true "$(jq -r '.entries[] | select(.id == "gh:bot") | .members[] | select(.box == "alpha") | .verdict.ok' <<<"$OUT")"
+t pool-json-says-what-is-owed false "$(jq -r '.entries[] | select(.id == "gh:bot") | .members[] | select(.box == "alpha") | .owes' <<<"$OUT")"
+t pool-json-lists-every-member-with-its-assignment "alpha:gh:bot,agent:max beta:agent:max,gh:other gamma:gh:third" \
+  "$(jq -r '[.members[] | "\(.box):\(.creds | join(","))"] | join(" ")' <<<"$OUT")"
+t pool-json-carries-no-value 0 "$(grep -cE 'ghp_|sk-ant' <<<"$OUT" || true)"
+
 # --- rotate -------------------------------------------------------------------
 printf 'Stopped\n' >"$BOXES/beta/.state"
 creds sk-ant-oat-second rotate agent:max
@@ -186,6 +201,7 @@ t pool-list-names-what-the-sleeper-owes yes "$(has 'owes the current value')"
 # A gh rotation re-asks GitHub and refuses a dead token, keeping the old one.
 creds ghp_dead rotate gh:bot
 t pool-a-dead-rotation-is-refused 1 "$RC"
+t pool-a-dead-rotation-says-so yes "$(has 'GitHub refused the new token for gh:bot — the old value stands')"
 t pool-a-dead-rotation-keeps-the-old-value ghp_bot "$(cat "$POOL/entries/gh--bot/secret")"
 
 # --- rm -----------------------------------------------------------------------
