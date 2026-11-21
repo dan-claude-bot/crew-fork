@@ -5183,6 +5183,18 @@ cmd_status() {
           note="⚠ $ROSTER says '$agent', box installed as '$actual' — probing the WRONG vendor"
         fi
       fi
+      # A box both logged out AND disarmed says both (#773). The disarmed note
+      # was the `elif` below, so it never showed on a logged-out box, while the
+      # floor reported the box disarmed from the same counts: the two consoles
+      # disagreed about one box, and every creds-free drill pass carried three
+      # false `agree` FAILs for it.
+      if [ -n "$hired" ] && [ "$hired" != "not hired" ] && [ "$armed" = 0 ]; then
+        if [ "$cpaused" != 0 ]; then
+          note="$note; paused by operator — resume from the console"
+        else
+          note="$note; disarmed — no cron line; crew hire $name arms it"
+        fi
+      fi
     elif [ -n "$hired" ] && [ "$hired" != "not hired" ] && [ "$armed" = 0 ]; then
       # Not armed: cron will never fire here, so the newest duty.log line is a
       # fact about the past and reads as though the box is working. The floor
