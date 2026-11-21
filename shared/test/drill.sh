@@ -3021,7 +3021,7 @@ BRK_STUCK="$(brk_drive)"
 t drill-breaker-unreopenable-fixture-fails-arming 1 \
   "$(grep -c '^FAIL breaker: attention lane fixture armed$' <<<"$BRK_STUCK" || true)"
 t drill-breaker-unreopenable-fixture-names-what-it-read 1 \
-  "$(grep -c '^  read: state=closed labels=attention$' <<<"$BRK_STUCK" || true)"
+  "$(grep -c '^  read: state=closed labels=attention assignees=' <<<"$BRK_STUCK" || true)"
 # The point of failing there: nothing downstream is graded, because there is
 # no armed lane for any of it to be about.
 t drill-breaker-unreopenable-fixture-fires-no-tick 1 "$(brk_v "$BRK_STUCK" TICKS 0)"
@@ -3038,7 +3038,7 @@ BRK_UNLABELLED="$(brk_drive)"
 t drill-breaker-unlabelled-fixture-fails-arming 1 \
   "$(grep -c '^FAIL breaker: attention lane fixture armed$' <<<"$BRK_UNLABELLED" || true)"
 t drill-breaker-unlabelled-fixture-names-what-it-read 1 \
-  "$(grep -c '^  read: state=open labels=$' <<<"$BRK_UNLABELLED" || true)"
+  "$(grep -c '^  read: state=open labels= assignees=' <<<"$BRK_UNLABELLED" || true)"
 t drill-breaker-unlabelled-fixture-fires-no-tick 1 "$(brk_v "$BRK_UNLABELLED" TICKS 0)"
 BRK_LABEL_STICKS=1
 
@@ -3625,7 +3625,7 @@ w776_run() {  # w776_run <failed-row> <upstream> <budget> <name> <cmd...>
   (
     # shellcheck disable=SC2317  # supplied to the extracted functions
     ok()   { echo "ok   $1"; }
-    # shellcheck disable=SC2317,SC2031  # FAILS is this subshell's own
+    # shellcheck disable=SC2317,SC2030,SC2031  # FAILS is this subshell's own
     fail() { echo "FAIL $1"; FAILS+=("$1"); }
     # shellcheck disable=SC2034  # read by the extracted wait_for
     WAIT_FOR_INTERVAL=0
@@ -3668,6 +3668,46 @@ for w776_pair in \
   done
   t "w776-wired-${w776_down// /-}" 1 "$w776_wired"
 done
+
+# #779 — the breaker's fixture is armed only while it is a DEMAND: open,
+# labelled, and assigned to the identity. Arming assigns it again.
+W779_DIR="$TMP/w779"; mkdir -p "$W779_DIR"
+w779_arm() {  # w779_arm <assignees-after-arm: "" or a login> <identity> — rc, the reading, then gh's writes
+  (
+    W779_AFTER="$1"
+    : >"$W779_DIR/writes"
+    # shellcheck disable=SC2317  # the stub the sourced file calls
+    gh() {
+      case "$*" in
+        *"-X POST"*) printf '%s\n' "$*" >>"$W779_DIR/writes" ;;
+        *"-X PATCH"*) : ;;
+        *)
+          if [ -n "$W779_AFTER" ]; then
+            printf '{"state":"open","labels":[{"name":"attention"}],"assignees":[{"login":"%s"}]}\n' "$W779_AFTER"
+          else
+            printf '{"state":"open","labels":[{"name":"attention"}],"assignees":[]}\n'
+          fi ;;
+      esac
+    }
+    # shellcheck source=drill/rehearsal-breaker.sh
+    . "$ROOT/drill/rehearsal-breaker.sh"
+    rehearsal_breaker_arm_fixture o/r 7 attention "$2"; echo "rc=$?"
+    echo "read: $REHEARSAL_BREAKER_ARM_READING"
+    cat "$W779_DIR/writes"
+  ) </dev/null 2>/dev/null
+}
+w779_out="$(w779_arm dan-claude-bot dan-claude-bot)"
+t w779-an-assigned-fixture-is-armed 1 "$(grep -cx 'rc=0' <<<"$w779_out")"
+t w779-arming-assigns-the-identity 1 "$(grep -c 'repos/o/r/issues/7/assignees -f assignees\[\]=dan-claude-bot' <<<"$w779_out")"
+w779_out="$(w779_arm '' dan-claude-bot)"
+t w779-an-unassigned-fixture-is-not-armed 1 "$(grep -cx 'rc=1' <<<"$w779_out")"
+t w779-the-reading-names-the-missing-assignee 1 "$(grep -cx 'read: state=open labels=attention assignees=' <<<"$w779_out")"
+w779_out="$(w779_arm someone-else dan-claude-bot)"
+t w779-another-assignee-is-not-armed 1 "$(grep -cx 'rc=1' <<<"$w779_out")"
+# Without an identity the check is the old one: state and label.
+w779_out="$(w779_arm '' '')"
+t w779-no-identity-is-state-and-label 1 "$(grep -cx 'rc=0' <<<"$w779_out")"
+t w779-no-identity-assigns-nobody 0 "$(grep -c assignees <<<"$(sed 1,2d <<<"$w779_out")")"
 
 # #750 — the budget is the box's, read the way the engine reads it.
 w750_budget() {  # w750_budget <bx-stdout> <bx-rc> <kind> — "rc=N value=V"
