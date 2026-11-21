@@ -6977,10 +6977,17 @@ function onRosterClick(e){
    vendor: flowing, missing, stale, waiting) and, after a set, the box's
    verdict on it. */
 var CREDS_OPTS={members:[]};
+/* The host credential pool (#780; the pool is #774), managed from here through
+   the CLI's own creds verb on the collector: one implementation of the
+   per-repository gh rule and the fan-out, never a second one in the page.
+   The listing names entries, logins, holders and verdicts — never a value. */
+var POOL={entries:[],members:[]};
 function openCreds(){
   if(!LIVE){setStatus("credentials are live-only — run the collector to set them",true);return;}
   setStatus("reading the credential kinds…",false);
-  api("/api/credentials").then(function(r){
+  Promise.all([api("/api/credentials"),api("/api/pool").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0];
+    POOL=(rs[1]&&rs[1].entries)?rs[1]:{entries:[],members:[],error:(rs[1]&&rs[1].error)||"the pool could not be read"};
     if(!r||!r.members){setStatus("could not read the credential kinds",true);return;}
     var ov=document.getElementById("credov");
     if(!ov){
@@ -6999,9 +7006,10 @@ function openCreds(){
       +'The value goes to the box once, as the input of the same shell the CLI\'s login verb runs, lands where its CLI reads it (0600), and is never shown, logged or kept on the host. '
       +'A row shows what the last poll read (<b>flowing</b>, <b>missing</b>, <b>stale</b>, <b>waiting</b>) and, after Set, the box\'s own verdict. '
       +'The box must be running. Each set is journalled by who and which kind — never the value.</div>'
-      +'<table class="rostbl"><thead><tr><th>box</th><th>reads</th><th>set</th><th></th></tr></thead><tbody id="credlist">'
+      +'<table class="rostbl"><thead><tr><th>box</th><th>reads</th><th>set</th><th></th><th>from the pool</th></tr></thead><tbody id="credlist">'
       +r.members.map(function(m){return credsRow(m,units[m.box]);}).join('')
-      +'</tbody></table>';
+      +'</tbody></table>'
+      +poolSection(r.members);
     ov.style.display="flex";
     setStatus("credentials: "+r.members.length+" member"+(r.members.length===1?"":"s"),false);
     applyBusy();
@@ -7021,21 +7029,130 @@ function credsRow(m,u){
     +'<select class="rosin" data-k="kind">'+credsKindOptions(m,"gh")+'</select>'
     +'<input class="rosin" data-k="secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="paste — never shown again">'
     +'<div class="rosst credverdict"></div></td>'
-    +'<td><button class="lbtn" data-cred="set">Set</button></td></tr>';
+    +'<td><button class="lbtn" data-cred="set">Set</button></td>'
+    +poolAssignCell(m)+'</tr>';
+}
+/* ---- the pool, in the same overlay (#780) ---------------------------------- */
+function poolAssigned(box){
+  var m=(POOL.members||[]).filter(function(x){return x.box===box;})[0];
+  return (m&&m.creds)||[];
+}
+function poolEntriesOf(svc,agent){
+  return (POOL.entries||[]).filter(function(e){return e.service===svc&&(svc!=="agent"||e.agent===agent);});
+}
+function poolAssignCell(m){
+  var held=poolAssigned(m.box);
+  var sel=function(svc,label){
+    var cur=held.filter(function(x){return x.indexOf(svc+":")===0;})[0]||"";
+    return '<select class="rosin" data-pool="'+svc+'"><option value="">'+label+': none</option>'
+      +poolEntriesOf(svc,m.agent).map(function(e){return '<option value="'+esc(e.id)+'"'+(e.id===cur?' selected':'')+'>'+esc(e.id)+(e.login?' ('+esc(e.login)+')':'')+'</option>';}).join('')
+      +'</select>';
+  };
+  return '<td>'+sel("gh","gh")+sel("agent",m.agent)
+    +'<div class="rosst">'+(held.length?'assigned: '+esc(held.join(", ")):'nothing assigned')+'</div>'
+    +'<button class="lbtn" data-pool-act="assign">Assign</button>'
+    +(held.length?' <button class="lbtn" data-pool-act="unassign" title="the box keeps the value it holds until it is set again">Clear</button>':'')
+    +'<div class="rosst poolverdict"></div></td>';
+}
+function poolEntryRow(e){
+  var who=e.service==="gh"?"answers as "+(e.login||"?"):(e.agent+" "+e.kind);
+  var refused=(e.members||[]).filter(function(m){return m.verdict&&!m.verdict.ok;}).map(function(m){return m.box;});
+  var holders=(e.members||[]).length?(e.members||[]).map(function(m){
+      return esc(m.box)+": "+(m.verdict?(m.verdict.ok?"✓":"✗")+" "+esc(m.verdict.text||""):"not delivered yet")+(m.owes?" · owes the current value":"");
+    }).join("<br>"):"assigned to nobody";
+  return '<tr class="poolrow" data-entry="'+esc(e.id)+'">'
+    +'<td>'+esc(e.id)+'<div class="rosst">'+esc(who)+'</div><div class="rosst">set '+esc(e.set_at||"")+'</div></td>'
+    +'<td><div class="rosst">'+holders+'</div>'
+    /* Said ONCE on the entry, naming every member it feeds (#774). */
+    +(refused.length?'<div class="rosst bad">refused on: '+esc(refused.join(", "))+' — rotate it</div>':'')+'</td>'
+    +'<td><input class="rosin" data-k="pool-secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="new value — never shown again">'
+    +'<button class="lbtn" data-pool-act="rotate">Rotate</button> '
+    +'<button class="lbtn" data-pool-act="rm"'+((e.members||[]).length?' disabled title="assigned — clear it from every member first"':'')+'>Remove</button>'
+    +'<div class="rosst poolverdict"></div></td></tr>';
+}
+function poolSection(members){
+  var agents={};members.forEach(function(m){agents[m.agent]=credsKinds(m,"agent");});
+  POOL.kinds=agents;
+  var names=Object.keys(agents);
+  return '<div class="regnote">The <b>pool</b>: a credential stored once on the host, assigned to members above, and carried to each box by the system — at hire, when the host tick wakes it, after a reset, and at once to every running member when you rotate. '
+    +'One GitHub entry may feed several members only while their repositories do not overlap. Values are never shown back.'
+    +(POOL.error?'<br><b>'+esc(POOL.error)+'</b>':'')+'</div>'
+    +'<table class="rostbl"><thead><tr><th>entry</th><th>held by</th><th></th></tr></thead><tbody id="poollist">'
+    +(POOL.entries||[]).map(poolEntryRow).join('')
+    +'<tr class="pooladd"><td><select class="rosin" data-k="pool-svc"><option value="gh">gh</option>'+(names.length?'<option value="agent">agent</option>':'')+'</select>'
+    +'<input class="rosin" data-k="pool-name" placeholder="name" spellcheck="false"></td>'
+    +'<td><select class="rosin" data-k="pool-agent" disabled>'+names.map(function(a){return '<option>'+esc(a)+'</option>';}).join('')+'</select>'
+    +'<select class="rosin" data-k="pool-kind" disabled>'+((agents[names[0]]||[]).map(function(k){return '<option>'+esc(k)+'</option>';}).join(''))+'</select></td>'
+    +'<td><input class="rosin" data-k="pool-secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="paste — never shown again">'
+    +'<button class="lbtn" data-pool-act="add">Add to the pool</button><div class="rosst poolverdict"></div></td></tr>'
+    +'</tbody></table>';
+}
+function poolSay(cell,r){
+  var out=cell.querySelector(".poolverdict");if(!out)return;
+  out.textContent=(r&&((r.lines&&r.lines.join(" · "))||r.error))||"no answer";
+  out.classList.toggle("bad",!(r&&r.ok));
+}
+function onPoolClick(b){
+  var tr=b.closest("tr"),what=b.dataset.poolAct;
+  if(what==="assign"||what==="unassign"){
+    var box=tr.dataset.box;
+    var picked=[].map.call(tr.querySelectorAll("[data-pool]"),function(s){return s.value;}).filter(Boolean);
+    if(what==="assign"&&!picked.length){setStatus("pool-assign: pick an entry first",true);return;}
+    if(what==="unassign"&&!confirm("Clear "+box+"'s pool assignment? Its box keeps the values it holds until they are set again."))return;
+    return act("box:"+box,"pool-"+what,what==="assign"?{box:box,entries:picked}:{box:box})
+      .then(function(r){poolSay(tr,r);if(r&&r.ok)openCreds();});
+  }
+  var inp=tr.querySelector('[data-k="pool-secret"]'),secret=inp?inp.value:"";
+  if(what==="rm"){
+    if(!confirm("Remove "+tr.dataset.entry+" from the pool? No box loses the value it holds."))return;
+    return act("ov:pool","pool-rm",{entry:tr.dataset.entry}).then(function(r){poolSay(tr,r);if(r&&r.ok)openCreds();});
+  }
+  if(!secret.trim()){setStatus("pool-"+what+": paste the value first — nothing set",true);return;}
+  /* Cleared BEFORE the request resolves, as a member's set is (#765). */
+  inp.value="";
+  var body;
+  if(what==="rotate")body={entry:tr.dataset.entry,secret:secret};
+  else{
+    var svc=tr.querySelector('[data-k="pool-svc"]').value;
+    body={service:svc,name:tr.querySelector('[data-k="pool-name"]').value.trim(),secret:secret};
+    if(svc==="agent"){body.agent=tr.querySelector('[data-k="pool-agent"]').value;body.kind=tr.querySelector('[data-k="pool-kind"]').value;}
+  }
+  secret="";
+  return act("ov:pool","pool-"+what,body).then(function(r){
+    body.secret="";
+    poolSay(tr,r);
+    if(r&&r.ok)openCreds();
+  });
+}
+function onPoolChange(e){
+  var t=e.target;
+  if(t.dataset.k==="pool-svc"){
+    var row=t.closest("tr"),agent=t.value==="agent";
+    row.querySelector('[data-k="pool-agent"]').disabled=!agent;
+    row.querySelector('[data-k="pool-kind"]').disabled=!agent;
+    return true;
+  }
+  if(t.dataset.k==="pool-agent"){
+    t.closest("tr").querySelector('[data-k="pool-kind"]').innerHTML=((POOL.kinds||{})[t.value]||[]).map(function(k){return '<option>'+esc(k)+'</option>';}).join('');
+    return true;
+  }
+  return false;
 }
 function closeCreds(){
   var ov=document.getElementById("credov");if(!ov)return;
   /* Closing forgets what was typed: a value left in a hidden field is a value
      the next person at this browser can reveal. */
-  [].forEach.call(ov.querySelectorAll('[data-k="secret"]'),function(i){i.value="";});
+  [].forEach.call(ov.querySelectorAll('[data-k="secret"],[data-k="pool-secret"]'),function(i){i.value="";});
   ov.style.display="none";
 }
 function onCredsChange(e){
+  if(onPoolChange(e))return;
   var sel=e.target.closest('[data-k="service"]');if(!sel)return;
   var tr=sel.closest("tr"),m=CREDS_OPTS.members.filter(function(x){return x.box===tr.dataset.box;})[0];
   if(m)tr.querySelector('[data-k="kind"]').innerHTML=credsKindOptions(m,sel.value);
 }
 function onCredsClick(e){
+  var pb=e.target.closest("[data-pool-act]");if(pb)return onPoolClick(pb);
   var b=e.target.closest("[data-cred]");if(!b)return;
   var tr=b.closest("tr"),box=tr.dataset.box,inp=tr.querySelector('[data-k="secret"]');
   var svc=tr.querySelector('[data-k="service"]').value,kind=tr.querySelector('[data-k="kind"]').value;

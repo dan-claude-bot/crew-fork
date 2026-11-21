@@ -19,6 +19,7 @@ from floor.ping import PING_INTERVAL_S, log, run
 from floor.registry import snapshot as registry_snapshot
 from floor.roster import CONFIG_DIR, read_roster, require_operator_config, roster_snapshot
 from floor.credentials import credentials_snapshot
+from floor.pool import pool_snapshot
 from floor.inflight import INFLIGHT
 
 # --------------------------------------------------------------------------
@@ -118,6 +119,12 @@ class Handler(BaseHTTPRequestHandler):
             # Which kinds each member's agent takes (#765) — never a
             # credential: there is no endpoint that reads one back.
             return self.send_json(200, credentials_snapshot())
+
+        if path == "/api/pool":
+            # The host credential pool (#780): the CLI's own listing — names,
+            # kinds, logins, who holds what, the last verdict per member. No
+            # endpoint reads a value back; the listing has none to give.
+            return self.send_json(200, pool_snapshot())
 
         if path == "/api/roster":
             # Read fresh on every request, as the registries are: what the
