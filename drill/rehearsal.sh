@@ -701,6 +701,40 @@ if [ "$QUICK" -eq 0 ]; then
   echo "== scheduled-boundary check omitted: rehearsal ticks are explicit and cron stays disarmed (#26)"
 fi
 
+# --- the pool logs the box in (#774) ---------------------------------------
+# `rehearsal-all.sh --creds gh:<name>,agent:<name>` hands the round the
+# operator's pool (CREW_CREDENTIALS_DIR). Pushed HERE, after the creds-free
+# rows above have read the box logged out and before phase 2 decides whether
+# it may run: one pass then proves both halves, and no box is logged in by
+# hand. The push goes through the drilled engine's own `crew creds push`, the
+# path a fleet member takes, from a throwaway fleet definition — the boxes are
+# off every roster (#51), so the entries are named, never assigned.
+if [ -n "${REHEARSAL_CREDS:-}" ]; then
+  creds_conf_tmp="$(mktemp -d)"
+  if "$CREW_BIN" init "$creds_conf_tmp/config" >/dev/null 2>&1 \
+     && creds_out="$(CREW_CONFIG_DIR="$creds_conf_tmp/config" "$CREW_BIN" creds push "$BOX_NAME" \
+          --entries "$REHEARSAL_CREDS" 2>&1)"; then
+    printf '%s\n' "$creds_out"
+    ok "creds: the pool's entries reached the box ($REHEARSAL_CREDS)"
+  else
+    printf '%s\n' "${creds_out:-}"
+    fail "creds: the pool's entries reached the box ($REHEARSAL_CREDS)"
+  fi
+  rm -rf "$creds_conf_tmp"
+  for creds_entry in ${REHEARSAL_CREDS//,/ }; do
+    [ "${creds_entry%%:*}" = gh ] || continue
+    creds_want="$(sed -n 's/^login=//p' "${CREW_CREDENTIALS_DIR:-}/entries/gh--${creds_entry#gh:}/meta" 2>/dev/null | head -1)"
+    creds_have="$(gh_login_from "$(bx "gh api user --jq .login")")" || creds_have=""
+    if [ -n "$creds_want" ] && [ "$creds_have" = "$creds_want" ]; then
+      ok "creds: the box answers as $creds_entry's recorded login ($creds_want)"
+    else
+      fail "creds: the box answers as $creds_entry's recorded login (${creds_want:-unrecorded}; the box answers ${creds_have:-nothing})"
+    fi
+  done
+  GH_AUTHED=0
+  bx "gh auth status >/dev/null 2>&1" && GH_AUTHED=1
+fi
+
 # Phase 1 produced a usable installation. A later red assertion must not hide
 # Section A, config or app; they are independent of the role's verdict.
 rehearsal_section_status installed

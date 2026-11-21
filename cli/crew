@@ -56,6 +56,8 @@ source "$CREW_ROOT/shared/lib/host/pause.sh"
 # The credentials shell (#765): set from the host, never read back.
 # shellcheck source=shared/lib/host/credentials.sh
 source "$CREW_ROOT/shared/lib/host/credentials.sh"
+# shellcheck source=shared/lib/host/pool.sh
+source "$CREW_ROOT/shared/lib/host/pool.sh"
 ROLES_DIR="$CREW_ROOT/shared/conf/roles"
 AGENTS_DIR="$CREW_ROOT/shared/conf/agents"
 
@@ -485,6 +487,7 @@ CMDS=(
   "pause^<box>^Keep a box off: the host tick never starts it, and its own cron is commented until resume^cmd_pause"
   "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
   "login^<box> gh|agent [<kind>]^Set a member's GitHub or agent credential from stdin: write-only, never read back^cmd_login"
+  "creds^list | add gh <name> | add agent <name> <agent> [<kind>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
   "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
   "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
@@ -1367,7 +1370,11 @@ box_state() {
 
 # Roster reader: <name> <agent> <role> [<from-box>/<snap>]; comments/blanks
 # skipped. roster_line prints "agent role from" for one name.
-read_roster() { grep -vE '^[[:space:]]*(#|$)' "$ROSTER"; }
+# A `creds=<entry>,…` token (#774) may follow the role and the from column; it
+# is stripped here, so every positional reader of the roster — `read -r name
+# agent role from` across this file — reads exactly the line it always read.
+# roster_creds_of (shared/lib/host/pool.sh) is the one reader of the token.
+read_roster() { grep -vE '^[[:space:]]*(#|$)' "$ROSTER" | sed -E 's/[[:space:]]+creds=[^[:space:]]*//g'; }
 roster_line() { read_roster | awk -v n="$1" '$1 == n {print $2, $3, $4; exit}'; }
 roster_names() { read_roster | awk '{print $1}'; }
 install_identity_args() { # NAME AGENT ROLE — shell words for remote install.sh
@@ -2496,6 +2503,9 @@ hire_box() {
     fi
     return 1
   fi
+  # The pool's assigned credentials, carried at hire (#774): a member hired
+  # with `creds=` on its roster line is logged in by the system, not by hand.
+  pool_fanout "$name" all "hire" || true
   if bxn "$name" 'gh auth status >/dev/null 2>&1'; then
     echo "$name: hired — on duty at the next 5-minute boundary"
   else
@@ -3865,6 +3875,10 @@ restore_box() { # NAME
     fi
   fi
   creds=""
+  # The checkpoint's disk may predate a rotation, and a carry that did not
+  # come back leaves it on the checkpoint's values: the pool's current value
+  # is written again whatever the carry did (#774).
+  pool_fanout "$name" all "reset" || true
   if ! reset_restore_memory "$name"; then
     echo "  $name: FAILED — restored to $RESET_LABEL and started, but its memory did not come back from the store (above); its ticks run without it once the box's own grace passes (MEMORY_PENDING_GRACE_S) — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
@@ -4576,6 +4590,9 @@ tick_run() { # DRY_RUN
             # stopped, comes back live here; "nothing to resume" is the
             # ordinary answer and costs nothing.
             bxn "$name" "$(host_resume_sh)" >/dev/null 2>&1 || true
+            # A pool entry rotated while this member slept reaches it now,
+            # before the tick it was woken for (#774).
+            pool_fanout "$name" stale "tick" || true
             tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle" "$login"
           fi ;;
         *) echo "  $name: state '$state' — left alone; why=$why"; continue ;;
@@ -4725,6 +4742,249 @@ cmd_login() {
     || echo "  $b: NOTE — the credentials journal could not be written ($CONFIG_DIR/.credentials-journal.log)"
   echo "  $b: ${verdict:-no answer from the box}"
   [ "$rc" -eq 0 ]
+}
+
+# --- crew creds: the host credential pool (#774) ------------------------------
+# Set ONCE on the host, assigned per member on its roster line, carried to the
+# box by the system: at hire, at the host tick's wake, after a reset, and at
+# once to every running member when an entry is rotated. Write-only: nothing
+# here prints a secret. The mechanics are shared/lib/host/pool.sh.
+
+# creds_read_secret LABEL KIND — the secret, from a tty (not echoed) or stdin.
+creds_read_secret() {
+  local secret
+  if [ -t 0 ]; then
+    case "$2" in *-json) die "a $2 is a file: pipe it in — crew creds … < the-file.json" ;; esac
+    read -rs -p "$1 (not echoed, never read back): " secret; echo >&2
+  else
+    secret="$(cat)"
+  fi
+  [ -n "$secret" ] || die "nothing read — nothing set"
+  printf '%s' "$secret"
+}
+
+# creds_gh_login TOKEN — the login a PAT answers as, asked of GitHub from the
+# host with the token in this one call's environment and nowhere else.
+creds_gh_login() {
+  GH_TOKEN="$1" GH_HOST=github.com gh api user --jq .login 2>/dev/null | tr -d '\r\n'
+}
+
+# creds_roster_set NAME LIST — rewrite NAME's roster line with `creds=LIST`
+# (or without the token when LIST is empty). Every other line — comments,
+# blanks, other members — is kept byte for byte; the write is atomic and keeps
+# the file's mode, written where a symlinked roster really lives.
+creds_roster_set() {
+  local name="$1" list="$2" target tmp
+  target="$(readlink -f "$ROSTER")"
+  tmp="$(mktemp "$(dirname "$target")/.roster.XXXXXX")" || return 1
+  awk -v n="$name" -v l="$list" '
+    /^[[:space:]]*(#|$)/ { print; next }
+    $1 == n {
+      out = ""
+      for (i = 1; i <= NF; i++) if ($i !~ /^creds=/) out = out (out == "" ? "" : " ") $i
+      if (l != "") out = out "  creds=" l
+      print out; next
+    }
+    { print }' "$target" >"$tmp" || { rm -f "$tmp"; return 1; }
+  chmod --reference="$target" "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$target"
+}
+
+creds_journal() { # ACTION ENTRY [DETAIL]
+  printf '%s actor=cli:%s pool=%s entry=%s%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    "${USER:-?}" "$1" "$2" "${3:+ $3}" >>"$CONFIG_DIR/.credentials-journal.log" 2>/dev/null || true
+}
+
+cmd_creds() {
+  local sub="${1:-list}"; shift || true
+  require_operator_config "crew creds"
+  case "$sub" in
+    list) creds_list "$@" ;;
+    add) creds_add "$@" ;;
+    rotate) creds_rotate "$@" ;;
+    rm) creds_rm "$@" ;;
+    assign) creds_assign "$@" ;;
+    unassign) creds_unassign "$@" ;;
+    push) creds_push "$@" ;;
+    *) usage_error "usage: $(synopsis_of creds)" ;;
+  esac
+}
+
+creds_list() {
+  [ "$#" -eq 0 ] || usage_error "usage: crew creds list"
+  local id members m v fails n=0 who
+  echo "credential pool: $(pool_dir) (write-only — no value is ever shown)"
+  while read -r id; do
+    [ -n "$id" ] || continue
+    n=$((n + 1))
+    case "${id%%:*}" in
+      gh) who="answers as $(pool_meta "$id" login)" ;;
+      *) who="$(pool_meta "$id" agent) $(pool_meta "$id" kind)" ;;
+    esac
+    printf '  %-28s %-34s set %s\n' "$id" "$who" "$(pool_meta "$id" set_at)"
+    members="$(pool_members_of "$id")"
+    fails=""
+    if [ -z "$members" ]; then
+      echo "      assigned to: nobody"
+    else
+      while read -r m; do
+        v="$(awk -v e="$id" '$1 == e {print $3 " " $2; exit}' "$(pool_dir)/verdicts/$m" 2>/dev/null)"
+        if pool_is_stale "$m" "$id"; then v="${v:+$v; }owes the current value (it gets it when it is next up)"; fi
+        echo "      $m: ${v:-not delivered yet}"
+        case "$v" in fail*) fails="$fails${fails:+, }$m" ;; esac
+      done <<<"$members"
+    fi
+    # Said ONCE on the entry, naming every member it feeds (#774): an expired
+    # token is one problem, not N.
+    [ -z "$fails" ] || echo "      ⚠ refused on: $fails — rotate it: crew creds rotate $id"
+  done < <(pool_entries)
+  [ "$n" -gt 0 ] || echo "  (empty — add one: crew creds add gh <name>, or crew creds add agent <name> <agent>)"
+}
+
+creds_add() {
+  local svc="${1:-}" name="${2:-}" agent="${3:-}" kind="${4:-}" id secret login="" kinds
+  [ -n "$svc" ] && [ -n "$name" ] || usage_error "usage: crew creds add gh <name> | add agent <name> <agent> [<kind>]"
+  id="$svc:$name"
+  pool_entry_valid "$id" || usage_error "an entry is gh:<name> or agent:<name>, the name letters, digits, . _ - (64 at most)"
+  pool_entry_exists "$id" && die "$id is already in the pool — rotate it: crew creds rotate $id"
+  case "$svc" in
+    gh)
+      [ -z "$agent" ] || usage_error "usage: crew creds add gh <name>"
+      kind=token
+      secret="$(creds_read_secret "$id: a GitHub personal access token" token)"
+      login="$(creds_gh_login "$secret")"
+      [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
+        || { secret=""; die "GitHub refused the token for $id — nothing stored"; } ;;
+    agent)
+      [ -n "$agent" ] || usage_error "usage: crew creds add agent <name> <agent> [<kind>]"
+      kinds="$(credentials_kinds "$agent")"
+      [ -n "$kinds" ] || die "agent '$agent' declares no credential the host may set"
+      kind="${kind:-${kinds%% *}}"
+      case " $kinds " in *" $kind "*) ;; *) usage_error "agent $agent takes: $kinds" ;; esac
+      secret="$(creds_read_secret "$id: $agent $kind" "$kind")" ;;
+  esac
+  printf '%s' "$secret" | pool_put "$id" "$kind" "$agent" "$login" || { secret=""; die "could not write $id into $(pool_dir)"; }
+  secret=""
+  creds_journal add "$id" "kind=$kind${login:+ login=$login}"
+  echo "pool: $id stored ($kind${login:+, answers as $login}) — assign it: crew creds assign <box> $id"
+}
+
+creds_rotate() {
+  [ "$#" -eq 1 ] || usage_error "usage: crew creds rotate <entry>"
+  local id="$1" secret login kind agent m rc=0
+  pool_entry_valid "$id" && pool_entry_exists "$id" || die "no pool entry $id — crew creds list"
+  kind="$(pool_meta "$id" kind)"; agent="$(pool_meta "$id" agent)"
+  secret="$(creds_read_secret "$id: the new value" "$kind")"
+  login=""
+  if [ "${id%%:*}" = gh ]; then
+    login="$(creds_gh_login "$secret")"
+    [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
+      || { secret=""; die "GitHub refused the new token for $id — the old value stands"; }
+    if [ "$login" != "$(pool_meta "$id" login)" ]; then
+      echo "pool: NOTE — $id answered as $(pool_meta "$id" login) and now answers as $login"
+    fi
+  fi
+  printf '%s' "$secret" | pool_put "$id" "$kind" "$agent" "$login" || { secret=""; die "could not write $id"; }
+  secret=""
+  creds_journal rotate "$id"
+  echo "pool: $id rotated"
+  while read -r m; do
+    [ -n "$m" ] || continue
+    if [ "$(box_state "$m")" = running ]; then
+      pool_fanout "$m" stale "rotate" "$id" || rc=1
+    else
+      echo "  $m: not running — it gets the new value when it is next up"
+    fi
+  done < <(pool_members_of "$id")
+  return "$rc"
+}
+
+creds_rm() {
+  [ "$#" -eq 1 ] || usage_error "usage: crew creds rm <entry>"
+  local id="$1" members
+  pool_entry_valid "$id" && pool_entry_exists "$id" || die "no pool entry $id — crew creds list"
+  members="$(pool_members_of "$id" | paste -sd, -)"
+  [ -z "$members" ] || die "$id is assigned to $members — unassign it first (crew creds unassign <box> $id); the boxes keep the value they hold"
+  rm -rf -- "$(pool_entry_path "$id")"
+  creds_journal rm "$id"
+  echo "pool: $id removed (no box held it by assignment)"
+}
+
+creds_assign() {
+  [ "$#" -eq 2 ] || usage_error "usage: crew creds assign <box> <entry>[,<entry>]"
+  local box="$1" add="$2" line agent id merged="" conflict svc seen=""
+  line="$(roster_line "$box")"
+  [ -n "$line" ] || die "$box is not on the roster ($ROSTER) — a pool assignment is a roster line's"
+  read -r agent _ <<<"$line"
+  # One entry per service, and the new one of a service replaces the old: a
+  # member answers as ONE login and runs ONE agent credential.
+  for id in ${add//,/ }; do
+    pool_entry_valid "$id" || usage_error "'$id' is not an entry (gh:<name> or agent:<name>)"
+    svc="${id%%:*}"
+    case " $seen " in *" $svc "*) usage_error "two $svc entries for $box — a member answers as one login and runs one agent credential" ;; esac
+    seen="$seen $svc"
+  done
+  for id in $(roster_creds_of "$box"); do
+    case " $seen " in *" ${id%%:*} "*) continue ;; esac
+    merged="$merged${merged:+,}$id"
+  done
+  merged="$merged${merged:+,}$add"
+  for id in ${merged//,/ }; do
+    pool_entry_exists "$id" || die "no pool entry $id — crew creds list"
+    if [ "${id%%:*}" = agent ] && [ "$(pool_meta "$id" agent)" != "$agent" ]; then
+      die "$id is a $(pool_meta "$id" agent) credential and $box runs $agent"
+    fi
+    conflict="$(pool_gh_conflict "$box" "$id")"
+    if [ -n "$conflict" ]; then
+      die "$id already feeds ${conflict%% *}, which works ${conflict#* } as $box would — one login on one repository reads the other's claims and pull requests as its own and cannot review them (the rule is per repository: give $box its own gh entry)"
+    fi
+  done
+  creds_roster_set "$box" "$merged" || die "could not write $ROSTER"
+  creds_journal assign "$merged" "box=$box"
+  echo "pool: $box assigned $merged"
+  if box_exists "$box" && [ "$(box_state "$box")" = running ]; then
+    pool_fanout "$box" stale "assign"
+  else
+    echo "  $box: not running — it gets them when it is next up"
+  fi
+}
+
+creds_unassign() {
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage_error "usage: crew creds unassign <box> [<entry>]"
+  local box="$1" drop="${2:-}" current kept id
+  [ -n "$(roster_line "$box")" ] || die "$box is not on the roster ($ROSTER)"
+  current="$(roster_creds_of "$box" | paste -sd, -)"
+  kept=""
+  for id in ${current//,/ }; do
+    [ -z "$drop" ] || [ "$id" = "$drop" ] || { kept="$kept${kept:+,}$id"; continue; }
+  done
+  creds_roster_set "$box" "$kept" || die "could not write $ROSTER"
+  creds_journal unassign "${drop:-all}" "box=$box"
+  echo "pool: $box ${kept:+now assigned $kept}${kept:-assigned nothing from the pool} — the box keeps the value it holds until it is set again"
+}
+
+# push BOX [--entries LIST] — the assigned entries (or LIST) onto a RUNNING box
+# now. LIST reaches a box that is not on the roster: that is the drill's path,
+# whose boxes are off every roster by construction (#51).
+creds_push() {
+  local box="" list=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --entries) need_value "$@"; list="$2"; shift 2 ;;
+      -*) usage_error "usage: crew creds push <box> [--entries <entry>,...]" ;;
+      *) [ -z "$box" ] || usage_error "usage: crew creds push <box> [--entries <entry>,...]"; box="$1"; shift ;;
+    esac
+  done
+  [ -n "$box" ] || usage_error "usage: crew creds push <box> [--entries <entry>,...]"
+  need_box
+  box_exists "$box" || die "no box named '$box'"
+  [ -n "$list" ] || [ -n "$(roster_line "$box")" ] || die "$box is not on the roster — name what to push: --entries <entry>,..."
+  [ "$(box_state "$box")" = running ] || die "$box is not running — start it first (box start $box); a credential is written onto the live box"
+  if [ -z "$list" ] && [ -z "$(roster_creds_of "$box")" ]; then
+    echo "  $box: nothing assigned from the pool"
+    return 0
+  fi
+  pool_fanout "$box" all "push" "$list"
 }
 
 cmd_status() {

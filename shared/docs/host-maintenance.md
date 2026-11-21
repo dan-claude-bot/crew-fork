@@ -353,6 +353,64 @@ or the floor's **Credentials** overlay, which runs the same shell
   already stopped cannot be read, and the reset says the checkpoint's
   credentials came back.
 
+## The credential pool — set once, carried by the system (#774)
+
+`crew login` sets one member's credential. The **pool** sets a credential once
+on the host, assigns it to members, and carries it to every box it is
+assigned to. A crew of three on one Claude subscription is one
+`claude setup-token` paste, and its rotation is one more:
+
+```bash
+crew creds add gh dan-claude-bot             # a PAT on stdin; the login it answers as is recorded
+crew creds add agent max-1 claude            # the profile's first kind (oauth-token for claude)
+crew creds assign builder-1 gh:dan-claude-bot,agent:max-1
+crew creds assign reviewer-1 gh:reviewer-bot,agent:max-1
+crew creds list                              # names, kinds, logins, who holds what — never a value
+crew creds rotate agent:max-1                # the new value; every running member gets it now
+crew creds unassign reviewer-1 agent:max-1
+crew creds rm agent:max-1                    # refused while any member is assigned it
+```
+
+- **Where it lives.** It lives under `<config>/credentials/`, mode 0700,
+  with every file 0600.
+  - Each entry keeps its value, plus a record: kind, agent, the gh login,
+    when it was set, and a digest of the value.
+  - Per member, the pool records which value it holds and its last verdict.
+  - Nothing reads a value back: not the listing, the journal, the floor or
+    any reply.
+- **Assignment is a roster line's.** `crew creds assign` writes
+  `creds=gh:<name>,agent:<name>` at the end of the member's line, keeping
+  every other line as it was.
+  - A member holds one gh entry and one agent entry, and assigning a new one
+    of a kind replaces the old.
+  - The floor's roster editor shows the assignment and keeps it through a
+    save. Assigning is the host's job, where the rules below are checked.
+- **When it is carried.** A member gets its entries:
+  - when it is hired;
+  - when the host tick wakes it, if an entry changed while it slept;
+  - after every `crew reset`, whatever the carry brought back;
+  - at once, on every running member, when an entry is rotated.
+
+  Each delivery goes through the same credentials shell as `crew login`, with
+  the secret on stdin and the box's verdict recorded.
+- **gh is per repository.** One gh entry may feed several members only while
+  their repositories do not overlap.
+  - A member's repositories are its `repos.d/<box>.txt` selection, or the
+    fleet's `repos.txt` when it has none.
+  - The engine keys claims, "my PRs" and the panel on the login, and GitHub
+    refuses an author's own review. So two members answering as one login on
+    one repository read each other's work as their own, and cannot review it.
+  - The refusal names the other member and the repositories they share.
+  - An agent entry may feed any number of members.
+- **A refused entry is said once.** When the verdict on an entry is a refusal
+  on some member, `crew creds list` names the entry once, lists every member
+  it feeds, and says how to rotate it.
+- **Another fleet definition.** `CREW_CREDENTIALS_DIR` points one at an
+  existing pool. `crew creds push <box> --entries …` reaches a box no roster
+  names. The drill uses both: `drill/rehearsal-all.sh --creds
+  gh:<name>,agent:<name>` logs its boxes in from your pool, after the
+  creds-free rows have read them logged out, and never writes the pool.
+
 ## The host tick — `crew tick` (#759)
 
 A board the host cannot read holds every idle stop for that tick — a blind

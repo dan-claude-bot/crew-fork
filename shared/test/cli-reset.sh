@@ -1763,4 +1763,29 @@ else
   t upgrade-refused-woken-box-fixture-reaches-the-gate refused "$r1"
 fi
 
+# ── #774 — the pool's assigned entries are carried at hire and after a reset ──
+# The roster line names the entry; the box gets it through the credentials
+# shell (the stub logs that exec by its marker) and the pool records it.
+RST_POOL="$TMP/pool"
+mkdir -p "$RST_POOL/entries/gh--bot" "$RST_POOL/delivered" "$RST_POOL/verdicts"
+printf 'ghp_rst_secret' >"$RST_POOL/entries/gh--bot/secret"
+printf 'svc=gh\nkind=token\nagent=\nlogin=bot\nset_at=x\ndigest=d1\n' >"$RST_POOL/entries/gh--bot/meta"
+cp "$CONF/fleet.roster" "$TMP/roster.saved"
+printf 'alpha claude builder  creds=gh:bot\nbeta codex reviewer\n' >"$CONF/fleet.roster"
+reset_case
+CREW_CREDENTIALS_DIR="$RST_POOL" capture hire alpha
+t pool-hire-succeeds 0 "$RC"
+case "$OUT" in *'alpha: credential gh:bot:'*) r1=carried ;; *) r1="$OUT" ;; esac
+t pool-hire-carries-the-assigned-entry carried "$r1"
+t pool-hire-records-the-delivery "gh:bot d1" "$(cat "$RST_POOL/delivered/alpha" 2>/dev/null)"
+case "$OUT" in *ghp_rst_secret*) r1=LEAKED ;; *) r1=clean ;; esac
+t pool-hire-never-prints-the-secret clean "$r1"
+# beta has no assignment: nothing is carried, nothing said.
+reset_case
+CREW_CREDENTIALS_DIR="$RST_POOL" capture hire beta
+case "$OUT" in *credential*) r1="$OUT" ;; *) r1=silent ;; esac
+t pool-hire-without-an-assignment-is-silent silent "$r1"
+t pool-hire-without-an-assignment-records-nothing absent "$([ -e "$RST_POOL/delivered/beta" ] && echo present || echo absent)"
+cp "$TMP/roster.saved" "$CONF/fleet.roster"
+
 suite_finish

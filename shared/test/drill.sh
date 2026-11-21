@@ -77,6 +77,7 @@ ref="${ref:--}"
 source_ref="${source_ref:--}"
 # #776: a role may be told to take a while, so a parallel round's roles can
 # end out of order and the collection is seen to run in role order anyway.
+[ -z "${DRILL_CREDS_LOG:-}" ] || printf '%s %s %s\n' "$role" "${REHEARSAL_CREDS:--}" "${CREW_CREDENTIALS_DIR:--}" >>"$DRILL_CREDS_LOG"
 role_sleep_var="DRILL_SLEEP_$role"
 [ -z "${!role_sleep_var:-}" ] || sleep "${!role_sleep_var}"
 printf '%s %s %s %s %s\n' "$role" "$remote" "$ref" "$shipped" "$source_ref" \
@@ -374,6 +375,33 @@ w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
 t w776-only-failed-not-a-summary-is-refused 1 "$(grep -c "carries no '## leg …' block — not a round summary" <<<"$w776_out")"
 w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG" --legs hygiene)"
 t w776-only-failed-and-legs-are-exclusive 1 "$(grep -c -- '--legs and --only-failed are exclusive' <<<"$w776_out")"
+
+# --- #774: --creds hands the round the operator's pool, checked first --------
+W774_POOL="$TMP/w774-pool"
+mkdir -p "$W774_POOL/entries/gh--bot" "$W774_POOL/entries/agent--max"
+printf 'x' >"$W774_POOL/entries/gh--bot/secret"; printf 'x' >"$W774_POOL/entries/agent--max/secret"
+W774_LOG="$TMP/w774-creds.log"
+w774_round() { : >"$W774_LOG"; CREW_CREDENTIALS_DIR="$W774_POOL" DRILL_CREDS_LOG="$W774_LOG" w776_round --roles 'triage builder' --keep \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill "$@"; }
+w774_out="$(w774_round --creds gh:bot,agent:max)"
+t w774-creds-says-the-round-logs-in-from-the-pool 1 \
+  "$(grep -c "^== --creds: the round logs its boxes in from the pool (gh:bot,agent:max, $W774_POOL); no box is logged in by hand$" <<<"$w774_out")"
+t w774-creds-reach-every-role "triage gh:bot,agent:max $W774_POOL|builder gh:bot,agent:max $W774_POOL" "$(paste -sd'|' "$W774_LOG")"
+w774_out="$(w774_round --creds gh:nobody)"
+t w774-a-missing-entry-is-refused-before-any-role 1 "$(grep -c "no pool entry gh:nobody in $W774_POOL" <<<"$w774_out")"
+t w774-a-missing-entry-runs-no-role 0 "$(grep -c . "$W774_LOG")"
+w774_out="$(w774_round --creds gh:bot,gh:other)"
+t w774-two-gh-entries-are-refused 1 "$(grep -c 'one gh and one agent entry at most' <<<"$w774_out")"
+w774_out="$(w774_round --creds 'bot')"
+t w774-a-malformed-entry-is-refused 1 "$(grep -c "'bot' is not gh:<name> or agent:<name>" <<<"$w774_out")"
+w774_out="$(w774_round)"
+t w774-no-creds-hands-the-roles-nothing "triage - -|builder - -" "$(sed "s|$W774_POOL|-|" "$W774_LOG" | paste -sd'|')"
+# The push sits after the creds-free rows and before phase 2 decides.
+t w774-the-push-precedes-the-phase-2-gate 1 \
+  "$(awk '/REHEARSAL_CREDS:-/ && !p {p=NR} /^if \[ "\$GH_AUTHED" -eq 0 \] \|\| ! bx/ {g=NR} END {print (p && g && p < g) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w774-the-push-follows-the-pre-auth-rows 1 \
+  "$(awk '/pre-auth: no sessions spawned/ && !a {a=NR} /REHEARSAL_CREDS:-/ && !p {p=NR} END {print (a && p && a < p) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
 
 # Not-executed is not a sufficient record by itself: the blocker is the fact
 # that makes an exclusion evidence. Remove one reason and require a red row.

@@ -7217,7 +7217,7 @@ function openRoster(){
       '<div class="regnote">One line per box: its name, the agent it runs, its role(s), and the box/snapshot it is minted from (optional). '
       +'Saving writes <code>fleet.roster</code> on the host and nothing else: a new line becomes a box when you run <code>crew up</code> there '
       +'(it creates, starts and hires every roster box; the login is yours, by hand). A removed line\'s box is left alone — the console stops watching it, nothing is ever deleted.</div>'
-      +'<table class="rostbl"><thead><tr><th>box</th><th>agent</th><th>roles</th><th>from (box/snapshot)</th><th></th></tr></thead><tbody id="roslist">'
+      +'<table class="rostbl"><thead><tr><th>box</th><th>agent</th><th>roles</th><th>from (box/snapshot)</th><th>pool</th><th></th></tr></thead><tbody id="roslist">'
       +r.members.map(function(m){return rosterRow(m,units[m.box]);}).join('')
       +'</tbody></table>'
       +'<div class="regacts"><button class="lbtn" data-ros="add">+ Add a box</button><button class="lbtn" data-ros="save">Save roster</button></div>';
@@ -7235,13 +7235,16 @@ function rosterRow(m,u){
   var chosen={};(m.room||"").split(",").forEach(function(x){if(x)chosen[x]=1;});
   var st=rosterStanding(u);
   var kept=(m.room||"").split(",").filter(function(x){return x&&ROSTER_OPTS.roles.indexOf(x)<0;});
-  return '<tr class="rosrow" data-room="'+esc(m.room||"")+'">'
+  return '<tr class="rosrow" data-room="'+esc(m.room||"")+'" data-creds="'+esc(m.creds||"")+'">'
     +'<td><input class="rosin" data-k="box" value="'+esc(m.box||"")+'" placeholder="box-name" spellcheck="false"'+(u?' readonly title="an existing box keeps its name — a renamed line would be a second box"':'')+'>'
     +(st?'<div class="rosst'+(st==="new"?" new":"")+'">'+esc(st)+'</div>':'')+'</td>'
     +'<td><select class="rosin" data-k="agent">'+ROSTER_OPTS.agents.map(function(a){return '<option'+(a===m.agent?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></td>'
     +'<td><div class="regsel rossel">'+ROSTER_OPTS.roles.map(function(x){return '<label class="regopt"><input type="checkbox" value="'+esc(x)+'"'+(chosen[x]?' checked':'')+'><span>'+esc(x)+'</span></label>';}).join('')+'</div>'
     +(kept.length?'<div class="rosst">'+esc(kept.join(","))+' · kept as written, not editable here</div>':'')+'</td>'
     +'<td><input class="rosin" data-k="from" value="'+esc(m.from||"")+'" placeholder="(blank mint)" spellcheck="false"></td>'
+    /* The pool assignment (#774) rides the row unedited: assigning is the
+       host's, where the per-repository gh rule is checked against the pool. */
+    +(m.creds?'<td><div class="rosst" title="credentials from the host pool — assigned on the host, carried through this save">'+esc(m.creds)+'</div></td>':'<td></td>')
     +'<td><button class="lbtn rosdrop" data-ros="drop" title="remove this line (the box itself is left alone)">✕</button></td></tr>';
 }
 function closeRoster(){var ov=document.getElementById("rosov");if(ov)ov.style.display="none";}
@@ -7283,7 +7286,8 @@ function onRosterClick(e){
             agent:tr.querySelector('[data-k="agent"]').value,
             roles:rosterRoles((tr.dataset.room||"").split(",").filter(Boolean),ROSTER_OPTS.roles,
                               [].map.call(tr.querySelectorAll('.rossel input:checked'),function(i){return i.value;})),
-            from:tr.querySelector('[data-k="from"]').value.trim()};
+            from:tr.querySelector('[data-k="from"]').value.trim(),
+            creds:tr.dataset.creds||""};
   });
   return act("ov:roster","roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});
 }

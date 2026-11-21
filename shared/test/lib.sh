@@ -22,7 +22,7 @@ ROOT="$(dirname "$SHARED")"
 SUITES=(common common/logging common/operating-limits common/conf common/checkout common/session
         common/detached-run common/breaker common/ledger common/identity common/tick-health
         triage builder review hygiene reaper release model-prices conf cli-lifecycle cli-reset cli-store drill vitals boot-gate host-tick
-        credentials)
+        credentials pool)
 PASS=0 FAIL=0
 
 t() {  # t <name> <expected> <actual>

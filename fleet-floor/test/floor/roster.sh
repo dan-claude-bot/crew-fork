@@ -232,6 +232,19 @@ t "roster-set: a refusal says refused and moves nothing" "true 4" \
 mv "$RS_ROSTER" "$RS_ROSTER.real" && ln -s "$RS_ROSTER.real" "$RS_ROSTER" && chmod 600 "$RS_ROSTER.real"
 t "roster-set: a symlinked roster is written through the link" "200 link 600 1" \
   "$(rs_set_status "$RS_MEMBERS") $([ -L "$RS_ROSTER" ] && echo link || echo file) $(stat -c %a "$RS_ROSTER.real") $(grep -c '^rs-new ' "$RS_ROSTER.real")"
+# #774 — a pool assignment written on the host rides the line through a save:
+# read as `creds`, never as the from column, and written back where it stood.
+mv -f "$RS_ROSTER.real" "$RS_ROSTER.tmp" && rm -f "$RS_ROSTER" && mv "$RS_ROSTER.tmp" "$RS_ROSTER"
+sed -i 's/^\(rs-working  *claude  *builder\).*$/\1  creds=gh:bot,agent:max/' "$RS_ROSTER"
+t "roster: a pool assignment is read as creds, not as the from column" "gh:bot,agent:max|" \
+  "$(rs_body GET /api/roster | jqf "[m['creds']+'|'+m['from'] for m in d['members'] if m['box']=='rs-working'][0]")"
+RS_CREDS_MEMBERS='[{"box":"rs-working","agent":"claude","roles":["builder"],"from":"","creds":"gh:bot,agent:max"},{"box":"rs-idle","agent":"codex","roles":["reviewer","triage"],"from":""},{"box":"rs-new","agent":"grok","roles":["reviewer"],"from":"rs-working/armed"}]'
+t "roster-set: a pool assignment survives a save" "200 1" \
+  "$(rs_set_status "$RS_CREDS_MEMBERS") $(grep -cE '^rs-working +claude +builder +creds=gh:bot,agent:max$' "$RS_ROSTER")"
+t "roster-set: a from column and a pool assignment share a line" "200 1" \
+  "$(rs_set_status "${RS_CREDS_MEMBERS/\"from\":\"\",\"creds\"/\"from\":\"rs-idle/armed\",\"creds\"}") $(grep -cE '^rs-working +claude +builder +rs-idle/armed +creds=gh:bot,agent:max$' "$RS_ROSTER")"
+t "roster-set: a malformed pool assignment is refused" 400 \
+  "$(rs_set_status '[{"box":"rs-working","agent":"claude","roles":["builder"],"creds":"gh:bad name"}]')"
 t "roster: the shipped example roster is never edited from the console" "refused" \
   "$(cd / && env -u CREW_CONFIG_DIR XDG_CONFIG_HOME="$TMP/xdg-empty" python3 -c "
 import sys

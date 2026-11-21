@@ -112,6 +112,8 @@ DRILLED=""
 PARALLEL=0
 LEGS=""
 ONLY_FAILED=""
+# #774: the pool entries the round logs its boxes in with — gh:<name>,agent:<name>.
+CREDS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -142,11 +144,12 @@ while [ $# -gt 0 ]; do
     --app-roster) APP_ROSTER="$2"; shift 2 ;;
     --app-shots) APP_ARGS+=(--shots "$2"); shift 2 ;;
     --parallel) PARALLEL=1; shift ;;
+    --creds) CREDS="$2"; shift 2 ;;
     --legs) LEGS="$2"; shift 2 ;;
     --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
        echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--app-boxes \"a b\"] [--app-allow-control]"
-       echo "         [--app-roster <path>] [--app-shots <dir>] [--parallel] [--legs a,b,...] [--only-failed <log>]"; exit 1 ;;
+       echo "         [--app-roster <path>] [--app-shots <dir>] [--parallel] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>]"; exit 1 ;;
   esac
 done
 
@@ -204,6 +207,34 @@ if [ -n "$LEGS" ]; then
       *) echo "drill/rehearsal-all.sh: --legs: '$leg' is not a declared leg" >&2; exit 1 ;;
     esac
   done
+fi
+# --creds: the operator's pool, found the way the operator's own `crew creds`
+# finds it, and every named entry checked to be there before any role starts
+# (#774). The round never writes the pool and never assigns an entry: the
+# boxes are off every roster, so each role pushes the entries by name.
+if [ -n "$CREDS" ]; then
+  creds_seen=""
+  for creds_entry in ${CREDS//,/ }; do
+    [[ "$creds_entry" =~ ^(gh|agent):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] \
+      || { echo "drill/rehearsal-all.sh: --creds: '$creds_entry' is not gh:<name> or agent:<name>" >&2; exit 1; }
+    case " $creds_seen " in *" ${creds_entry%%:*} "*)
+      echo "drill/rehearsal-all.sh: --creds: one gh and one agent entry at most" >&2; exit 1 ;; esac
+    creds_seen="$creds_seen ${creds_entry%%:*}"
+  done
+  if [ -z "${CREW_CREDENTIALS_DIR:-}" ]; then
+    CREW_CREDENTIALS_DIR="$("$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cli/crew" creds list 2>/dev/null \
+      | sed -n 's/^credential pool: \(.*\) (write-only.*/\1/p' | head -1)"
+  fi
+  if [ -z "$CREW_CREDENTIALS_DIR" ] || [ ! -d "$CREW_CREDENTIALS_DIR/entries" ]; then
+    echo "drill/rehearsal-all.sh: --creds: no credential pool found (set one up with crew creds add, or point CREW_CREDENTIALS_DIR at it)" >&2
+    exit 1
+  fi
+  for creds_entry in ${CREDS//,/ }; do
+    [ -r "$CREW_CREDENTIALS_DIR/entries/${creds_entry%%:*}--${creds_entry#*:}/secret" ] \
+      || { echo "drill/rehearsal-all.sh: --creds: no pool entry $creds_entry in $CREW_CREDENTIALS_DIR" >&2; exit 1; }
+  done
+  export CREW_CREDENTIALS_DIR
+  echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
 fi
 # omitted FLAG — the reason a leg that did not run gives: the operator's flag,
 # or the selection that left it out.
@@ -426,6 +457,7 @@ role_invoke() {
   REHEARSAL_BREAKER_REASON_FILE="${ROLE_BREAKER_REASON_FILE[$role]}" \
   REHEARSAL_NOTIFY_DRILL="$NOTIFY_DRILL" \
   REHEARSAL_NOTIFY_STATUS="$NOTIFY_STATUS" \
+  REHEARSAL_CREDS="$CREDS" \
   REHEARSAL_SECTION_STATUS="${ROLE_SECTION_FILE[$role]}" \
     "$HERE/rehearsal.sh" --role "$role" "${PASSTHRU[@]+"${PASSTHRU[@]}"}"
 }
