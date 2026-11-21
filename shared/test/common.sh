@@ -3028,11 +3028,11 @@ if grep -Fq -- '--no-hygiene-drill' "$ROOT/drill/rehearsal-all.sh" \
       "$ROOT/drill/rehearsal-hygiene.sh" \
     && grep -Fq 'rehearsal_hygiene_reset_refusal_ledger "$refusal_ledger"' \
       "$ROOT/drill/rehearsal-hygiene.sh" \
-    && grep -Fq 'REHEARSAL_HYGIENE_RESULT_FILE="$role_hygiene_file"' \
+    && grep -Fq 'REHEARSAL_HYGIENE_RESULT_FILE="${ROLE_HYGIENE_FILE[$role]}"' \
       "$ROOT/drill/rehearsal-all.sh" \
     && grep -Fq 'overall="$(rehearsal_hygiene_round_result "$overall" "$hygiene_result")"' \
       "$ROOT/drill/rehearsal-all.sh" \
-    && grep -Fq 'ROLE_HYGIENE_FILES+=("$role_hygiene_file")' \
+    && grep -Fq 'ROLE_HYGIENE_FILES+=("${ROLE_HYGIENE_FILE[$role]}")' \
       "$ROOT/drill/rehearsal-all.sh" \
     && grep -Fq 'trap cleanup_role_hygiene_files EXIT' \
       "$ROOT/drill/rehearsal-all.sh" \

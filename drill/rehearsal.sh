@@ -310,8 +310,11 @@ fi
 cleanup_all() {
   local rc=$?
   if [ "$BOX_TOUCHED" -eq 1 ]; then
-    rehearsal_fast_restore_cli \
-      || echo "WARNING: could not remove the fast tier's stub agent from ~/duty/conf/roles/$ROLE.conf; stop the box: box down $BOX_NAME" >&2
+    if declare -F rehearsal_fast_restore_cli >/dev/null 2>&1 \
+        && [ "${REHEARSAL_FAST_STUB_SET:-0}" -eq 1 ]; then
+      rehearsal_fast_restore_cli \
+        || echo "WARNING: could not remove the fast tier's stub agent from ~/duty/conf/roles/$ROLE.conf; stop the box: box down $BOX_NAME" >&2
+    fi
     if declare -F rehearsal_resume_restore_cli >/dev/null 2>&1 \
         && [ "${REHEARSAL_RESUME_NOOP_SET:-0}" -eq 1 ]; then
       rehearsal_resume_restore_cli \

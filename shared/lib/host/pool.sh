@@ -117,7 +117,7 @@ roster_creds_of() {
 pool_members_of() {
   local name
   while read -r name _; do
-    roster_creds_of "$name" | grep -qxF -- "$1" && printf '%s\n' "$name"
+    grep -qxF -- "$1" <<<"$(roster_creds_of "$name")" && printf '%s\n' "$name"
   done < <(grep -vE '^[[:space:]]*(#|$)' "$ROSTER" 2>/dev/null)
   return 0
 }
@@ -185,7 +185,7 @@ pool_send() {
   svc="${id%%:*}"
   kind="$(pool_meta "$id" kind)"
   digest="$(pool_meta "$id" digest)"
-  secret="$(cat "$(pool_entry_path "$id")/secret" 2>/dev/null)" || secret=""
+  secret="$(cat "$(pool_entry_path "$id")/secret" 2>/dev/null)" || secret="" # Decision-path empty fallback: an unreadable entry sets nothing and is refused just below
   if [ -z "$secret" ] || [ -z "$kind" ]; then
     verdict="the pool entry $id could not be read — nothing set"
     pool_record_verdict "$box" "$id" fail "$verdict"
