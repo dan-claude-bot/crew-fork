@@ -75,6 +75,10 @@ fi
 remote="${remote:--}"
 ref="${ref:--}"
 source_ref="${source_ref:--}"
+# #776: a role may be told to take a while, so a parallel round's roles can
+# end out of order and the collection is seen to run in role order anyway.
+role_sleep_var="DRILL_SLEEP_$role"
+[ -z "${!role_sleep_var:-}" ] || sleep "${!role_sleep_var}"
 printf '%s %s %s %s %s\n' "$role" "$remote" "$ref" "$shipped" "$source_ref" \
   >>"$DRILL_ROLE_LOG"
 [ -z "${REHEARSAL_SECTION_STATUS:-}" ] \
@@ -295,10 +299,87 @@ t drill-undeclared-summary-leg-is-visible 1 \
   "$(grep -c '^## leg undeclared breaker  (summary result has no declaration)' \
     <<<"$undeclared_out")"
 
+# --- #776: --parallel, --legs, --only-failed, and the wall-time block --------
+w776_round() {  # extra args… — the orchestrator's transcript, then "rc=N"
+  local out rc=0
+  out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
+    REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --no-config-drill --no-install-drill \
+      --no-app "$@" 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+: >"$ROLE_LOG"
+w776_out="$(DRILL_SLEEP_triage=1.2 DRILL_SLEEP_builder=0.6 w776_round --roles 'triage builder reviewer' --keep --parallel \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w776-parallel-runs-every-role 3 "$(wc -l <"$ROLE_LOG" | tr -d ' ')"
+# They ended reviewer, builder, triage — the stub logs on its way out...
+t w776-parallel-roles-ended-out-of-order "reviewer builder triage" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
+# ...and the transcripts and the summary rows are in ROLE order regardless.
+t w776-parallel-transcripts-in-role-order "triage builder reviewer" \
+  "$(sed -n 's/^## \([a-z]*\) — box crew-drill-.*/\1/p' <<<"$w776_out" | paste -sd' ' -)"
+t w776-parallel-summary-rows-in-role-order "triage builder reviewer" \
+  "$(sed -n 's/^##   ok         \([a-z]*\)  (phase 2 ran)$/\1/p' <<<"$w776_out" | paste -sd' ' -)"
+t w776-parallel-says-so 1 "$(grep -c '^== --parallel: running triage builder reviewer at once' <<<"$w776_out")"
+t w776-parallel-heartbeat-names-who-is-still-running 1 \
+  "$(grep -c '^== --parallel: still running: triage' <<<"$w776_out" | awk '{print ($1 >= 1)}')"
+t w776-parallel-wall-time-line 1 \
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
+t w776-parallel-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
+# Sequential is still the default, and still timed.
+: >"$ROLE_LOG"
+w776_out="$(DRILL_SLEEP_triage=0.6 w776_round --roles 'triage builder' --keep \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w776-sequential-keeps-role-order "triage builder" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
+t w776-sequential-wall-time-line 1 \
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
+
+# --legs: only the named legs run; every other leg says it was not selected.
+: >"$ROLE_LOG"
+w776_out="$(w776_round --roles reviewer --legs hygiene,breaker)"
+t w776-legs-unselected-leg-says-so 1 "$(grep -c '^##   skip       resume  (not selected by --legs)$' <<<"$w776_out")"
+t w776-legs-unselected-fleet-says-so 1 "$(grep -c '^##   skip       fleet  (not selected by --legs)$' <<<"$w776_out")"
+t w776-legs-teardown-is-kept 1 \
+  "$(grep -c '^##   keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)$' <<<"$w776_out")"
+t w776-legs-the-run-is-marked-selective 1 "$(grep -c '^## selective run (--legs hygiene,breaker)' <<<"$w776_out")"
+t w776-legs-a-selected-leg-is-not-skipped 0 "$(grep -c '^##   skip       hygiene' <<<"$w776_out")"
+w776_out="$(w776_round --roles reviewer --legs hygeine)"
+t w776-legs-a-typo-is-refused 1 "$(grep -c "^drill/rehearsal-all.sh: --legs: 'hygeine' is not a declared leg$" <<<"$w776_out")"
+t w776-legs-a-typo-runs-nothing 1 "$(grep -cx 'rc=1' <<<"$w776_out")"
+
+# --only-failed: the red legs of an earlier summary, and the rest carried.
+W776_LOG="$TMP/w776-prev.log"
+cat >"$W776_LOG" <<'PREV'
+## declared leg states:
+## leg executed hygiene  (ok; preservation + refusal)
+## leg executed breaker  (FAIL)
+## leg executed release  (FAIL; the track could not be seeded)
+## leg not-executed notify  (INCOMPLETE; leg skipped: operator channel unreachable: no-credentials — union UNPROVEN)
+## leg not-executed app-armed  (skip; not requested: no --app-roster; requires an armed member)
+## leg not-executed teardown  (kept; round not green — boxes LEFT STANDING to inspect)
+PREV
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
+t w776-only-failed-names-what-it-reruns 1 "$(grep -c "^== --only-failed: re-running breaker,release,notify (read from $W776_LOG)$" <<<"$w776_out")"
+t w776-only-failed-carries-the-green-leg 1 "$(grep -c "^##   carried  hygiene  (ok in $W776_LOG)$" <<<"$w776_out")"
+t w776-only-failed-carries-the-skipped-leg 1 "$(grep -c "^##   carried  app-armed  (skip in $W776_LOG)$" <<<"$w776_out")"
+t w776-only-failed-never-carries-a-rerun-leg 0 "$(grep -cE '^##   carried  (breaker|release|notify) ' <<<"$w776_out")"
+t w776-only-failed-unselected-says-so 1 "$(grep -c '^##   skip       resume  (not selected by --legs)$' <<<"$w776_out")"
+printf '## leg executed hygiene  (ok; x)\n' >"$W776_LOG"
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
+t w776-only-failed-nothing-red-runs-nothing 1 "$(grep -c 'has no FAIL or INCOMPLETE leg — nothing to re-run' <<<"$w776_out")"
+t w776-only-failed-nothing-red-is-rc-0 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
+printf 'just some text\n' >"$W776_LOG"
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
+t w776-only-failed-not-a-summary-is-refused 1 "$(grep -c "carries no '## leg …' block — not a round summary" <<<"$w776_out")"
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG" --legs hygiene)"
+t w776-only-failed-and-legs-are-exclusive 1 "$(grep -c -- '--legs and --only-failed are exclusive' <<<"$w776_out")"
+
 # Not-executed is not a sufficient record by itself: the blocker is the fact
 # that makes an exclusion evidence. Remove one reason and require a red row.
 NO_REASON="$HARNESS/rehearsal-all-no-reason.sh"
-sed 's/SUMMARY+=("skip       browser  (--no-app)")/SUMMARY+=("skip       browser")/' \
+# shellcheck disable=SC2016  # the orchestrator's source text, $ included
+sed 's/SUMMARY+=("skip       browser  ($(omitted --no-app))")/SUMMARY+=("skip       browser")/' \
   "$HARNESS/rehearsal-all.sh" >"$NO_REASON"
 if no_reason_out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
     DRILL_REMOTE="$REMOTE" bash "$NO_REASON" --tree "$SOURCE" --roles reviewer \
