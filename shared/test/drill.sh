@@ -3398,6 +3398,81 @@ for w749_fn in rehearsal_builder_left_the_queue rehearsal_attention_flag_cleared
   t "w749-$w749_fn-empty-name-says-so" 1 "$(grep -c 'cannot grade: the label name is empty' <<<"$w749_out")"
 done
 
+# #775 — a jq that cannot compile the predicate is "cannot grade", at once.
+# jq 1.6 refused the old `$label` binding with a compile error (exit 3), which
+# the predicate read as "not yet", so six rows of the rc1 round polled out their
+# budgets. The stub fails only the predicate's call (the one with --arg), so the
+# label-set read before it still runs on the real jq.
+w775_grade() {  # w775_grade <jq-exit> — "rc=N", then the predicate's stderr
+  (
+    W775_RC="$1"
+    # shellcheck disable=SC2317
+    gh() { printf '{"labels":[{"name":"claimed"}]}\n'; }
+    # shellcheck disable=SC2317
+    jq() {
+      case " $* " in
+        *" --arg "*) echo "jq: error: syntax error, unexpected label" >&2
+                     echo "jq: 1 compile error" >&2; return "$W775_RC" ;;
+      esac
+      command jq "$@"
+    }
+    # shellcheck disable=SC2317
+    bx() { return 1; }
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
+    err="$(rehearsal_issue_lacks_label owner/repo 1 attention 2>&1 >/dev/null)"; rc=$?
+    echo "rc=$rc"; printf '%s\n' "$err"
+  ) </dev/null
+}
+w775_out="$(w775_grade 3)"
+t w775-jq-compile-error-is-cannot-grade 1 "$(grep -cx 'rc=2' <<<"$w775_out")"
+t w775-jq-compile-error-names-jq-and-its-exit 1 \
+  "$(grep -c 'cannot grade: jq failed (exit 3): jq: error: syntax error, unexpected label jq: 1 compile error' <<<"$w775_out")"
+t w775-jq-compile-error-still-prints-the-label-set 1 \
+  "$(grep -cx 'labels on owner/repo#1: \[claimed\]' <<<"$w775_out")"
+t w775-jq-false-is-still-not-yet 1 "$(grep -cx 'rc=1' <<<"$(w775_grade 1)")"
+# And through the real wait_for: refused on the first poll, never a timeout.
+: >"$W749_COUNT"
+# shellcheck disable=SC2317
+w775_counted() { echo x >>"$W749_COUNT"; w775_grade 3 | sed 1d >&2; return 2; }
+w775_out="$(w749_run 30 row w775_counted)"
+t w775-wait-for-refuses-on-the-first-poll 1 "$(wc -l <"$W749_COUNT" | tr -d ' ')"
+t w775-wait-for-row-is-cannot-grade-not-timeout 0 "$(grep -c timeout <<<"$w775_out")"
+# No jq keyword is bound as a variable anywhere in the tree. jq 1.7 accepts
+# that, and jq 1.6, which Debian 12 and Ubuntu 22.04 still ship, refuses it.
+# The census reads the engine and the drill alike.
+w775_kw='__loc__|and|as|catch|def|elif|else|end|foreach|if|import|include|label|not|or|reduce|then|try'
+w775_hits="$(cd "$ROOT" || exit; grep -rnE -- "--(arg|argjson|slurpfile|rawfile) +($w775_kw) " \
+  drill shared/lib shared/bin shared/install.sh cli fleet-floor install.sh 2>/dev/null)"
+t w775-no-jq-keyword-is-bound-as-a-variable "" "$w775_hits"
+# shellcheck disable=SC2016  # the pattern matches a literal jq `$`
+w775_hits="$(cd "$ROOT" || exit; grep -rnE -- 'as +\\?\$('"$w775_kw"')\b' \
+  drill shared/lib shared/bin cli fleet-floor 2>/dev/null)"
+t w775-no-jq-keyword-is-a-destructured-name "" "$w775_hits"
+
+# #775 — the host token's scopes, read before any role.
+w775_gap() {  # w775_gap <headers> <scope>
+  (
+    eval "$(sed -n '/^host_token_scope_gap() {/,/^}/p' "$ROOT/drill/rehearsal-all.sh")"
+    host_token_scope_gap "$1" "$2"
+  )
+}
+w775_h=$'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: admin:org, admin:public_key, delete_repo, gist, repo, write:packages\r\n'
+t w775-missing-workflow-is-named-with-its-remedy \
+  'host token lacks the workflow scope (gh auth refresh -h github.com -s workflow)' "$(w775_gap "$w775_h" workflow)"
+t w775-present-scope-says-nothing "" "$(w775_gap "$w775_h" delete_repo)"
+t w775-last-scope-in-the-list-counts "" "$(w775_gap "$w775_h" write:packages)"
+t w775-a-scope-prefix-is-not-the-scope 'host token lacks the admin scope (gh auth refresh -h github.com -s admin)' \
+  "$(w775_gap "$w775_h" admin)"
+t w775-fine-grained-token-says-nothing "" "$(w775_gap $'HTTP/2.0 200 OK\r\nX-Github-Media-Type: github.v3\r\n' workflow)"
+t w775-no-headers-says-nothing "" "$(w775_gap '' workflow)"
+# shellcheck disable=SC2016  # the source text, $ included
+t w775-the-refusal-reaches-the-release-leg 1 \
+  "$(grep -c 'REHEARSAL_RELEASE_REFUSED="$REHEARSAL_RELEASE_REFUSED"' "$ROOT/drill/rehearsal-all.sh")"
+# shellcheck disable=SC2016  # the source text, $ included
+t w775-the-release-leg-skips-on-it-never-fails 1 \
+  "$(grep -c 'rehearsal_release_verdict skip "$REHEARSAL_RELEASE_REFUSED"' "$ROOT/drill/rehearsal-release.sh")"
+
 # #750 — the budget is the box's, read the way the engine reads it.
 w750_budget() {  # w750_budget <bx-stdout> <bx-rc> <kind> — "rc=N value=V"
   (

@@ -300,11 +300,23 @@ rehearsal_issue_lacks_label() {
     return 3
   fi
   echo "labels on $repo#$num: [$names]" >&2
-  if jq -e --arg label "$label" \
-    '([.labels[].name] | index($label)) == null' >/dev/null <<<"$issue_json"; then
-    return 0
-  fi
-  return 1
+  # The binding is `$want`, never `$label`: `label` is a jq keyword, and jq 1.6
+  # refuses it as a binding name with a COMPILE error (#775). jq's exit status
+  # is the answer, so it is read in full rather than as a boolean: 0 the
+  # filter said true, 1 it said false — and anything else is jq failing, which
+  # no number of polls repairs. That is "cannot grade" (2), refused at once
+  # and naming jq's own words; read as "not yet", it cost the rc1 round six
+  # false FAILs and three and a half hours of timeouts.
+  local jq_err jq_rc
+  jq_err="$(jq -e --arg want "$label" \
+    '([.labels[].name] | index($want)) == null' 2>&1 >/dev/null <<<"$issue_json")"
+  jq_rc=$?
+  case "$jq_rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  echo "cannot grade: jq failed (exit $jq_rc): ${jq_err//$'\n'/ }" >&2
+  return 2
 }
 
 # rehearsal_lane_budget KIND — the session ceiling the box installed for a

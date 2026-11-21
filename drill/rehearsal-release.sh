@@ -307,6 +307,12 @@ rehearsal_release_drill() {
     rehearsal_release_verdict skip "--no-release-drill"
     return 0
   fi
+  # The orchestrator's preflight read the host token before any role (#775).
+  if [ -n "${REHEARSAL_RELEASE_REFUSED:-}" ]; then
+    skip "release: one cut per tick on a fresh track, held, then refused ($REHEARSAL_RELEASE_REFUSED)"
+    rehearsal_release_verdict skip "$REHEARSAL_RELEASE_REFUSED"
+    return 0
+  fi
   owner="${repo%%/*}"
   if [ "$identity" = "$owner" ]; then
     skip "release: the cut pushes from a fork the box identity owns, and $identity owns $repo itself"

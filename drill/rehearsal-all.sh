@@ -274,6 +274,43 @@ cleanup_role_hygiene_files() {
 }
 trap cleanup_role_hygiene_files EXIT
 
+# host_token_scope_gap HEADERS SCOPE — the response headers of `gh api -i
+# user`; prints a refusal reason when the host token's classic scopes are
+# readable and do not include SCOPE, and nothing otherwise. A fine-grained
+# token answers no X-OAuth-Scopes header at all, and then this says nothing:
+# the leg's own write is the only judge of what such a token may do (#775).
+host_token_scope_gap() {
+  local scopes
+  scopes="$(printf '%s\n' "$1" | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa][Uu][Tt][Hh]-[Ss][Cc][Oo][Pp][Ee][Ss]:[[:space:]]*//p' | head -1)"
+  [ -n "$scopes" ] || return 0
+  case ", $scopes," in
+    *", $2,"*) return 0 ;;
+  esac
+  printf 'host token lacks the %s scope (gh auth refresh -h github.com -s %s)\n' "$2" "$2"
+}
+
+# The release leg seeds `.github/workflows/release.yml` with the HOST's gh, and
+# GitHub answers a workflow-file write from a token without `workflow` with a
+# bare 404 that names nothing. The rc1 round's G3 went unread on exactly that.
+# Read once, before any role: a missing scope is an omission the round
+# DISCOVERED, so the leg reads INCOMPLETE with the remedy, never FAIL (#775).
+REHEARSAL_RELEASE_REFUSED=""
+HOST_TOKEN_HEADERS=""
+if [ "$RELEASE_DRILL" -ne 0 ] && leg_is_selected_role triage; then
+  HOST_TOKEN_HEADERS="$(gh api -i user 2>/dev/null | sed '/^\r\{0,1\}$/q' || true)"
+  REHEARSAL_RELEASE_REFUSED="$(host_token_scope_gap "$HOST_TOKEN_HEADERS" workflow)"
+  [ -z "$REHEARSAL_RELEASE_REFUSED" ] \
+    || echo "preflight: the release leg will not run: $REHEARSAL_RELEASE_REFUSED"
+fi
+# Teardown deletes the sandboxes with the host's gh. Without `delete_repo` it
+# cannot, and says so only at the very end of a multi-hour round; say it now.
+if [ "$KEEP" -eq 0 ]; then
+  [ -n "$HOST_TOKEN_HEADERS" ] || HOST_TOKEN_HEADERS="$(gh api -i user 2>/dev/null | sed '/^\r\{0,1\}$/q' || true)"
+  teardown_gap="$(host_token_scope_gap "$HOST_TOKEN_HEADERS" delete_repo)"
+  [ -z "$teardown_gap" ] \
+    || echo "preflight: WARNING — a green round's teardown will not delete the sandboxes: $teardown_gap"
+fi
+
 for role in $ROLES; do
   echo
   echo "############################################################"
@@ -298,6 +335,7 @@ for role in $ROLES; do
   REHEARSAL_ATTENTION_AUDIT_STATUS="$ATTENTION_AUDIT_STATUS" \
   REHEARSAL_RELEASE_DRILL="$RELEASE_DRILL" \
   REHEARSAL_RELEASE_STATUS="$RELEASE_STATUS" \
+  REHEARSAL_RELEASE_REFUSED="$REHEARSAL_RELEASE_REFUSED" \
   REHEARSAL_HYGIENE_DRILL="$HYGIENE_DRILL" \
   REHEARSAL_HYGIENE_RESULT_FILE="$role_hygiene_file" \
   REHEARSAL_BREAKER_DRILL="$BREAKER_DRILL" \
