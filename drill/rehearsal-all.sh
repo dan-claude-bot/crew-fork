@@ -114,6 +114,8 @@ LEGS=""
 ONLY_FAILED=""
 # #774: the pool entries the round logs its boxes in with — gh:<name>,agent:<name>.
 CREDS=""
+# #776: the fast tier — plumbing only, never a promotion reading.
+FAST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -144,12 +146,13 @@ while [ $# -gt 0 ]; do
     --app-roster) APP_ROSTER="$2"; shift 2 ;;
     --app-shots) APP_ARGS+=(--shots "$2"); shift 2 ;;
     --parallel) PARALLEL=1; shift ;;
+    --fast) FAST=1; shift ;;
     --creds) CREDS="$2"; shift 2 ;;
     --legs) LEGS="$2"; shift 2 ;;
     --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
        echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--app-boxes \"a b\"] [--app-allow-control]"
-       echo "         [--app-roster <path>] [--app-shots <dir>] [--parallel] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>]"; exit 1 ;;
+       echo "         [--app-roster <path>] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>]"; exit 1 ;;
   esac
 done
 
@@ -236,10 +239,24 @@ if [ -n "$CREDS" ]; then
   export CREW_CREDENTIALS_DIR
   echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
 fi
+# --fast (#776): the roles in parallel; no app or browser pass; and the legs
+# whose every reading is a real agent session's output — the release cut, the
+# resume wake, the attention dispatch — left out by name. Inside each role the
+# stub agent stands in, and the sections that read agent output say so.
+if [ "$FAST" -eq 1 ]; then
+  PARALLEL=1 APP=0 RELEASE_DRILL=0 RESUME_DRILL=0 ATTENTION_DRILL=0
+  echo "== --fast: plumbing only — roles in parallel, a zero-action agent, no app pass; NOT a promotion reading"
+fi
 # omitted FLAG — the reason a leg that did not run gives: the operator's flag,
-# or the selection that left it out.
+# the fast tier, or the selection that left it out.
 omitted() {
-  if [ -n "$LEGS" ]; then printf 'not selected by --legs'; else printf '%s' "$1"; fi
+  if [ -n "$LEGS" ]; then printf 'not selected by --legs'
+  elif [ "$FAST" -eq 1 ]; then
+    case "$1" in
+      --no-app|--no-release-drill|--no-resume-drill|--no-attention-drill) printf -- '--fast: reads a real agent session'"'"'s output' ;;
+      *) printf '%s' "$1" ;;
+    esac
+  else printf '%s' "$1"; fi
 }
 
 # Resolve the operator-facing branch, tag or commit once for the whole role
@@ -458,6 +475,7 @@ role_invoke() {
   REHEARSAL_NOTIFY_DRILL="$NOTIFY_DRILL" \
   REHEARSAL_NOTIFY_STATUS="$NOTIFY_STATUS" \
   REHEARSAL_CREDS="$CREDS" \
+  REHEARSAL_FAST="$FAST" \
   REHEARSAL_SECTION_STATUS="${ROLE_SECTION_FILE[$role]}" \
     "$HERE/rehearsal.sh" --role "$role" "${PASSTHRU[@]+"${PASSTHRU[@]}"}"
 }
@@ -1036,6 +1054,9 @@ fi
 echo
 echo "############################################################"
 echo "## fleet rehearsal summary ($AGENT)"
+# Said first, so a summary pasted from the tail can never be read as a round
+# that counts: a fast round proves plumbing and promotes nothing (#776).
+[ "$FAST" -eq 0 ] || echo "## TIER: fast — plumbing only; NOT a promotion reading (drills/README.md: cite the full round, never this one)"
 if [ -n "$RESOLVED_REF" ]; then
   echo "## drilled source: $RESOLVED_REF ($SOURCE_RECORD)"
 fi

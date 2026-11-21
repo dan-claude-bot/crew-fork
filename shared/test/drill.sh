@@ -78,6 +78,7 @@ source_ref="${source_ref:--}"
 # #776: a role may be told to take a while, so a parallel round's roles can
 # end out of order and the collection is seen to run in role order anyway.
 [ -z "${DRILL_CREDS_LOG:-}" ] || printf '%s %s %s\n' "$role" "${REHEARSAL_CREDS:--}" "${CREW_CREDENTIALS_DIR:--}" >>"$DRILL_CREDS_LOG"
+[ -z "${DRILL_FAST_LOG:-}" ] || printf '%s %s\n' "$role" "${REHEARSAL_FAST:-unset}" >>"$DRILL_FAST_LOG"
 role_sleep_var="DRILL_SLEEP_$role"
 [ -z "${!role_sleep_var:-}" ] || sleep "${!role_sleep_var}"
 printf '%s %s %s %s %s\n' "$role" "$remote" "$ref" "$shipped" "$source_ref" \
@@ -402,6 +403,53 @@ t w774-the-push-precedes-the-phase-2-gate 1 \
   "$(awk '/REHEARSAL_CREDS:-/ && !p {p=NR} /^if \[ "\$GH_AUTHED" -eq 0 \] \|\| ! bx/ {g=NR} END {print (p && g && p < g) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
 t w774-the-push-follows-the-pre-auth-rows 1 \
   "$(awk '/pre-auth: no sessions spawned/ && !a {a=NR} /REHEARSAL_CREDS:-/ && !p {p=NR} END {print (a && p && a < p) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+
+# --- #776 E: the fast tier ---------------------------------------------------
+W776F_LOG="$TMP/w776-fast.log"; : >"$W776F_LOG"
+: >"$ROLE_LOG"
+w776f_out="$(DRILL_FAST_LOG="$W776F_LOG" DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
+  REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles 'triage builder' \
+  --keep --fast --no-config-drill --no-install-drill --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-attention-audit-drill \
+  --no-fleet-drill 2>&1; echo "rc=$?")"
+t w776f-fast-says-what-it-is 1 "$(grep -c '^== --fast: plumbing only — roles in parallel, a zero-action agent, no app pass; NOT a promotion reading$' <<<"$w776f_out")"
+t w776f-fast-runs-the-roles-in-parallel 1 "$(grep -c '^== --parallel: running triage builder at once' <<<"$w776f_out")"
+t w776f-fast-tells-every-role "triage 1|builder 1" "$(sort -r "$W776F_LOG" | paste -sd'|' -)"
+t w776f-the-summary-is-labelled-not-a-promotion-reading 1 \
+  "$(grep -c '^## TIER: fast — plumbing only; NOT a promotion reading' <<<"$w776f_out")"
+for w776f_leg in release resume attention app browser app-armed; do
+  t "w776f-$w776f_leg-is-left-out-by-name" 1 \
+    "$(grep -cE "^##   skip       $w776f_leg  \(--fast: reads a real agent session's output\)$" <<<"$w776f_out")"
+done
+t w776f-an-operator-flag-keeps-its-own-reason 1 "$(grep -c '^##   skip       fleet  (--no-fleet-drill)$' <<<"$w776f_out")"
+t w776f-a-plumbing-round-can-be-green 1 "$(grep -cx 'rc=0' <<<"$w776f_out")"
+# Without --fast, the roles are told nothing of the kind.
+: >"$W776F_LOG"
+DRILL_FAST_LOG="$W776F_LOG" w776_round --roles triage --keep --no-resume-drill --no-attention-drill \
+  --no-attention-audit-drill --no-release-drill --no-hygiene-drill --no-breaker-drill --no-notify-drill \
+  --no-fleet-drill >/dev/null
+t w776f-a-full-round-is-not-fast "triage 0" "$(cat "$W776F_LOG")"
+# Inside a role: the skip helper, and where the stub sits.
+w776f_skip() {  # w776f_skip <fast> <name> — the helper's row and status
+  (
+    # shellcheck disable=SC2317  # supplied to the extracted helper
+    skip() { echo "skip $1"; }
+    # shellcheck disable=SC2034  # read by the extracted helper
+    REHEARSAL_FAST="$1"
+    eval "$(sed -n '/^rehearsal_fast_skip() {/,/^}/p' "$ROOT/drill/rehearsal.sh")"
+    rehearsal_fast_skip "$2"; echo "rc=$?"
+  )
+}
+t w776f-skip-in-the-fast-tier $'skip x (fast tier: a real agent session\'s output — not read)\nrc=0' "$(w776f_skip 1 x)"
+t w776f-no-skip-in-a-full-round "rc=1" "$(w776f_skip 0 x)"
+for w776f_section in 'attention: the wake' 'triage: a stray' 'builder: a ready issue' 'review: the announce'; do
+  t "w776f-the-section-is-guarded[$w776f_section]" 1 \
+    "$(grep -c "rehearsal_fast_skip \"$w776f_section" "$ROOT/drill/rehearsal.sh")"
+done
+t w776f-the-stub-goes-in-after-notify-and-before-the-wake-tick 1 \
+  "$(awk '/^  rehearsal_notify_drill / {n=NR} /^  rehearsal_fast_install_stub$/ {i=NR} /^  # -- attention wake --$/ {w=NR} END {print (n && i && w && n < i && i < w) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w776f-the-stub-comes-out-before-the-breaker 1 \
+  "$(awk '/^rehearsal_fast_restore_cli \\$/ {r=NR} /^  rehearsal_breaker_drill / {b=NR} END {print (r && b && r < b) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w776f-cleanup-removes-the-stub 1 "$(sed -n '/^cleanup_all() {/,/^}/p' "$ROOT/drill/rehearsal.sh" | grep -c 'rehearsal_fast_restore_cli')"
 
 # Not-executed is not a sufficient record by itself: the blocker is the fact
 # that makes an exclusion evidence. Remove one reason and require a red row.

@@ -239,6 +239,37 @@ wait_for_lane_after() {
   fi
   wait_for_lane "$@"
 }
+# --- the fast tier (#776) -----------------------------------------------------
+# REHEARSAL_FAST=1 (rehearsal-all.sh --fast) proves the engine's plumbing and
+# reads nothing a real agent writes. A zero-action stub stands in for the
+# agent CLI for all of phase 2, so a tick that dispatches costs nothing and
+# returns at once; each section whose rows grade what an agent leaves behind —
+# a ruling, a pull request, a review — is skipped BY NAME, never graded on a
+# stub's silence. What still runs is everything the engine does itself.
+REHEARSAL_FAST_STUB_SET=0
+rehearsal_fast_skip() {  # NAME — true (and a skip row) in the fast tier
+  [ "${REHEARSAL_FAST:-0}" -eq 1 ] || return 1
+  skip "$1 (fast tier: a real agent session's output — not read)"
+  return 0
+}
+rehearsal_fast_install_stub() {
+  [ "${REHEARSAL_FAST:-0}" -eq 1 ] || return 0
+  if bx "cat >> ~/duty/conf/roles/$ROLE.conf <<'EOF'
+# rehearsal-fast-stub begin
+BOT_CLI_CMD=(true)
+# rehearsal-fast-stub end
+EOF"; then
+    REHEARSAL_FAST_STUB_SET=1
+    ok "fast tier: a zero-action agent stands in for the real CLI"
+  else
+    fail "fast tier: a zero-action agent stands in for the real CLI"
+  fi
+}
+rehearsal_fast_restore_cli() {
+  [ "$REHEARSAL_FAST_STUB_SET" -eq 1 ] || return 0
+  bx "sed -i '/^# rehearsal-fast-stub begin$/,/^# rehearsal-fast-stub end$/d' ~/duty/conf/roles/$ROLE.conf" \
+    && REHEARSAL_FAST_STUB_SET=0
+}
 bx() { box exec "$BOX_NAME" -- bash -lc "$1"; }
 # shellcheck disable=SC2034  # read and updated by rehearsal-safety.sh
 REPOS_BACKUP=""
@@ -279,6 +310,8 @@ fi
 cleanup_all() {
   local rc=$?
   if [ "$BOX_TOUCHED" -eq 1 ]; then
+    rehearsal_fast_restore_cli \
+      || echo "WARNING: could not remove the fast tier's stub agent from ~/duty/conf/roles/$ROLE.conf; stop the box: box down $BOX_NAME" >&2
     if declare -F rehearsal_resume_restore_cli >/dev/null 2>&1 \
         && [ "${REHEARSAL_RESUME_NOOP_SET:-0}" -eq 1 ]; then
       rehearsal_resume_restore_cli \
@@ -915,10 +948,13 @@ else
     exit 1
   fi
 
+  rehearsal_fast_install_stub
+
   # -- attention wake --
   # Its fixture is `$inum`, minted above the census for the page-boundary
   # reason given there. The tick is what the wake rows are about.
   bx "~/duty/bin/tick.sh" || true
+  if ! rehearsal_fast_skip "attention: the wake's pickup comment and its ack"; then
   wait_for 900 "attention: 📌 pickup comment" bash -c \
     "out=\$(gh api 'repos/$SANDBOX/issues/$inum/comments' --jq '[.[] | select(.user.login == \"$ME2\")] | length'); grep -qE '^[1-9][0-9]*$' <<<\"\$out\""
   # The predicate lives in rehearsal-fixtures.sh beside the mint it grades, and
@@ -929,6 +965,7 @@ else
   wait_for_lane_after "attention: 📌 pickup comment" \
     ATTENTION "attention: label removed (ack re-arms)" \
     rehearsal_attention_flag_cleared "$SANDBOX" "$inum"
+  fi
 
   # The census's other half (#714, D2/D3). Deliberately AFTER the two rows
   # above: they are what establishes that a tick fetched, partitioned and
@@ -962,6 +999,7 @@ else
     echo "triage: installed queue-label set is empty — refusing before the fixture wait" >&2
     exit 1
   fi
+  if ! rehearsal_fast_skip "triage: a stray draws a ruling, leaves the unlabelled queue, and a quiet board launches nothing"; then
   # -- triage: a stray (no queue label) must draw a ruling --
   # duty-triage.sh detects two signals; the STRAY is the one a fixture can
   # create without presupposing triage's own vocabulary: an open issue
@@ -999,6 +1037,8 @@ else
   check "triage: quiet-board tick launched no session" bx \
     "out=\$(tail -n +$((DUTY_LOG_LINES + 1)) ~/duty/duty.log); grep -Fq '$SANDBOX: quiet — no mentions, no triage signals, no session launched' <<<\"\$out\""
 
+  fi
+
   # -- the hygiene slot's board audit: both malformed shapes, not repaired --
   # Last in the triage block, after the existing assertions, which are
   # unchanged. The slot is triage-only (duty.sh), so this is the one role block
@@ -1019,6 +1059,7 @@ else
   . "$ROOT/drill/rehearsal-resume.sh"
   # shellcheck source=drill/rehearsal-attention.sh
   . "$ROOT/drill/rehearsal-attention.sh"
+  if ! rehearsal_fast_skip "builder: a ready issue becomes a PR, its fix round, and its panel request"; then
   # -- builder: an unassigned `ready` issue must become a PR --
   # ready+ASSIGNED is deliberately NOT pickable (an assignee means mid-claim;
   # counting those launched sessions with nothing to do). The fixture must
@@ -1151,6 +1192,8 @@ else
     fi
   fi
 
+  fi
+
   # -- attention: dispatch without code, and the timed-out pickup report --
   # Beside the wake rows above, not instead of them: those read the ACK, this
   # reads what #301 shipped behind it. Last in the builder block and outside
@@ -1160,6 +1203,8 @@ else
   # every leg above it.
   rehearsal_attention_drill "$SANDBOX" "$ME2"
 
+  elif rehearsal_fast_skip "review: the announce, the pinned verdict, dedup, the re-request rule and the gate"; then
+  :
   else
   # -- review round through the gates --
   main_sha="$(gh api "repos/$SANDBOX/git/ref/heads/main" --jq .object.sha)"
@@ -1252,6 +1297,12 @@ else
   fi
   fi
 fi
+
+# The fast tier's stub leaves before the breaker: that leg stages its own
+# terminal CLI, and its recovery rows read a REAL session acting after the
+# lane reopens — the one real session a fast round buys.
+rehearsal_fast_restore_cli \
+  || fail "fast tier: the real agent CLI is restored before the breaker leg"
 
 # Role-independent: exercise the worktree hygiene that runs on every role box
 # only after that role's own phase-2 fixtures have finished.
