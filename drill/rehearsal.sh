@@ -437,6 +437,29 @@ else
    — login WARN, no .boot-id marker, no sessions spawned — SKIP on a box that is
    already gh-authenticated, so the creds-free half of phase 1 is unexercised (#116)."
   echo "== REUSE: $REUSE_NOTE"
+  # A reused box may be STOPPED: the previous round's fleet leg downed every
+  # drill box, and the rc1 round's next pass then failed every role's phase 0
+  # on `Instance is not running` (#771). Start it, and wait for the VM's guest
+  # agent to answer — `box exec` says "VM agent isn't currently running" for
+  # 20-60 s after a start. Bounded, and a box that never answers is refused
+  # here by name rather than three steps later as a transfer failure.
+  reuse_state="$(box info "$BOX_NAME" --json 2>/dev/null \
+    | jq -r 'if type == "array" then (.[0] // {}) else . end
+             | .status // (.state | if type == "object" then .status else . end) // ""' 2>/dev/null \
+    | head -1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+  if [ "$reuse_state" = stopped ]; then
+    echo "== REUSE: $BOX_NAME is stopped; starting it and waiting for it to answer"
+    box start "$BOX_NAME" >/dev/null \
+      || { echo "phase 0: could not start the reused box $BOX_NAME (box start $BOX_NAME)" >&2; exit 1; }
+    reuse_end=$((SECONDS + ${REHEARSAL_BOX_ANSWER_S:-180}))
+    until bx "true" >/dev/null 2>&1; do
+      if [ "$SECONDS" -ge "$reuse_end" ]; then
+        echo "phase 0: the reused box $BOX_NAME started but did not answer within ${REHEARSAL_BOX_ANSWER_S:-180}s" >&2
+        exit 1
+      fi
+      sleep "${REHEARSAL_BOX_ANSWER_POLL_S:-5}"
+    done
+  fi
 fi
 BOX_TOUCHED=1
 check "box reachable" bx "true"

@@ -61,7 +61,9 @@ for box_name in $BOXES; do
 done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CREW="$ROOT/cli/crew"
+# The suite drives the whole leg with a stub `crew` and a stub `box`; a real
+# round never sets this.
+CREW="${REHEARSAL_FLEET_CREW:-$ROOT/cli/crew}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=drill/fleet-lifecycle.sh
 . "$HERE/fleet-lifecycle.sh"
@@ -78,11 +80,46 @@ FAIL $1${2:+ — $2}"; }
 skip() { echo "skip $1${2:+  — $2}"; VERDICTS="$VERDICTS
 skip $1${2:+ — $2}"; }
 bx()   { box exec "$1" -- bash -lc "$2" </dev/null; }
+# box_state_of NAME — running · stopped · unknown, read the way cli/crew's own
+# box_state reads it (`box info --json`, either shape).
+box_state_of() {
+  local out
+  out="$(box info "$1" --json 2>/dev/null \
+    | jq -r 'if type == "array" then (.[0] // {}) else . end
+             | .status // (.state | if type == "object" then .status else . end) // ""' 2>/dev/null \
+    | head -1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+  case "$out" in
+    running) echo running ;;
+    stopped) echo stopped ;;
+    *) echo unknown ;;
+  esac
+}
+# wait_box_answers NAME — a started VM answers `box exec` only once its guest
+# agent is up (`VM agent isn't currently running` until then, 20-60 s on the
+# rc1 host). Bounded; the interval is a variable so the suite does not sleep.
+FLEET_AGENT_WAIT_S="${FLEET_AGENT_WAIT_S:-180}"
+FLEET_AGENT_POLL_S="${FLEET_AGENT_POLL_S:-5}"
+wait_box_answers() {
+  local end=$((SECONDS + FLEET_AGENT_WAIT_S))
+  while :; do
+    bx "$1" true >/dev/null 2>&1 && return 0
+    [ "$SECONDS" -lt "$end" ] || return 1
+    sleep "$FLEET_AGENT_POLL_S"
+  done
+}
 
 TMP="$(mktemp -d)"
 CONFIG="$TMP/operator"
 LOCK_TAG=".crew-fleet-drill-$$"
 BUSY_BOX=""
+# The box a holder was STARTED on, graded held or not. Cleanup kills by the
+# pid file on this box whatever the grading said: on the rc1 round a hold
+# misgraded as failed was left running, and `crew down` waited out all of its
+# 900 s (#770).
+HOLD_BOX=""
+# Set once `crew down` has run: cleanup then starts any roster box the leg left
+# stopped, so the next pass and teardown never inherit a stopped fleet (#771).
+LEG_STOPPED=0
 declare -a TARGETS=()
 for box_name in $BOXES; do TARGETS+=("$box_name"); done
 # The roles column of the roster, positionally paired with the boxes. A generated
@@ -97,16 +134,28 @@ for role in ${ROLES:-}; do TARGET_ROLES+=("$role"); done
 # later leg and for teardown.
 cleanup() {
   local rc=$?
-  if [ -n "$BUSY_BOX" ]; then
-    if bx "$BUSY_BOX" "
+  local box_name state
+  if [ -n "$HOLD_BOX" ]; then
+    if bx "$HOLD_BOX" "
       if [ -r ~/$LOCK_TAG.pid ]; then kill \"\$(cat ~/$LOCK_TAG.pid)\" 2>/dev/null || true; fi
       rm -f ~/$LOCK_TAG.pid ~/duty/.duty.lock.since
     " >/dev/null 2>&1; then
-      echo "teardown: released the drill-held duty lock on $BUSY_BOX"
+      echo "teardown: released the drill-held duty lock on $HOLD_BOX"
     else
-      echo "teardown: WARNING — could not release the drill-held duty lock on $BUSY_BOX; inspect with: box shell $BUSY_BOX" >&2
+      echo "teardown: WARNING — could not release the drill-held duty lock on $HOLD_BOX; inspect with: box shell $HOLD_BOX" >&2
       [ "$rc" -ne 0 ] || rc=1
     fi
+  fi
+  if [ "$LEG_STOPPED" -eq 1 ]; then
+    for box_name in "${TARGETS[@]}"; do
+      state="$(box_state_of "$box_name")"
+      [ "$state" = stopped ] || continue
+      if box start "$box_name" >/dev/null 2>&1 && wait_box_answers "$box_name"; then
+        echo "teardown: started $box_name, which this leg left stopped"
+      else
+        echo "teardown: WARNING — $box_name is still stopped; start it with: box start $box_name" >&2
+      fi
+    done
   fi
   rm -rf -- "$TMP"
   trap - EXIT
@@ -147,37 +196,58 @@ fi
 # the box, with the `.since` file a live session writes. Stubbing drain_probe()
 # would leave the busy-skip assertion passing on a round where nothing was ever
 # busy, which is the assumption this criterion exists to remove.
+# The holder is started, and then the lock is READ — two calls, because the
+# first call's exit status is not evidence: `box exec` returned non-zero on the
+# rc1 round while the holder it started held the lock for its full 900 s
+# (#770). The holder gets </dev/null too, so it keeps no fd of the exec
+# session. Its stderr is kept, so a holder that really failed says why.
 hold_duty_lock() { # NAME
   local name="$1"
   # shellcheck disable=SC2016  # HOME and the lock path expand inside the box
   bx "$name" '
-    set -e
-    mkdir -p "$HOME/duty"
-    command -v flock >/dev/null 2>&1 || exit 3
+    mkdir -p "$HOME/duty" || exit 1
+    command -v flock >/dev/null 2>&1 || { echo "no flock in the box" >&2; exit 3; }
     date +%s >"$HOME/duty/.duty.lock.since"
-    setsid flock "$HOME/duty/.duty.lock" sleep 900 >/dev/null 2>&1 &
+    setsid flock "$HOME/duty/.duty.lock" sleep 900 </dev/null >/dev/null 2>&1 &
     printf "%s\n" "$!" >"$HOME/'"$LOCK_TAG"'.pid"
-    # Confirm the lock is actually HELD before returning: a background flock
-    # that lost a race and exited would leave every assertion below reading an
-    # idle box and calling it a proved skip.
-    for _ in 1 2 3 4 5; do
-      if flock -n "$HOME/duty/.duty.lock" true >/dev/null 2>&1; then sleep 1; else exit 0; fi
-    done
-    exit 1
-  ' >/dev/null 2>&1
+  ' >/dev/null 2>"$TMP/hold.err"
+}
+# duty_lock_probe NAME — one word from inside the box: held while a process
+# holds the duty lock, free when a non-blocking flock gets it.
+duty_lock_probe() { # NAME
+  # shellcheck disable=SC2016  # HOME expands inside the box
+  bx "$1" 'if flock -n "$HOME/duty/.duty.lock" true 2>/dev/null; then echo free; else echo held; fi' 2>/dev/null
+}
+# The holder may take a moment to win the lock; read a few times.
+duty_lock_reading() { # NAME
+  local i reading=unreadable
+  for i in 1 2 3 4 5; do
+    reading="$(fleet_lock_reading "$(duty_lock_probe "$1")")"
+    [ "$reading" != held ] || break
+    [ "$i" -eq 5 ] || sleep "${FLEET_HOLD_POLL_S:-1}"
+  done
+  printf '%s\n' "$reading"
 }
 
 if [ "${#TARGETS[@]}" -lt 2 ]; then
   skip "a box is held busy by a live duty lock" \
     "the round drilled ${#TARGETS[@]} box(es); a busy-skip reading needs one busy box and one that is not"
 else
-  BUSY_BOX="${TARGETS[1]}"
-  if hold_duty_lock "$BUSY_BOX"; then
-    ok "a box is held busy by a live duty lock ($BUSY_BOX)"
+  HOLD_BOX="${TARGETS[1]}"
+  hold_duty_lock "$HOLD_BOX"; hold_rc=$?
+  hold_err="$(head -c 300 "$TMP/hold.err" 2>/dev/null | tr '\n' ' ')"
+  hold_reading="$(duty_lock_reading "$HOLD_BOX")"
+  if [ "$hold_reading" = held ]; then
+    BUSY_BOX="$HOLD_BOX"
+    if [ "$hold_rc" -eq 0 ]; then
+      ok "a box is held busy by a live duty lock ($BUSY_BOX)"
+    else
+      # Recorded, not graded: the lock is what the readings below need.
+      ok "a box is held busy by a live duty lock ($BUSY_BOX; the holder's call returned $hold_rc, the probe reads the lock held)"
+    fi
   else
-    BUSY_BOX=""
     fail "a box is held busy by a live duty lock" \
-      "could not take the duty lock on ${TARGETS[1]}; the busy-skip readings below are unproved"
+      "could not take the duty lock on $HOLD_BOX (probe: $hold_reading; holder rc $hold_rc${hold_err:+; $hold_err}); the busy-skip readings below are unproved"
   fi
 fi
 
@@ -328,22 +398,53 @@ fi
 # whereas a lock this leg took and left held wedges that box for the app phase
 # and for teardown.
 
-# Bring the fleet back: a cut reads a box's login, its engine and its disk from
-# INSIDE it, so it refuses a stopped box — and the boxes the app and teardown
-# phases run against must be standing either way.
+LEG_STOPPED=1
+
+# #759's `--all` meaning, read on a real host: after `down`, a stopped member
+# is LEFT to the host tick, and none is started. Pinned as its own row, because
+# the leg used to read the old meaning and returned no box at all (#771).
 echo
-echo "-- crew restart --all (returning the fleet from the down above)"
-"$CREW" restart --all >"$TMP/restart-back.out" 2>&1 || true
+echo "-- crew restart --all (after down: every stopped member is left to the host tick)"
+"$CREW" restart --all >"$TMP/restart-left.out" 2>&1 || true
+cat "$TMP/restart-left.out"
+left=0
+left_other=""
+for box_name in "${TARGETS[@]}"; do
+  outcome="$(fleet_restart_outcome "$box_name" <"$TMP/restart-left.out")"
+  if [ "$outcome" = left-to-tick ]; then
+    left=$((left + 1))
+  else
+    left_other="$left_other${left_other:+, }$box_name: $outcome"
+  fi
+done
+if [ "$left" -eq "${#TARGETS[@]}" ]; then
+  ok "restart --all after down leaves every stopped member to the host tick and starts none (${left}/${#TARGETS[@]})"
+else
+  fail "restart --all after down leaves every stopped member to the host tick and starts none" \
+    "$left of ${#TARGETS[@]}; $left_other"
+fi
+
+# Bring the fleet back one box at a time: the named form still starts a stopped
+# box (`already stopped; starting`). A cut reads a box's login, its engine and
+# its disk from INSIDE it, so it refuses a stopped box — and the later phases
+# need the boxes standing either way.
+echo
+echo "-- crew restart <box> (returning the fleet from the down above, one box at a time)"
+: >"$TMP/restart-back.out"
+for box_name in "${TARGETS[@]}"; do
+  "$CREW" restart "$box_name" >>"$TMP/restart-back.out" 2>&1 || true
+done
 cat "$TMP/restart-back.out"
 returned=0
 for box_name in "${TARGETS[@]}"; do
   [ "$(fleet_restart_outcome "$box_name" <"$TMP/restart-back.out")" = cycled ] \
+    && wait_box_answers "$box_name" \
     && returned=$((returned + 1))
 done
 if [ "$returned" -eq "${#TARGETS[@]}" ]; then
   ok "every box the round downed came back (${returned}/${#TARGETS[@]})"
 else
-  fail "every box the round downed came back" "$returned of ${#TARGETS[@]} cycled"
+  fail "every box the round downed came back" "$returned of ${#TARGETS[@]} cycled and answering"
 fi
 
 # --- 3. crew reset --cut --all -----------------------------------------------

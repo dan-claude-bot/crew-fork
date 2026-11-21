@@ -3807,6 +3807,181 @@ t fleet-verdict-fold-prefers-skip-over-ok skip \
 skip b' | awk '{print $1}')"
 t fleet-verdict-fold-of-nothing-is-empty '' "$(fleet_worst_verdict '')"
 
+# --- #770 / #771: the leg itself, against a stub `box` and a stub `crew` ------
+# The classifiers above are pure; these rows drive drill/rehearsal-fleet.sh end
+# to end, so the hold's grading, the cleanup's kill, the `--all` pin and the
+# per-box return are read from the leg's own transcript.
+FL_DIR="$TMP/fleet770"
+FL_STATE="$FL_DIR/state"
+FL_BIN="$FL_DIR/bin"
+mkdir -p "$FL_STATE" "$FL_BIN"
+cat >"$FL_BIN/box" <<'BOX'
+#!/usr/bin/env bash
+# State is one file per fact: held-<box>, stopped-<box>. Every call is logged.
+S="$FL_STATE"
+printf 'box %s\n' "$*" >>"$S/calls"
+case "${1:-}" in
+  exec)
+    n="$2"; script="${*: -1}"
+    case "$script" in
+      *"setsid flock"*)
+        : >"$S/held-$n"
+        exit "${FL_HOLD_RC:-0}" ;;
+      *"echo free; else echo held"*)
+        [ -z "${FL_PROBE_SILENT:-}" ] || exit 1
+        if [ -e "$S/held-$n" ]; then echo held; else echo free; fi ;;
+      *"sleep 20; "*)
+        # The timed release armed before `down`: recorded, and left to `down`,
+        # which releases the lock once it has waited (below).
+        printf 'timer %s\n' "$n" >>"$S/calls" ;;
+      *kill*)
+        printf 'killed %s\n' "$n" >>"$S/calls"
+        rm -f "$S/held-$n" ;;
+      true)
+        [ ! -e "$S/stopped-$n" ] ;;
+      *) echo 0 ;;
+    esac ;;
+  info)
+    if [ -e "$S/stopped-$2" ]; then st=Stopped; else st=Running; fi
+    printf '[{"name":"%s","status":"%s"}]\n' "$2" "$st" ;;
+  start) rm -f "$S/stopped-$2" ;;
+  *) exit 0 ;;
+esac
+BOX
+cat >"$FL_BIN/crew" <<'CREW'
+#!/usr/bin/env bash
+S="$FL_STATE"
+printf 'crew %s\n' "$*" >>"$S/calls"
+names() { awk '!/^[[:space:]]*(#|$)/ {print $1}' "$CREW_CONFIG_DIR/fleet.roster"; }
+case "${1:-} ${2:-}" in
+  "init "*) mkdir -p "$2" ;;
+  "profiles "*) : ;;
+  "restart --all")
+    r=0 k=0
+    for n in $(names); do
+      if [ -e "$S/stopped-$n" ]; then
+        echo "  $n: stopped — left to the host tick, which starts it when there is work"
+      elif [ -e "$S/held-$n" ]; then
+        echo "  $n: SKIPPED busy — duty lock held for 12s"; k=$((k + 1))
+      else
+        echo "  $n: restarted; /tmp filesystem free 100 → 200 KiB (delta +100 KiB)"; r=$((r + 1))
+      fi
+    done
+    echo; echo "restart: $r restarted, $k skipped-busy, 0 failed" ;;
+  "restart "*)
+    n="$2"
+    if [ -n "${FL_NAMED_RESTART_FAILS:-}" ]; then echo "  restart FAILED on $n"; exit 1; fi
+    if [ -e "$S/stopped-$n" ]; then
+      echo "  $n: already stopped; starting"
+      rm -f "$S/stopped-$n"
+      echo "  $n: started from stopped; /tmp filesystem free 200 KiB"
+    else
+      echo "  $n: restarted; /tmp filesystem free 100 → 200 KiB (delta +100 KiB)"
+    fi
+    echo; echo "restart: 1 restarted, 0 skipped-busy, 0 failed" ;;
+  "down "*)
+    st=0 w=0
+    for n in $(names); do
+      if [ -e "$S/held-$n" ]; then
+        echo "  $n: waiting for duty lock held 25s; …"; w=$((w + 1))
+        grep -qx "timer $n" "$S/calls" && rm -f "$S/held-$n"
+      fi
+      : >"$S/stopped-$n"; echo "  $n: stopped"; st=$((st + 1))
+    done
+    echo; echo "down: $st stopped, $w waited, 0 absent, 0 failed" ;;
+  "reset --cut")
+    c=0
+    for n in $(names); do echo "  $n: armed cut at crew@0.1.4; root filesystem 40% used"; c=$((c + 1)); done
+    echo; echo "reset --cut: $c cut, 0 skipped-busy, 0 failed" ;;
+  "reset "*) echo "  $2: restored to armed and started"; echo; echo "reset: 1 restored, 0 skipped-busy, 0 failed" ;;
+  "status "*) echo "integrity: current (crew@0.1.4)" ;;
+  "upgrade "*) echo "== upgrading $2" ;;
+esac
+exit 0
+CREW
+chmod +x "$FL_BIN/box" "$FL_BIN/crew"
+fl_run() {  # env assignments... — the leg's transcript, then "rc=N"
+  rm -f "$FL_STATE"/held-* "$FL_STATE"/stopped-*
+  : >"$FL_STATE/calls"
+  (
+    # shellcheck disable=SC2030,SC2031  # the stub PATH is this subshell's alone
+    export FL_STATE PATH="$FL_BIN:$PATH" REHEARSAL_FLEET_CREW="$FL_BIN/crew"
+    export FLEET_AGENT_WAIT_S=0 FLEET_AGENT_POLL_S=0 FLEET_HOLD_POLL_S=0
+    unset CREW_CONFIG_DIR
+    for kv in "$@"; do export "${kv?}"; done
+    bash "$ROOT/drill/rehearsal-fleet.sh" \
+      --boxes "crew-drill-triage crew-drill-builder crew-drill-reviewer" \
+      --roles "triage builder reviewer" 2>&1
+    echo "rc=$?"
+  ) </dev/null
+}
+
+# #770 — the holder's call exits non-zero, the lock is held: the probe decides.
+fl_out="$(fl_run FL_HOLD_RC=255)"
+t fl770-a-misreporting-holder-call-is-graded-by-the-probe 1 \
+  "$(grep -cF "ok   a box is held busy by a live duty lock (crew-drill-builder; the holder's call returned 255, the probe reads the lock held)" <<<"$fl_out")"
+t fl770-the-busy-skip-is-read 1 "$(grep -cx 'ok   restart --all SKIPS a busy box (crew-drill-builder)' <<<"$fl_out")"
+t fl770-the-busy-wait-is-read 1 "$(grep -cx 'ok   down WAITS for a busy box (crew-drill-builder)' <<<"$fl_out")"
+# Mutation: the leg as it was graded the CALL. Restored, the same stub reds it.
+FL_MUT="$FL_DIR/rehearsal-fleet-mutant.sh"
+# shellcheck disable=SC2016  # the leg's source text, $ included
+sed 's/^  if \[ "\$hold_reading" = held \]; then$/  if [ "$hold_rc" -eq 0 ] \&\& [ "$hold_reading" = held ]; then/' \
+  "$ROOT/drill/rehearsal-fleet.sh" >"$FL_MUT"
+# shellcheck disable=SC2016  # the leg's source text, $ included
+t fl770-the-mutation-applies 1 "$(grep -c 'hold_rc" -eq 0 \] && \[ "\$hold_reading" = held' "$FL_MUT")"
+cp "$ROOT/drill/fleet-lifecycle.sh" "$FL_DIR/"
+mkdir -p "$FL_DIR/drill"
+cp "$FL_MUT" "$FL_DIR/drill/rehearsal-fleet.sh"
+cp "$ROOT/drill/fleet-lifecycle.sh" "$FL_DIR/drill/"
+# shellcheck disable=SC2031  # the stub PATH is this substitution's alone
+fl_mut_out="$(rm -f "$FL_STATE"/held-* "$FL_STATE"/stopped-*; : >"$FL_STATE/calls"
+  FL_STATE="$FL_STATE" PATH="$FL_BIN:$PATH" REHEARSAL_FLEET_CREW="$FL_BIN/crew" \
+  FLEET_AGENT_WAIT_S=0 FLEET_AGENT_POLL_S=0 FLEET_HOLD_POLL_S=0 FL_HOLD_RC=255 \
+  bash "$FL_DIR/drill/rehearsal-fleet.sh" --boxes "crew-drill-triage crew-drill-builder crew-drill-reviewer" \
+    --roles "triage builder reviewer" 2>&1 </dev/null)"
+t fl770-the-mutant-reds-the-hold 1 "$(grep -c '^FAIL a box is held busy' <<<"$fl_mut_out")"
+# ...and even graded failed, the holder it started is killed on the way out.
+t fl770-a-misgraded-hold-is-still-killed-in-cleanup 1 "$(grep -cx 'killed crew-drill-builder' "$FL_STATE/calls")"
+
+# A probe that answers nothing is `unreadable`, named on the FAIL row.
+fl_out="$(fl_run FL_PROBE_SILENT=1)"
+t fl770-an-unreadable-probe-is-a-named-fail 1 \
+  "$(grep -c '^FAIL a box is held busy by a live duty lock  — could not take the duty lock on crew-drill-builder (probe: unreadable; holder rc 0)' <<<"$fl_out")"
+t fl770-an-unreadable-hold-is-killed-in-cleanup 1 "$(grep -cx 'killed crew-drill-builder' "$FL_STATE/calls")"
+
+# #771 — after down, `restart --all` leaves every member to the host tick, and
+# the leg returns each box by name, reading each one back.
+fl_out="$(fl_run)"
+t fl771-the-all-meaning-is-pinned 1 \
+  "$(grep -cx 'ok   restart --all after down leaves every stopped member to the host tick and starts none (3/3)' <<<"$fl_out")"
+t fl771-every-box-came-back 1 "$(grep -cx 'ok   every box the round downed came back (3/3)' <<<"$fl_out")"
+t fl771-the-return-is-one-named-restart-per-box 3 "$(grep -cE '^crew restart crew-drill-(triage|builder|reviewer)$' "$FL_STATE/calls")"
+t fl771-the-cut-reads-standing-boxes 1 \
+  "$(grep -cx 'ok   reset --cut --all names an outcome for every roster member' <<<"$fl_out")"
+t fl771-the-canary-reads-current 1 \
+  "$(grep -cx "ok   the canary's per-box integrity line reads current before the rest of the roster" <<<"$fl_out")"
+# The stub keeps no boot-check.log, so the restore's boot-gate row is the one
+# FAIL a stubbed leg is allowed; every other row of the leg is green.
+t fl771-no-other-row-is-red "" \
+  "$(grep '^FAIL' <<<"$fl_out" | grep -v "boot gate passes on its first tick after the restore" || true)"
+t fl770-the-timed-release-is-armed-for-the-busy-box 1 "$(grep -cx 'timer crew-drill-builder' "$FL_STATE/calls")"
+# A return that did not happen: cleanup starts what the leg left stopped.
+fl_out="$(fl_run FL_NAMED_RESTART_FAILS=1)"
+t fl771-a-failed-return-is-a-fail-row 1 "$(grep -c '^FAIL every box the round downed came back' <<<"$fl_out")"
+t fl771-cleanup-starts-every-box-left-stopped 3 "$(grep -cE '^box start crew-drill-' "$FL_STATE/calls")"
+t fl771-cleanup-says-so 3 "$(grep -c '^teardown: started crew-drill-.*, which this leg left stopped' <<<"$fl_out")"
+t fl771-no-box-is-left-stopped "" "$(find "$FL_STATE" -name 'stopped-*')"
+
+# #771 — a reused box that is stopped is started and waited for before phase 0,
+# inside the --reuse branch and nowhere else (a fresh round mints its box).
+# shellcheck disable=SC2016  # the source text, $ included
+fl771_reuse="$(sed -n '/^  echo "== REUSE: \$REUSE_NOTE"$/,/^BOX_TOUCHED=1$/p' "$ROOT/drill/rehearsal.sh")"
+# shellcheck disable=SC2016  # the source text, $ included
+t fl771-reuse-starts-a-stopped-box 1 "$(grep -c 'box start "\$BOX_NAME"' <<<"$fl771_reuse")"
+t fl771-reuse-waits-for-the-agent-bounded 1 "$(grep -c 'REHEARSAL_BOX_ANSWER_S:-180' <<<"$fl771_reuse" | awk '{print ($1 > 0)}')"
+# shellcheck disable=SC2016  # the source text, $ included
+t fl771-reuse-reads-the-state-first 1 "$(grep -c '"\$reuse_state" = stopped' <<<"$fl771_reuse")"
+
 # --- #656: the leg's row in the round's record ------------------------------
 # Case 5: a leg that returns early out of a block must report `not-executed`,
 # never an absence that looks like coverage. The stub writes whatever the case
