@@ -17,9 +17,17 @@
 # work. Under the previous org-wide review sweep all three would have seen
 # each other's PRs and raced for the same verdicts.
 #
-# Each role runs to completion before the next starts. They are NOT
-# parallelised: the boxes share an identity, and a shared identity means
-# shared rate limits and interleaved duty.log evidence that nobody can read.
+# Each role runs to completion before the next starts, unless --parallel says
+# otherwise (#776). Then the roles run at once, each into its own transcript
+# with a [role] prefix on the console, and the summary is assembled after all
+# of them end. The one cross-role read a shared identity makes — the attention
+# census, which reads every demand the identity carries — grades suppression
+# only for demands still standing after the tick, so another role resolving
+# its own fixture mid-tick cannot red this one.
+#
+#   --legs a,b,…        run only these legs (the role sections always run)
+#   --only-failed LOG   run only the legs LOG read FAIL or INCOMPLETE, and
+#                       print the rest of LOG's leg states beside the result
 set -uo pipefail
 
 ROLES="triage builder reviewer"
@@ -99,6 +107,15 @@ ATTENTION_AUDIT_STATUS=""
 RELEASE_STATUS=""
 # Roles whose drill actually reached a box, for the app phase.
 DRILLED=""
+# #776: run the roles at once, select legs, re-run what a previous round left
+# red. LEGS is the operator's selection, comma-separated; empty is every leg.
+PARALLEL=0
+LEGS=""
+ONLY_FAILED=""
+# #774: the pool entries the round logs its boxes in with — gh:<name>,agent:<name>.
+CREDS=""
+# #776: the fast tier — plumbing only, never a promotion reading.
+FAST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -128,9 +145,14 @@ while [ $# -gt 0 ]; do
     --app-allow-control) APP_ARGS+=(--allow-control); shift ;;
     --app-roster) APP_ROSTER="$2"; shift 2 ;;
     --app-shots) APP_ARGS+=(--shots "$2"); shift 2 ;;
+    --parallel) PARALLEL=1; shift ;;
+    --fast) FAST=1; shift ;;
+    --creds) CREDS="$2"; shift 2 ;;
+    --legs) LEGS="$2"; shift 2 ;;
+    --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
        echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--app-boxes \"a b\"] [--app-allow-control]"
-       echo "         [--app-roster <path>] [--app-shots <dir>]"; exit 1 ;;
+       echo "         [--app-roster <path>] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>]"; exit 1 ;;
   esac
 done
 
@@ -146,6 +168,96 @@ for role in $ROLES; do
     *) echo "unknown role '$role' (triage, builder or reviewer)"; exit 1 ;;
   esac
 done
+
+# --only-failed LOG: the legs a previous round's summary read FAIL or
+# INCOMPLETE, from its generated `## leg …` block — the record, never a guess.
+ONLY_FAILED_CARRIED=""
+if [ -n "$ONLY_FAILED" ]; then
+  [ -z "$LEGS" ] || { echo "drill/rehearsal-all.sh: --legs and --only-failed are exclusive" >&2; exit 1; }
+  [ -r "$ONLY_FAILED" ] || { echo "drill/rehearsal-all.sh: no readable log at '$ONLY_FAILED'" >&2; exit 1; }
+  LEGS="$(sed -nE 's/^## leg (executed|not-executed) ([a-z-]+)  \((FAIL|INCOMPLETE)\b.*/\2/p' "$ONLY_FAILED" \
+    | grep -vx teardown | paste -sd, -)"
+  ONLY_FAILED_CARRIED="$(sed -nE 's/^## leg (executed|not-executed) ([a-z-]+)  \(([a-zA-Z]+).*/\2 \3/p' "$ONLY_FAILED")"
+  [ -n "$ONLY_FAILED_CARRIED" ] \
+    || { echo "drill/rehearsal-all.sh: '$ONLY_FAILED' carries no '## leg …' block — not a round summary" >&2; exit 1; }
+  if [ -z "$LEGS" ]; then
+    echo "drill/rehearsal-all.sh: '$ONLY_FAILED' has no FAIL or INCOMPLETE leg — nothing to re-run"
+    exit 0
+  fi
+  echo "== --only-failed: re-running $LEGS (read from $ONLY_FAILED)"
+fi
+# --legs a,b,…: every leg off, then the named ones back on. A name that is not a
+# declared leg is refused before anything runs: a typo would otherwise run a
+# round that skipped exactly the leg the operator asked for.
+if [ -n "$LEGS" ]; then
+  RESUME_DRILL=0 ATTENTION_DRILL=0 ATTENTION_AUDIT_DRILL=0 RELEASE_DRILL=0
+  HYGIENE_DRILL=0 BREAKER_DRILL=0 NOTIFY_DRILL=0 INSTALL_DRILL=0
+  CONFIG_DRILL=0 APP=0 FLEET_DRILL=0 KEEP=1
+  for leg in ${LEGS//,/ }; do
+    case "$leg" in
+      hygiene) HYGIENE_DRILL=1 ;;
+      breaker) BREAKER_DRILL=1 ;;
+      resume) RESUME_DRILL=1 ;;
+      attention) ATTENTION_DRILL=1 ;;
+      attention-audit) ATTENTION_AUDIT_DRILL=1 ;;
+      release) RELEASE_DRILL=1 ;;
+      notify) NOTIFY_DRILL=1 ;;
+      installer) INSTALL_DRILL=1 ;;
+      config) CONFIG_DRILL=1 ;;
+      app|browser|app-armed) APP=1 ;;
+      fleet) FLEET_DRILL=1 ;;
+      teardown) KEEP=0 ;;
+      *) echo "drill/rehearsal-all.sh: --legs: '$leg' is not a declared leg" >&2; exit 1 ;;
+    esac
+  done
+fi
+# --creds: the operator's pool, found the way the operator's own `crew creds`
+# finds it, and every named entry checked to be there before any role starts
+# (#774). The round never writes the pool and never assigns an entry: the
+# boxes are off every roster, so each role pushes the entries by name.
+if [ -n "$CREDS" ]; then
+  creds_seen=""
+  for creds_entry in ${CREDS//,/ }; do
+    [[ "$creds_entry" =~ ^(gh|agent):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] \
+      || { echo "drill/rehearsal-all.sh: --creds: '$creds_entry' is not gh:<name> or agent:<name>" >&2; exit 1; }
+    case " $creds_seen " in *" ${creds_entry%%:*} "*)
+      echo "drill/rehearsal-all.sh: --creds: one gh and one agent entry at most" >&2; exit 1 ;; esac
+    creds_seen="$creds_seen ${creds_entry%%:*}"
+  done
+  if [ -z "${CREW_CREDENTIALS_DIR:-}" ]; then
+    CREW_CREDENTIALS_DIR="$("$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cli/crew" creds list 2>/dev/null \
+      | sed -n 's/^credential pool: \(.*\) (write-only.*/\1/p' | head -1)"
+  fi
+  if [ -z "$CREW_CREDENTIALS_DIR" ] || [ ! -d "$CREW_CREDENTIALS_DIR/entries" ]; then
+    echo "drill/rehearsal-all.sh: --creds: no credential pool found (set one up with crew creds add, or point CREW_CREDENTIALS_DIR at it)" >&2
+    exit 1
+  fi
+  for creds_entry in ${CREDS//,/ }; do
+    [ -r "$CREW_CREDENTIALS_DIR/entries/${creds_entry%%:*}--${creds_entry#*:}/secret" ] \
+      || { echo "drill/rehearsal-all.sh: --creds: no pool entry $creds_entry in $CREW_CREDENTIALS_DIR" >&2; exit 1; }
+  done
+  export CREW_CREDENTIALS_DIR
+  echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
+fi
+# --fast (#776): the roles in parallel; no app or browser pass; and the legs
+# whose every reading is a real agent session's output — the release cut, the
+# resume wake, the attention dispatch — left out by name. Inside each role the
+# stub agent stands in, and the sections that read agent output say so.
+if [ "$FAST" -eq 1 ]; then
+  PARALLEL=1 APP=0 RELEASE_DRILL=0 RESUME_DRILL=0 ATTENTION_DRILL=0
+  echo "== --fast: plumbing only — roles in parallel, a zero-action agent, no app pass; NOT a promotion reading"
+fi
+# omitted FLAG — the reason a leg that did not run gives: the operator's flag,
+# the fast tier, or the selection that left it out.
+omitted() {
+  if [ -n "$LEGS" ]; then printf 'not selected by --legs'
+  elif [ "$FAST" -eq 1 ]; then
+    case "$1" in
+      --no-app|--no-release-drill|--no-resume-drill|--no-attention-drill) printf -- '--fast: reads a real agent session'"'"'s output' ;;
+      *) printf '%s' "$1" ;;
+    esac
+  else printf '%s' "$1"; fi
+}
 
 # Resolve the operator-facing branch, tag or commit once for the whole role
 # round. Each role then fetches this exact object from the canonical remote;
@@ -274,22 +386,78 @@ cleanup_role_hygiene_files() {
 }
 trap cleanup_role_hygiene_files EXIT
 
-for role in $ROLES; do
+# host_token_scope_gap HEADERS SCOPE — the response headers of `gh api -i
+# user`; prints a refusal reason when the host token's classic scopes are
+# readable and do not include SCOPE, and nothing otherwise. A fine-grained
+# token answers no X-OAuth-Scopes header at all, and then this says nothing:
+# the leg's own write is the only judge of what such a token may do (#775).
+host_token_scope_gap() {
+  local scopes
+  scopes="$(printf '%s\n' "$1" | tr -d '\r' | sed -n 's/^[Xx]-[Oo][Aa][Uu][Tt][Hh]-[Ss][Cc][Oo][Pp][Ee][Ss]:[[:space:]]*//p' | head -1)"
+  [ -n "$scopes" ] || return 0
+  case ", $scopes," in
+    *", $2,"*) return 0 ;;
+  esac
+  printf 'host token lacks the %s scope (gh auth refresh -h github.com -s %s)\n' "$2" "$2"
+}
+
+# The release leg seeds `.github/workflows/release.yml` with the HOST's gh, and
+# GitHub answers a workflow-file write from a token without `workflow` with a
+# bare 404 that names nothing. The rc1 round's G3 went unread on exactly that.
+# Read once, before any role: a missing scope is an omission the round
+# DISCOVERED, so the leg reads INCOMPLETE with the remedy, never FAIL (#775).
+REHEARSAL_RELEASE_REFUSED=""
+HOST_TOKEN_HEADERS=""
+if [ "$RELEASE_DRILL" -ne 0 ] && leg_is_selected_role triage; then
+  HOST_TOKEN_HEADERS="$(gh api -i user 2>/dev/null | sed '/^\r\{0,1\}$/q' || true)"
+  REHEARSAL_RELEASE_REFUSED="$(host_token_scope_gap "$HOST_TOKEN_HEADERS" workflow)"
+  [ -z "$REHEARSAL_RELEASE_REFUSED" ] \
+    || echo "preflight: the release leg will not run: $REHEARSAL_RELEASE_REFUSED"
+fi
+# Teardown deletes the sandboxes with the host's gh. Without `delete_repo` it
+# cannot, and says so only at the very end of a multi-hour round; say it now.
+if [ "$KEEP" -eq 0 ]; then
+  [ -n "$HOST_TOKEN_HEADERS" ] || HOST_TOKEN_HEADERS="$(gh api -i user 2>/dev/null | sed '/^\r\{0,1\}$/q' || true)"
+  teardown_gap="$(host_token_scope_gap "$HOST_TOKEN_HEADERS" delete_repo)"
+  [ -z "$teardown_gap" ] \
+    || echo "preflight: WARNING — a green round's teardown will not delete the sandboxes: $teardown_gap"
+fi
+
+# --- the role sections ---------------------------------------------------
+# Three steps per role, so the same code runs them in sequence or at once
+# (#776): prepare its result files, invoke its drill, collect its results. The
+# collection always runs in role order, whatever order the roles ended in, so
+# a parallel round's summary is built exactly as a sequential one's is.
+declare -A ROLE_HYGIENE_FILE=() ROLE_BREAKER_FILE=() ROLE_BREAKER_REASON_FILE=()
+declare -A ROLE_SECTION_FILE=() ROLE_RESULT_FILE=() ROLE_TRANSCRIPT=()
+# "name seconds" per section, for the summary's wall-time block (#776).
+declare -a TIMINGS=()
+ROUND_START=$SECONDS
+
+role_banner() {
   echo
   echo "############################################################"
-  echo "## $role — box crew-drill-$role"
+  echo "## $1 — box crew-drill-$1"
   echo "############################################################"
-  role_hygiene_file="$(mktemp)"
-  role_breaker_file="$(mktemp)"
-  role_breaker_reason_file="$(mktemp)"
-  role_section_status_file="$(mktemp)"
-  ROLE_HYGIENE_FILES+=("$role_hygiene_file")
-  ROLE_BREAKER_FILES+=("$role_breaker_file")
-  ROLE_BREAKER_REASON_FILES+=("$role_breaker_reason_file")
-  ROLE_SECTION_STATUS_FILES+=("$role_section_status_file")
-  printf '2\n' >"$role_hygiene_file"
-  printf '2\n' >"$role_breaker_file"
-  : >"$role_section_status_file"
+}
+
+role_prepare() {
+  local role="$1"
+  ROLE_HYGIENE_FILE[$role]="$(mktemp)"
+  ROLE_BREAKER_FILE[$role]="$(mktemp)"
+  ROLE_BREAKER_REASON_FILE[$role]="$(mktemp)"
+  ROLE_SECTION_FILE[$role]="$(mktemp)"
+  ROLE_HYGIENE_FILES+=("${ROLE_HYGIENE_FILE[$role]}")
+  ROLE_BREAKER_FILES+=("${ROLE_BREAKER_FILE[$role]}")
+  ROLE_BREAKER_REASON_FILES+=("${ROLE_BREAKER_REASON_FILE[$role]}")
+  ROLE_SECTION_STATUS_FILES+=("${ROLE_SECTION_FILE[$role]}")
+  printf '2\n' >"${ROLE_HYGIENE_FILE[$role]}"
+  printf '2\n' >"${ROLE_BREAKER_FILE[$role]}"
+  : >"${ROLE_SECTION_FILE[$role]}"
+}
+
+role_invoke() {
+  local role="$1"
   REHEARSAL_RESUME_DRILL="$RESUME_DRILL" \
   REHEARSAL_RESUME_STATUS="$RESUME_STATUS" \
   REHEARSAL_ATTENTION_DRILL="$ATTENTION_DRILL" \
@@ -298,16 +466,27 @@ for role in $ROLES; do
   REHEARSAL_ATTENTION_AUDIT_STATUS="$ATTENTION_AUDIT_STATUS" \
   REHEARSAL_RELEASE_DRILL="$RELEASE_DRILL" \
   REHEARSAL_RELEASE_STATUS="$RELEASE_STATUS" \
+  REHEARSAL_RELEASE_REFUSED="$REHEARSAL_RELEASE_REFUSED" \
   REHEARSAL_HYGIENE_DRILL="$HYGIENE_DRILL" \
-  REHEARSAL_HYGIENE_RESULT_FILE="$role_hygiene_file" \
+  REHEARSAL_HYGIENE_RESULT_FILE="${ROLE_HYGIENE_FILE[$role]}" \
   REHEARSAL_BREAKER_DRILL="$BREAKER_DRILL" \
-  REHEARSAL_BREAKER_RESULT_FILE="$role_breaker_file" \
-  REHEARSAL_BREAKER_REASON_FILE="$role_breaker_reason_file" \
+  REHEARSAL_BREAKER_RESULT_FILE="${ROLE_BREAKER_FILE[$role]}" \
+  REHEARSAL_BREAKER_REASON_FILE="${ROLE_BREAKER_REASON_FILE[$role]}" \
   REHEARSAL_NOTIFY_DRILL="$NOTIFY_DRILL" \
   REHEARSAL_NOTIFY_STATUS="$NOTIFY_STATUS" \
-  REHEARSAL_SECTION_STATUS="$role_section_status_file" \
+  REHEARSAL_CREDS="$CREDS" \
+  REHEARSAL_FAST="$FAST" \
+  REHEARSAL_SECTION_STATUS="${ROLE_SECTION_FILE[$role]}" \
     "$HERE/rehearsal.sh" --role "$role" "${PASSTHRU[@]+"${PASSTHRU[@]}"}"
-  rc=$?
+}
+
+role_collect() {
+  local role="$1" rc="$2"
+  local role_hygiene_file="${ROLE_HYGIENE_FILE[$role]}"
+  local role_breaker_file="${ROLE_BREAKER_FILE[$role]}"
+  local role_breaker_reason_file="${ROLE_BREAKER_REASON_FILE[$role]}"
+  local role_section_status_file="${ROLE_SECTION_FILE[$role]}"
+  local role_section_status role_hygiene_result role_breaker_result role_breaker_reason
   role_section_status="$(cat "$role_section_status_file" 2>/dev/null || true)"
   [ "$role_section_status" != phase2 ] || phase2_attempted=1
   role_hygiene_result="$(cat "$role_hygiene_file" 2>/dev/null || printf '2\n')"
@@ -356,15 +535,68 @@ for role in $ROLES; do
       esac
       overall=1 ;;
   esac
-done
+}
+
+if [ "$PARALLEL" -eq 1 ] && [ "$(wc -w <<<"$ROLES")" -gt 1 ]; then
+  echo
+  echo "== --parallel: running $ROLES at once (#776); each role's transcript is printed whole, in role order, once all of them end"
+  for role in $ROLES; do
+    role_prepare "$role"
+    ROLE_RESULT_FILE[$role]="$(mktemp)"
+    ROLE_TRANSCRIPT[$role]="$(mktemp)"
+    ROLE_SECTION_STATUS_FILES+=("${ROLE_RESULT_FILE[$role]}" "${ROLE_TRANSCRIPT[$role]}")
+    (
+      role_start=$SECONDS
+      role_invoke "$role" >"${ROLE_TRANSCRIPT[$role]}" 2>&1 </dev/null
+      printf '%s %s\n' "$?" "$((SECONDS - role_start))" >"${ROLE_RESULT_FILE[$role]}"
+    ) &
+  done
+  # A heartbeat, so a console with nothing on it for an hour still says what
+  # it is waiting for.
+  while :; do
+    running=""
+    for role in $ROLES; do
+      [ -s "${ROLE_RESULT_FILE[$role]}" ] || running="$running $role"
+    done
+    [ -n "$running" ] || break
+    sleep "${REHEARSAL_PARALLEL_HEARTBEAT_S:-60}"
+    running_now=""
+    for role in $ROLES; do
+      [ -s "${ROLE_RESULT_FILE[$role]}" ] || running_now="$running_now $role"
+    done
+    [ -z "$running_now" ] || echo "== --parallel: still running:$running_now ($(( (SECONDS - ROUND_START) / 60 ))m)"
+  done
+  wait
+  for role in $ROLES; do
+    role_banner "$role"
+    # shellcheck disable=SC2086  # ROLES is a word list by construction
+    echo "## (ran in parallel with: $(printf '%s\n' $ROLES | grep -vx "$role" | paste -sd' ' -))"
+    cat "${ROLE_TRANSCRIPT[$role]}"
+    read -r rc role_seconds <"${ROLE_RESULT_FILE[$role]}"
+    TIMINGS+=("$role ${role_seconds:-0}")
+    role_collect "$role" "${rc:-1}"
+  done
+else
+  for role in $ROLES; do
+    role_banner "$role"
+    role_prepare "$role"
+    role_start=$SECONDS
+    role_invoke "$role"
+    rc=$?
+    TIMINGS+=("$role $((SECONDS - role_start))")
+    role_collect "$role" "$rc"
+  done
+fi
 
 hygiene_incomplete_reason="phase 2 skipped"
 [ "$phase2_attempted" -eq 0 ] \
   || hygiene_incomplete_reason="phase 2 ran without a hygiene result"
-SUMMARY+=("$(rehearsal_hygiene_summary \
-  "$HYGIENE_DRILL" "$DRILLED" "$hygiene_result" "$hygiene_incomplete_reason")")
-SUMMARY+=("$(rehearsal_breaker_summary \
-  "$BREAKER_DRILL" "$DRILLED" "$breaker_result" "$breaker_reason")")
+hygiene_row="$(rehearsal_hygiene_summary \
+  "$HYGIENE_DRILL" "$DRILLED" "$hygiene_result" "$hygiene_incomplete_reason")"
+breaker_row="$(rehearsal_breaker_summary \
+  "$BREAKER_DRILL" "$DRILLED" "$breaker_result" "$breaker_reason")"
+SUMMARY+=("${hygiene_row/(--no-hygiene-drill)/($(omitted --no-hygiene-drill))}")
+SUMMARY+=("${breaker_row/(--no-breaker-drill)/($(omitted --no-breaker-drill))}")
 overall="$(rehearsal_hygiene_round_result "$overall" "$hygiene_result")"
 overall="$(rehearsal_breaker_round_result \
   "$overall" "$BREAKER_DRILL" "$breaker_result")"
@@ -377,7 +609,7 @@ RESUME_VERDICT="$(rehearsal_worst_verdict "$(cat "$RESUME_STATUS" 2>/dev/null)")
 RESUME_WHY="${RESUME_VERDICT#* }"
 RESUME_VERDICT="${RESUME_VERDICT%% *}"
 if [ "$RESUME_DRILL" -eq 0 ]; then
-  SUMMARY+=("skip       resume  (--no-resume-drill)")
+  SUMMARY+=("skip       resume  ($(omitted --no-resume-drill))")
 elif [[ " $ROLES " != *" builder "* ]]; then
   SUMMARY+=("INCOMPLETE resume  (builder role omitted)")
   [ "$overall" -eq 1 ] || overall=2
@@ -399,7 +631,7 @@ ATTENTION_VERDICT="$(rehearsal_worst_verdict "$(cat "$ATTENTION_STATUS" 2>/dev/n
 ATTENTION_WHY="${ATTENTION_VERDICT#* }"
 ATTENTION_VERDICT="${ATTENTION_VERDICT%% *}"
 if [ "$ATTENTION_DRILL" -eq 0 ]; then
-  SUMMARY+=("skip       attention  (--no-attention-drill)")
+  SUMMARY+=("skip       attention  ($(omitted --no-attention-drill))")
 elif [[ " $ROLES " != *" builder "* ]]; then
   SUMMARY+=("INCOMPLETE attention  (builder role omitted)")
   [ "$overall" -eq 1 ] || overall=2
@@ -424,7 +656,7 @@ ATTENTION_AUDIT_VERDICT="$(rehearsal_worst_verdict "$(cat "$ATTENTION_AUDIT_STAT
 ATTENTION_AUDIT_WHY="${ATTENTION_AUDIT_VERDICT#* }"
 ATTENTION_AUDIT_VERDICT="${ATTENTION_AUDIT_VERDICT%% *}"
 if [ "$ATTENTION_AUDIT_DRILL" -eq 0 ]; then
-  SUMMARY+=("skip       attention-audit  (--no-attention-audit-drill)")
+  SUMMARY+=("skip       attention-audit  ($(omitted --no-attention-audit-drill))")
 elif [[ " $ROLES " != *" triage "* ]]; then
   SUMMARY+=("INCOMPLETE attention-audit  (triage role omitted)")
   [ "$overall" -eq 1 ] || overall=2
@@ -447,7 +679,7 @@ RELEASE_VERDICT="$(rehearsal_worst_verdict "$(cat "$RELEASE_STATUS" 2>/dev/null)
 RELEASE_WHY="${RELEASE_VERDICT#* }"
 RELEASE_VERDICT="${RELEASE_VERDICT%% *}"
 if [ "$RELEASE_DRILL" -eq 0 ]; then
-  SUMMARY+=("skip       release  (--no-release-drill)")
+  SUMMARY+=("skip       release  ($(omitted --no-release-drill))")
 elif [[ " $ROLES " != *" triage "* ]]; then
   SUMMARY+=("INCOMPLETE release  (triage role omitted)")
   [ "$overall" -eq 1 ] || overall=2
@@ -476,7 +708,7 @@ if [ "$NOTIFY_DRILL" -eq 0 ]; then
   # are `--no-*-drill` flags and nothing else — and the distinction is the
   # whole point: the operator who knows their host has no channel says so and
   # gets a clean round, and nobody else gets one by accident.
-  SUMMARY+=("skip       notify  (--no-notify-drill)")
+  SUMMARY+=("skip       notify  ($(omitted --no-notify-drill))")
 elif [ -z "$NOTIFY_VERDICT" ]; then
   if [ -z "${DRILLED// /}" ]; then
     SUMMARY+=("INCOMPLETE notify  (no role reached a box — union UNPROVEN)")
@@ -498,6 +730,7 @@ else
   overall=1
 fi
 
+section_start=$SECONDS
 if [ "$INSTALL_DRILL" -eq 1 ]; then
   echo
   echo "############################################################"
@@ -550,8 +783,10 @@ if [ "$INSTALL_DRILL" -eq 1 ]; then
     esac
   fi
 else
-  SUMMARY+=("skip       installer  (--no-install-drill)")
+  SUMMARY+=("skip       installer  ($(omitted --no-install-drill))")
 fi
+[ "$INSTALL_DRILL" -eq 0 ] || TIMINGS+=("installer $((SECONDS - section_start))")
+section_start=$SECONDS
 
 if [ "$CONFIG_DRILL" -eq 1 ]; then
   echo
@@ -571,8 +806,10 @@ if [ "$CONFIG_DRILL" -eq 1 ]; then
     esac
   fi
 else
-  SUMMARY+=("skip       config  (--no-config-drill)")
+  SUMMARY+=("skip       config  ($(omitted --no-config-drill))")
 fi
+[ "$CONFIG_DRILL" -eq 0 ] || TIMINGS+=("config $((SECONDS - section_start))")
+section_start=$SECONDS
 
 APP_ROW_EMITTED=0
 GENERATED_APP=0
@@ -612,8 +849,8 @@ if [ "$APP" -eq 1 ]; then
 fi
 
 if [ "$APP" -eq 0 ] && [ "$APP_ROW_EMITTED" -eq 0 ]; then
-  SUMMARY+=("skip       app  (--no-app)")
-  SUMMARY+=("skip       browser  (--no-app)")
+  SUMMARY+=("skip       app  ($(omitted --no-app))")
+  SUMMARY+=("skip       browser  ($(omitted --no-app))")
   APP_ROW_EMITTED=1
 fi
 
@@ -685,9 +922,11 @@ if [ "$APP" -eq 1 ] && [ -n "$APP_ROSTER" ]; then
 elif [ "$APP" -eq 1 ]; then
   SUMMARY+=("skip       app-armed  (not requested: no --app-roster; requires an armed member)")
 else
-  SUMMARY+=("skip       app-armed  (--no-app)")
+  SUMMARY+=("skip       app-armed  ($(omitted --no-app))")
 fi
 
+[ "$APP" -eq 0 ] || TIMINGS+=("app $((SECONDS - section_start))")
+section_start=$SECONDS
 # The fleet-lifecycle leg (#656). LAST of the independent phases, immediately
 # before teardown: it is the only one that stops boxes, cuts snapshots and rolls
 # one back, so anything downstream of it would be reading a fleet this leg had
@@ -749,8 +988,9 @@ if [ "$FLEET_DRILL" -eq 1 ]; then
     fi
   fi
 else
-  SUMMARY+=("skip       fleet  (--no-fleet-drill)")
+  SUMMARY+=("skip       fleet  ($(omitted --no-fleet-drill))")
 fi
+[ "$FLEET_DRILL" -eq 0 ] || TIMINGS+=("fleet $((SECONDS - section_start))")
 
 # Validate the declaration/result agreement before teardown decides whether a
 # green round may remove its fixtures. Teardown's own row does not exist yet,
@@ -779,7 +1019,9 @@ done
 # the round whose boxes an operator needs standing to find out why. So it
 # keeps them, like a failure does.
 TEARDOWN_HINT="drill/teardown.sh --roles \"$ROLES\""
-if [ "$KEEP" -eq 1 ]; then
+if [ "$KEEP" -eq 1 ] && [ -n "$LEGS" ]; then
+  SUMMARY+=("keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)")
+elif [ "$KEEP" -eq 1 ]; then
   SUMMARY+=("keep       teardown  (--keep: boxes and sandbox repos RETAINED)")
 elif [ "$overall" -ne 0 ]; then
   SUMMARY+=("kept       teardown  (round not green — boxes LEFT STANDING to inspect)")
@@ -791,8 +1033,10 @@ else
   # --yes because this ran unattended behind three role drills; the operator
   # asked for the round, and a prompt at the end of a two-hour rehearsal is a
   # prompt nobody is sitting in front of. --keep is how they say no.
+  section_start=$SECONDS
   "$HERE/teardown.sh" --roles "$ROLES" --yes
   rc=$?
+  TIMINGS+=("teardown $((SECONDS - section_start))")
   # 2 is teardown's INCOMPLETE: a class it was asked to clear could not be
   # inspected at all, so `ok teardown (boxes and sandbox repos removed)` would
   # be a claim nobody measured. It gets its own row rather than collapsing
@@ -810,6 +1054,9 @@ fi
 echo
 echo "############################################################"
 echo "## fleet rehearsal summary ($AGENT)"
+# Said first, so a summary pasted from the tail can never be read as a round
+# that counts: a fast round proves plumbing and promotes nothing (#776).
+[ "$FAST" -eq 0 ] || echo "## TIER: fast — plumbing only; NOT a promotion reading (drills/README.md: cite the full round, never this one)"
 if [ -n "$RESOLVED_REF" ]; then
   echo "## drilled source: $RESOLVED_REF ($SOURCE_RECORD)"
 fi
@@ -872,6 +1119,27 @@ for summary_row in "${SUMMARY[@]}"; do
 done
 echo "## section states: $summary_passed passed, $summary_failed failed, $summary_skipped skipped/not-run"
 printf '##   %s\n' "${SUMMARY[@]}"
+# Where the round's time went (#776): one line per section that ran, and the
+# whole. The waits inside a section print their own times on their rows.
+fmt_duration() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
+timing_line=""
+for timing in ${TIMINGS[@]+"${TIMINGS[@]}"}; do
+  timing_line="$timing_line${timing_line:+ · }${timing%% *} $(fmt_duration "${timing##* }")"
+done
+parallel_note=""
+[ "$PARALLEL" -eq 0 ] || parallel_note=" (roles in parallel)"
+echo "## wall time: ${timing_line:+$timing_line · }total $(fmt_duration $((SECONDS - ROUND_START)))$parallel_note"
+if [ -n "$ONLY_FAILED_CARRIED" ]; then
+  # A selective re-run is never mistaken for a whole round (#776): every leg
+  # this run did not re-run is listed with the state the earlier log read.
+  echo "## re-run of $ONLY_FAILED: only $LEGS re-ran; every other leg's reading is that log's:"
+  while read -r carried_leg carried_state; do
+    case ",$LEGS," in *",$carried_leg,"*) continue ;; esac
+    echo "##   carried  $carried_leg  ($carried_state in $ONLY_FAILED)"
+  done <<<"$ONLY_FAILED_CARRIED"
+elif [ -n "$LEGS" ]; then
+  echo "## selective run (--legs $LEGS): the legs not selected were not read by this run"
+fi
 echo "############################################################"
 if [ "$KEEP" -eq 1 ] || [ "$overall" -ne 0 ]; then
   # "remain" rather than "were kept": this line also covers a teardown that

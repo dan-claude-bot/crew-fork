@@ -265,12 +265,24 @@ REPOS_REQUESTED=0
 [ "${#REPOS[@]}" -gt 0 ] && REPOS_REQUESTED=1
 
 REPO_OWNER=""
+# gh_login_from TEXT — TEXT as a GitHub login, or nothing and status 1. An
+# identity read is accepted only in a login's own shape: `gh api user --jq
+# .login` that fails prints the error BODY to stdout ({"message":"Bad
+# credentials",…}), and a substitution that kept it read a revoked token as an
+# identity no repo is owned by (#769).
+gh_login_from() {
+  local login
+  login="$(printf '%s' "$1" | tr -d '\r\n')"
+  [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] || return 1
+  printf '%s\n' "$login"
+}
+
 REPO_INSPECT_FAIL=""
 if [ "$REPOS_REQUESTED" -eq 1 ]; then
   if [ "$have_gh" -eq 0 ]; then
     REPO_INSPECT_FAIL="no gh CLI on this host"
   else
-    REPO_OWNER="$(gh api user --jq .login 2>/dev/null | tr -d '\r\n')" || REPO_OWNER=""
+    REPO_OWNER="$(gh_login_from "$(gh api user --jq .login 2>/dev/null)")" || REPO_OWNER=""
     [ -n "$REPO_OWNER" ] ||
       REPO_INSPECT_FAIL="gh has no usable identity here (gh api user failed)"
   fi
@@ -351,8 +363,11 @@ if case " $ROLES " in *" builder "*) true ;; *) false ;; esac \
   elif [ -n "$builder_forks" ]; then
     builder_box_owner=""
     if [ "$have_box" -eq 1 ]; then
-      builder_box_owner="$(box exec crew-drill-builder -- bash -lc 'gh api user --jq .login' 2>/dev/null \
-        | tr -d '\r\n' || true)"
+      # The box's exit status is kept: a failed read is no identity at all,
+      # whatever it printed, and the fork is held back below (#769).
+      builder_box_owner="$(gh_login_from \
+        "$(box exec crew-drill-builder -- bash -lc 'gh api user --jq .login' 2>/dev/null)")" \
+        || builder_box_owner=""
     fi
     if [ -z "$builder_box_owner" ]; then
       BUILDER_FORK_BLOCKED=1

@@ -6641,6 +6641,30 @@ t effective-panel-cache-names-the-head-and-tier 1 "$(grep -c '^h2 high ' "$TMP/.
 t effective-panel-cache-keeps-every-head-it-sized "h1 low|h2 high" "$(cut -d' ' -f1,2 "$TMP/.panel-sized-o_r-7" | paste -sd'|' -)"
 t effective-panel-an-earlier-head-is-still-remembered 'low|["rev-b"]' "$(p761_eff FAIL h1)"
 t effective-panel-a-remembered-head-is-not-appended-again 2 "$(wc -l <"$TMP/.panel-sized-o_r-7" | tr -d ' ')"
+# #778 — the same reads under `set -e`, which is how duty.sh runs them. A
+# cache that exists and holds no line for the head being sized gave `read` an
+# empty stream; its status 1 was the statement's, and `set -e` ended the tick
+# silently. The rows above ran without -e and could not see it; the drill's
+# resume leg found it when it pushed a new head onto a PR already sized.
+p778_eff() { # p778_eff <files-json-lines|FAIL> <head> — "survived <tier>" or nothing
+  (
+    set -e
+    PANEL_RISK_PATHS='^(shared/lib|shared/bin|cli|\.github/workflows)/'
+    PANEL_RISK_MAX_FILES=3 PANEL_RISK_MAX_LINES=80 PANEL_LOW_RISK_SIZE=1
+    fx="$1"
+    if [ "$fx" = FAIL ]; then gh() { return 1; }; else gh() { printf '%s\n' "$fx"; }; fi
+    _panel_effective o/r 7 "$2" '["rev-a","rev-b","rev-c"]'
+    printf 'survived %s' "$_PANEL_RISK_TIER"
+  ) 2>/dev/null
+}
+rm -f "$TMP"/.panel-sized-*
+t effective-panel-first-head-under-set-e 'survived low' "$(p778_eff $'docs/a.md 2' h1)"
+t effective-panel-a-new-head-under-set-e-survives 'survived low' "$(p778_eff $'docs/a.md 3' h2)"
+t effective-panel-a-cached-head-under-set-e-survives 'survived low' "$(p778_eff FAIL h1)"
+# The pattern, nowhere in the engine: a `read` ending a `||` list on a stream
+# that may be empty.
+t effective-panel-no-read-ends-an-or-list 0 \
+  "$(cat "$SHARED"/lib/*.sh "$SHARED"/bin/*.sh | grep -cE '\|\| *read -r[^|]*< *<\(' || true)"
 rm -f "$TMP"/.panel-sized-*
 unset -f p761_risk
 

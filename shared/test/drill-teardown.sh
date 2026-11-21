@@ -50,6 +50,15 @@ case "${1:-}" in
     case " ${STUB_BOXES:-} " in *" $n "*) ;; *) exit 1 ;; esac
     printf '[{"name":"%s","created_at":"2026-07-25T09:00:00Z"}]\n' "$n" ;;
   exec)
+    # STUB_BOX_LOGIN_401 is a box whose token was revoked: gh prints the error
+    # BODY to stdout and exits 1, exactly as the rc1 round's builder did (#769).
+    if [ -n "${STUB_BOX_LOGIN_401:-}" ]; then
+      case "$*" in
+        *"gh api user"*)
+          printf '{\n  "message": "Bad credentials",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "401"\n}\n'
+          exit 1 ;;
+      esac
+    fi
     [ -n "${STUB_BOX_LOGIN:-}" ] || exit 1
     case "$*" in
       *"gh repo delete "*) exit "${STUB_FORK_DELETE_RC:-0}" ;;
@@ -65,6 +74,9 @@ cat >"$STUB/gh" <<'SHIM'
 printf 'gh %s\n' "$*" >>"$STUB_CALLS"
 case "${1:-} ${2:-}" in
   "api user")
+    if [ -n "${STUB_LOGIN_401:-}" ]; then
+      printf '{"message":"Bad credentials","status":"401"}\n'; exit 1
+    fi
     [ -n "${STUB_LOGIN:-}" ] || exit 1
     printf '%s\n' "$STUB_LOGIN" ;;
   "api repos/"*)
@@ -424,6 +436,45 @@ if [ "$RC" -eq 2 ] && says "box identity could not be read" \
   ok "unreadable-fork-owner-preserves-box-and-upstream-for-recovery"
 else
   bad "unreadable-fork-owner-preserves-box-and-upstream-for-recovery (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+
+# #769 — a revoked box token prints its 401 body on stdout and exits 1. That
+# body is no identity: the fork is held back by name and its box and upstream
+# kept, never dropped silently from a plan that then reads as complete.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-builder" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=builder-bot" "STUB_BOX_LOGIN_401=1" \
+    "STUB_FORKS=builder-bot/crew-drill-builder" \
+    "STUB_REPOS=danmt/crew-drill-builder builder-bot/crew-drill-builder" \
+  -- --role builder --yes
+if [ "$RC" -eq 2 ] && says "box identity could not be read" \
+    && ! says "Bad credentials" \
+    && ! called "box rm --force crew-drill-builder" \
+    && ! called "repo delete danmt/crew-drill-builder"; then
+  ok "a-revoked-box-token-is-no-identity-and-preserves-box-and-upstream"
+else
+  bad "a-revoked-box-token-is-no-identity-and-preserves-box-and-upstream (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+# The same read on the dry run: the plan says INCOMPLETE, not a clean list.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-builder" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=builder-bot" "STUB_BOX_LOGIN_401=1" \
+    "STUB_FORKS=builder-bot/crew-drill-builder" \
+    "STUB_REPOS=danmt/crew-drill-builder builder-bot/crew-drill-builder" \
+  -- --role builder
+if [ "$RC" -eq 2 ] && says "box identity could not be read" \
+    && ! called "box rm --force crew-drill-builder"; then
+  ok "a-revoked-box-token-dry-run-is-incomplete"
+else
+  bad "a-revoked-box-token-dry-run-is-incomplete (rc=$RC, got '$OUT')"
+fi
+# And the host's own read: a revoked host token names no sandbox owner.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-builder" \
+    "STUB_LOGIN=danmt" "STUB_LOGIN_401=1" \
+    "STUB_REPOS=danmt/crew-drill-builder" \
+  -- --role builder --yes
+if ! says "Bad credentials/crew-drill" && ! called 'repo delete {"message"'; then
+  ok "a-revoked-host-token-names-no-sandbox-owner"
+else
+  bad "a-revoked-host-token-names-no-sandbox-owner (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
 fi
 
 # GitHub answers the fork-list endpoint with 404 when its base repository is

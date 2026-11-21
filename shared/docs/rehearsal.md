@@ -102,6 +102,42 @@ any of them does not cover that leg's contract.
 | `--no-release-drill` | the triage `release` leg |
 | `--keep` | teardown: boxes and sandboxes are retained deliberately |
 
+### Making a round shorter, and logging it in from the pool (#776, #774)
+
+A full round on a laptop took two hours green and four and a half red, where
+most of the red was ceilings waited out. These flags shorten it without
+changing what a full round proves:
+
+| flag | what it does |
+|---|---|
+| `--parallel` | Runs the three roles at once. Each role writes its own transcript, printed whole and in role order once all have ended, with a heartbeat while they run. Safe on one shared identity: the attention census grades suppression only for demands still standing after the tick. |
+| `--legs a,b,…` | Runs only the named legs. The role sections always run. Every other leg reads `not selected by --legs`, and teardown keeps the boxes. A name that is not a declared leg is refused before anything runs. |
+| `--only-failed <log>` | Runs only the legs that `<log>`'s `## leg …` block read FAIL or INCOMPLETE, and lists every other leg as `carried` with that log's state. A selective run can never be mistaken for a whole round. |
+| `--creds gh:<name>,agent:<name>` | Logs the boxes in from the operator's credential pool (`crew creds`, `shared/docs/host-maintenance.md`). The entries are pushed after the creds-free rows have read each box logged out and before phase 2 decides whether it may run, so one pass proves both halves. Rows check the delivery and the login each box answers as. The pool is never written and no entry is assigned. |
+| `--fast` | The plumbing tier, described below. |
+
+Every round now ends with a `## wall time:` line, per section and total. A
+wait that took a minute or more prints its time on its own row. A wait whose
+upstream row already failed is refused at once as `blocked by: <row>`, instead
+of being polled for its whole budget.
+
+**`--fast` is plumbing only, and is never a promotion reading.** It implies
+`--parallel` and no app pass. A zero-action stub stands in for the agent CLI
+for phase 2, so a tick that dispatches costs nothing and returns at once.
+- **Left out by name:** the `release`, `resume` and `attention` legs, and the
+  sections of each role that read what an agent writes (the triage ruling, the
+  builder's pull request and fix round, the review round). They read `--fast:
+  reads a real agent session's output`.
+- **Still runs:** everything the engine does itself, namely install and phase
+  1, the census and its suppression, notify, attention-audit, hygiene, breaker
+  (its recovery buys the round's one real session), installer, config and
+  fleet.
+- **The summary's first line is `## TIER: fast`.** A record cites the full
+  round, never this one.
+
+Use it on every iteration of a fix, and run the full round once per
+candidate.
+
 ## Phase 0 — acquire the exact tree, then run static checks
 
 ```sh

@@ -843,7 +843,16 @@ _panel_effective() {
   local repo="$1" num="$2" head="$3" panel_json="$4" cache tier why sized
   cache="$DUTY_DIR/.panel-sized-${repo//\//_}-$num"
   tier=""
-  [ -z "$head" ] || [ ! -r "$cache" ] || read -r _ tier why < <(grep -m1 -- "^$head " "$cache" 2>/dev/null; true)
+  # The `|| true` is on the READ, not only on the grep (#778): a cache that
+  # exists and holds no line for THIS head — every head after the first one
+  # sized — gives `read` an empty stream, which is status 1. As the last
+  # command of the `||` list, that status was the statement's, and duty.sh's
+  # `set -e` ended the tick right there, silently, on every tick, until the
+  # pull request closed: the builder box stopped working the moment one of its
+  # PRs took a new commit after its panel was sized.
+  if [ -n "$head" ] && [ -r "$cache" ]; then
+    read -r _ tier why < <(grep -m1 -- "^$head " "$cache" 2>/dev/null) || true
+  fi
   if [ -n "$tier" ]; then
     _PANEL_RISK_TIER="$tier"; _PANEL_RISK_WHY="$why"
   else

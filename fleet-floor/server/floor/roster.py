@@ -172,8 +172,14 @@ def read_roster():
                     continue
                 parts = line.split()
                 if len(parts) >= 3:
+                    # A `creds=<entry>,…` token (#774) is the member's pool
+                    # assignment, wherever it stands after the role; the from
+                    # column is the first other token, as the CLI reads it.
+                    rest = parts[3:]
+                    creds = next((t[len("creds="):] for t in rest if t.startswith("creds=")), "")
+                    frm = next((t for t in rest if not t.startswith("creds=")), "")
                     out.append({"box": parts[0], "agent": parts[1], "room": parts[2],
-                                "from": parts[3] if len(parts) > 3 else ""})
+                                "from": frm, "creds": creds})
     except OSError as e:
         log("cannot read roster: %s" % e)
     return out
@@ -200,6 +206,10 @@ def read_roster():
 # 63 at most. A `from` is `<box>/<snapshot>` or a bare `<box>`.
 RE_BOX = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 RE_FROM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$")
+# A pool assignment (#774): one or two entries, `gh:<name>` and `agent:<name>`.
+# The editor carries it through a save and does not edit it: assigning is the
+# CLI's, where the per-repository gh rule is checked against the pool.
+RE_CREDS = re.compile(r"^(gh|agent):[A-Za-z0-9][A-Za-z0-9._-]{0,63}(,(gh|agent):[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$")
 ROSTER_JOURNAL = os.path.join(CONFIG_DIR, ".roster-journal.log")
 _ROSTER_LOCK = threading.Lock()
 
@@ -272,6 +282,7 @@ def _roster_validate(members, before=None):
             rr = rr.split(",")
         rr = [str(r).strip() for r in (rr or []) if str(r).strip()]
         frm = str(m.get("from", "") or "").strip()
+        creds = str(m.get("creds", "") or "").strip()
         if not RE_BOX.match(box):
             return None, ("box name %r is refused: lowercase letters, digits and hyphens, "
                           "a letter first, 63 at most (incus's own rule)" % box)
@@ -287,7 +298,9 @@ def _roster_validate(members, before=None):
                 return None, "box %s: unknown role %r (profiles: %s)" % (box, r, ", ".join(sorted(roles)) or "none")
         if frm and not RE_FROM.match(frm):
             return None, "box %s: from %r is not <box>/<snapshot>" % (box, frm)
-        clean.append({"box": box, "agent": agent, "room": ",".join(rr), "from": frm})
+        if creds and not RE_CREDS.match(creds):
+            return None, "box %s: credentials %r are not gh:<name>,agent:<name>" % (box, creds)
+        clean.append({"box": box, "agent": agent, "room": ",".join(rr), "from": frm, "creds": creds})
     if not clean:
         return None, ("a roster names at least one member — remove boxes one at a time; "
                       "an empty fleet is a definition to retire by hand")
@@ -319,8 +332,9 @@ def _roster_format(clean):
     """The member lines, aligned."""
     wb = max([len(m["box"]) for m in clean] + [12])
     wa = max([len(m["agent"]) for m in clean] + [6])
-    return {m["box"]: "%-*s %-*s %s%s" % (wb, m["box"], wa, m["agent"], m["room"],
-                                          ("  " + m["from"]) if m["from"] else "")
+    return {m["box"]: "%-*s %-*s %s%s%s" % (wb, m["box"], wa, m["agent"], m["room"],
+                                            ("  " + m["from"]) if m["from"] else "",
+                                            ("  creds=" + m["creds"]) if m.get("creds") else "")
             for m in clean}
 
 

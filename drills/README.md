@@ -549,6 +549,11 @@ Deleting a box does not revoke the GitHub identity it logged into. Identity
 lifecycle is a separate concern from drill fixtures, and teardown does not
 touch it.
 
+A **fast-tier** round (`drill/rehearsal-all.sh --fast`, #776) proves the
+engine's plumbing with a stub agent, and its summary opens with `## TIER: fast`.
+It is evidence for nothing in a promotion gate: a record cites the full round,
+and a reading taken only by a fast round is a reading not taken.
+
 ## What a record should contain
 
 What ran, on what host, the pinned candidate ref, the numbers, and what failed.

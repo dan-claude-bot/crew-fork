@@ -75,6 +75,12 @@ fi
 remote="${remote:--}"
 ref="${ref:--}"
 source_ref="${source_ref:--}"
+# #776: a role may be told to take a while, so a parallel round's roles can
+# end out of order and the collection is seen to run in role order anyway.
+[ -z "${DRILL_CREDS_LOG:-}" ] || printf '%s %s %s\n' "$role" "${REHEARSAL_CREDS:--}" "${CREW_CREDENTIALS_DIR:--}" >>"$DRILL_CREDS_LOG"
+[ -z "${DRILL_FAST_LOG:-}" ] || printf '%s %s\n' "$role" "${REHEARSAL_FAST:-unset}" >>"$DRILL_FAST_LOG"
+role_sleep_var="DRILL_SLEEP_$role"
+[ -z "${!role_sleep_var:-}" ] || sleep "${!role_sleep_var}"
 printf '%s %s %s %s %s\n' "$role" "$remote" "$ref" "$shipped" "$source_ref" \
   >>"$DRILL_ROLE_LOG"
 [ -z "${REHEARSAL_SECTION_STATUS:-}" ] \
@@ -295,10 +301,162 @@ t drill-undeclared-summary-leg-is-visible 1 \
   "$(grep -c '^## leg undeclared breaker  (summary result has no declaration)' \
     <<<"$undeclared_out")"
 
+# --- #776: --parallel, --legs, --only-failed, and the wall-time block --------
+w776_round() {  # extra args… — the orchestrator's transcript, then "rc=N"
+  local out rc=0
+  out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
+    REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --no-config-drill --no-install-drill \
+      --no-app "$@" 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+: >"$ROLE_LOG"
+w776_out="$(DRILL_SLEEP_triage=1.2 DRILL_SLEEP_builder=0.6 w776_round --roles 'triage builder reviewer' --keep --parallel \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w776-parallel-runs-every-role 3 "$(wc -l <"$ROLE_LOG" | tr -d ' ')"
+# They ended reviewer, builder, triage — the stub logs on its way out...
+t w776-parallel-roles-ended-out-of-order "reviewer builder triage" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
+# ...and the transcripts and the summary rows are in ROLE order regardless.
+t w776-parallel-transcripts-in-role-order "triage builder reviewer" \
+  "$(sed -n 's/^## \([a-z]*\) — box crew-drill-.*/\1/p' <<<"$w776_out" | paste -sd' ' -)"
+t w776-parallel-summary-rows-in-role-order "triage builder reviewer" \
+  "$(sed -n 's/^##   ok         \([a-z]*\)  (phase 2 ran)$/\1/p' <<<"$w776_out" | paste -sd' ' -)"
+t w776-parallel-says-so 1 "$(grep -c '^== --parallel: running triage builder reviewer at once' <<<"$w776_out")"
+t w776-parallel-heartbeat-names-who-is-still-running 1 \
+  "$(grep -c '^== --parallel: still running: triage' <<<"$w776_out" | awk '{print ($1 >= 1)}')"
+t w776-parallel-wall-time-line 1 \
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
+t w776-parallel-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
+# Sequential is still the default, and still timed.
+: >"$ROLE_LOG"
+w776_out="$(DRILL_SLEEP_triage=0.6 w776_round --roles 'triage builder' --keep \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w776-sequential-keeps-role-order "triage builder" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
+t w776-sequential-wall-time-line 1 \
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
+
+# --legs: only the named legs run; every other leg says it was not selected.
+: >"$ROLE_LOG"
+w776_out="$(w776_round --roles reviewer --legs hygiene,breaker)"
+t w776-legs-unselected-leg-says-so 1 "$(grep -c '^##   skip       resume  (not selected by --legs)$' <<<"$w776_out")"
+t w776-legs-unselected-fleet-says-so 1 "$(grep -c '^##   skip       fleet  (not selected by --legs)$' <<<"$w776_out")"
+t w776-legs-teardown-is-kept 1 \
+  "$(grep -c '^##   keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)$' <<<"$w776_out")"
+t w776-legs-the-run-is-marked-selective 1 "$(grep -c '^## selective run (--legs hygiene,breaker)' <<<"$w776_out")"
+t w776-legs-a-selected-leg-is-not-skipped 0 "$(grep -c '^##   skip       hygiene' <<<"$w776_out")"
+w776_out="$(w776_round --roles reviewer --legs hygeine)"
+t w776-legs-a-typo-is-refused 1 "$(grep -c "^drill/rehearsal-all.sh: --legs: 'hygeine' is not a declared leg$" <<<"$w776_out")"
+t w776-legs-a-typo-runs-nothing 1 "$(grep -cx 'rc=1' <<<"$w776_out")"
+
+# --only-failed: the red legs of an earlier summary, and the rest carried.
+W776_LOG="$TMP/w776-prev.log"
+cat >"$W776_LOG" <<'PREV'
+## declared leg states:
+## leg executed hygiene  (ok; preservation + refusal)
+## leg executed breaker  (FAIL)
+## leg executed release  (FAIL; the track could not be seeded)
+## leg not-executed notify  (INCOMPLETE; leg skipped: operator channel unreachable: no-credentials — union UNPROVEN)
+## leg not-executed app-armed  (skip; not requested: no --app-roster; requires an armed member)
+## leg not-executed teardown  (kept; round not green — boxes LEFT STANDING to inspect)
+PREV
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
+t w776-only-failed-names-what-it-reruns 1 "$(grep -c "^== --only-failed: re-running breaker,release,notify (read from $W776_LOG)$" <<<"$w776_out")"
+t w776-only-failed-carries-the-green-leg 1 "$(grep -c "^##   carried  hygiene  (ok in $W776_LOG)$" <<<"$w776_out")"
+t w776-only-failed-carries-the-skipped-leg 1 "$(grep -c "^##   carried  app-armed  (skip in $W776_LOG)$" <<<"$w776_out")"
+t w776-only-failed-never-carries-a-rerun-leg 0 "$(grep -cE '^##   carried  (breaker|release|notify) ' <<<"$w776_out")"
+t w776-only-failed-unselected-says-so 1 "$(grep -c '^##   skip       resume  (not selected by --legs)$' <<<"$w776_out")"
+printf '## leg executed hygiene  (ok; x)\n' >"$W776_LOG"
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
+t w776-only-failed-nothing-red-runs-nothing 1 "$(grep -c 'has no FAIL or INCOMPLETE leg — nothing to re-run' <<<"$w776_out")"
+t w776-only-failed-nothing-red-is-rc-0 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
+printf 'just some text\n' >"$W776_LOG"
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
+t w776-only-failed-not-a-summary-is-refused 1 "$(grep -c "carries no '## leg …' block — not a round summary" <<<"$w776_out")"
+w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG" --legs hygiene)"
+t w776-only-failed-and-legs-are-exclusive 1 "$(grep -c -- '--legs and --only-failed are exclusive' <<<"$w776_out")"
+
+# --- #774: --creds hands the round the operator's pool, checked first --------
+W774_POOL="$TMP/w774-pool"
+mkdir -p "$W774_POOL/entries/gh--bot" "$W774_POOL/entries/agent--max"
+printf 'x' >"$W774_POOL/entries/gh--bot/secret"; printf 'x' >"$W774_POOL/entries/agent--max/secret"
+W774_LOG="$TMP/w774-creds.log"
+w774_round() { : >"$W774_LOG"; CREW_CREDENTIALS_DIR="$W774_POOL" DRILL_CREDS_LOG="$W774_LOG" w776_round --roles 'triage builder' --keep \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill "$@"; }
+w774_out="$(w774_round --creds gh:bot,agent:max)"
+t w774-creds-says-the-round-logs-in-from-the-pool 1 \
+  "$(grep -c "^== --creds: the round logs its boxes in from the pool (gh:bot,agent:max, $W774_POOL); no box is logged in by hand$" <<<"$w774_out")"
+t w774-creds-reach-every-role "triage gh:bot,agent:max $W774_POOL|builder gh:bot,agent:max $W774_POOL" "$(paste -sd'|' "$W774_LOG")"
+w774_out="$(w774_round --creds gh:nobody)"
+t w774-a-missing-entry-is-refused-before-any-role 1 "$(grep -c "no pool entry gh:nobody in $W774_POOL" <<<"$w774_out")"
+t w774-a-missing-entry-runs-no-role 0 "$(grep -c . "$W774_LOG")"
+w774_out="$(w774_round --creds gh:bot,gh:other)"
+t w774-two-gh-entries-are-refused 1 "$(grep -c 'one gh and one agent entry at most' <<<"$w774_out")"
+w774_out="$(w774_round --creds 'bot')"
+t w774-a-malformed-entry-is-refused 1 "$(grep -c "'bot' is not gh:<name> or agent:<name>" <<<"$w774_out")"
+w774_out="$(w774_round)"
+t w774-no-creds-hands-the-roles-nothing "triage - -|builder - -" "$(sed "s|$W774_POOL|-|" "$W774_LOG" | paste -sd'|')"
+# The push sits after the creds-free rows and before phase 2 decides.
+t w774-the-push-precedes-the-phase-2-gate 1 \
+  "$(awk '/REHEARSAL_CREDS:-/ && !p {p=NR} /^if \[ "\$GH_AUTHED" -eq 0 \] \|\| ! bx/ {g=NR} END {print (p && g && p < g) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w774-the-push-follows-the-pre-auth-rows 1 \
+  "$(awk '/pre-auth: no sessions spawned/ && !a {a=NR} /REHEARSAL_CREDS:-/ && !p {p=NR} END {print (a && p && a < p) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+
+# --- #776 E: the fast tier ---------------------------------------------------
+W776F_LOG="$TMP/w776-fast.log"; : >"$W776F_LOG"
+: >"$ROLE_LOG"
+w776f_out="$(DRILL_FAST_LOG="$W776F_LOG" DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
+  REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles 'triage builder' \
+  --keep --fast --no-config-drill --no-install-drill --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-attention-audit-drill \
+  --no-fleet-drill 2>&1; echo "rc=$?")"
+t w776f-fast-says-what-it-is 1 "$(grep -c '^== --fast: plumbing only — roles in parallel, a zero-action agent, no app pass; NOT a promotion reading$' <<<"$w776f_out")"
+t w776f-fast-runs-the-roles-in-parallel 1 "$(grep -c '^== --parallel: running triage builder at once' <<<"$w776f_out")"
+t w776f-fast-tells-every-role "triage 1|builder 1" "$(sort -r "$W776F_LOG" | paste -sd'|' -)"
+t w776f-the-summary-is-labelled-not-a-promotion-reading 1 \
+  "$(grep -c '^## TIER: fast — plumbing only; NOT a promotion reading' <<<"$w776f_out")"
+for w776f_leg in release resume attention app browser app-armed; do
+  t "w776f-$w776f_leg-is-left-out-by-name" 1 \
+    "$(grep -cE "^##   skip       $w776f_leg  \(--fast: reads a real agent session's output\)$" <<<"$w776f_out")"
+done
+t w776f-an-operator-flag-keeps-its-own-reason 1 "$(grep -c '^##   skip       fleet  (--no-fleet-drill)$' <<<"$w776f_out")"
+t w776f-a-plumbing-round-can-be-green 1 "$(grep -cx 'rc=0' <<<"$w776f_out")"
+# Without --fast, the roles are told nothing of the kind.
+: >"$W776F_LOG"
+DRILL_FAST_LOG="$W776F_LOG" w776_round --roles triage --keep --no-resume-drill --no-attention-drill \
+  --no-attention-audit-drill --no-release-drill --no-hygiene-drill --no-breaker-drill --no-notify-drill \
+  --no-fleet-drill >/dev/null
+t w776f-a-full-round-is-not-fast "triage 0" "$(cat "$W776F_LOG")"
+# Inside a role: the skip helper, and where the stub sits.
+w776f_skip() {  # w776f_skip <fast> <name> — the helper's row and status
+  (
+    # shellcheck disable=SC2317  # supplied to the extracted helper
+    skip() { echo "skip $1"; }
+    # shellcheck disable=SC2034  # read by the extracted helper
+    REHEARSAL_FAST="$1"
+    eval "$(sed -n '/^rehearsal_fast_skip() {/,/^}/p' "$ROOT/drill/rehearsal.sh")"
+    rehearsal_fast_skip "$2"; echo "rc=$?"
+  )
+}
+t w776f-skip-in-the-fast-tier $'skip x (fast tier: a real agent session\'s output — not read)\nrc=0' "$(w776f_skip 1 x)"
+t w776f-no-skip-in-a-full-round "rc=1" "$(w776f_skip 0 x)"
+for w776f_section in 'attention: the wake' 'triage: a stray' 'builder: a ready issue' 'review: the announce'; do
+  t "w776f-the-section-is-guarded[$w776f_section]" 1 \
+    "$(grep -c "rehearsal_fast_skip \"$w776f_section" "$ROOT/drill/rehearsal.sh")"
+done
+t w776f-the-stub-goes-in-after-notify-and-before-the-wake-tick 1 \
+  "$(awk '/^  rehearsal_notify_drill / {n=NR} /^  rehearsal_fast_install_stub$/ {i=NR} /^  # -- attention wake --$/ {w=NR} END {print (n && i && w && n < i && i < w) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w776f-the-stub-comes-out-before-the-breaker 1 \
+  "$(awk '/^rehearsal_fast_restore_cli \\$/ {r=NR} /^  rehearsal_breaker_drill / {b=NR} END {print (r && b && r < b) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w776f-cleanup-removes-the-stub 1 \
+  "$(sed -n '/^cleanup_all() {/,/^}/p' "$ROOT/drill/rehearsal.sh" | grep -c '^      rehearsal_fast_restore_cli \\$')"
+
 # Not-executed is not a sufficient record by itself: the blocker is the fact
 # that makes an exclusion evidence. Remove one reason and require a red row.
 NO_REASON="$HARNESS/rehearsal-all-no-reason.sh"
-sed 's/SUMMARY+=("skip       browser  (--no-app)")/SUMMARY+=("skip       browser")/' \
+# shellcheck disable=SC2016  # the orchestrator's source text, $ included
+sed 's/SUMMARY+=("skip       browser  ($(omitted --no-app))")/SUMMARY+=("skip       browser")/' \
   "$HARNESS/rehearsal-all.sh" >"$NO_REASON"
 if no_reason_out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
     DRILL_REMOTE="$REMOTE" bash "$NO_REASON" --tree "$SOURCE" --roles reviewer \
@@ -1134,6 +1292,18 @@ phase2_identity_guard triage danmt danmt >/dev/null
 t drill-phase2-triage-equal-identities-pass 0 "$?"
 phase2_identity_guard triage dan-claude-bot danmt >/dev/null
 t drill-phase2-triage-different-identities-pass 0 "$?"
+# #769 — an identity that could not be read is refused, never compared: two
+# empty reads are equal, and triage would otherwise run phase 2 as nobody.
+for phase2_role in triage builder reviewer; do
+  phase2_out="$(phase2_identity_guard "$phase2_role" "" danmt 2>&1)"
+  t "drill-phase2-$phase2_role-unread-box-identity-refused" 1 "$?"
+  t "drill-phase2-$phase2_role-unread-box-identity-named" 1 \
+    "$(grep -cF 'the box gh identity could not be read' <<<"$phase2_out")"
+  phase2_out="$(phase2_identity_guard "$phase2_role" dan-claude-bot "" 2>&1)"
+  t "drill-phase2-$phase2_role-unread-host-identity-refused" 1 "$?"
+  t "drill-phase2-$phase2_role-unread-host-identity-named" 1 \
+    "$(grep -cF 'the host gh identity could not be read' <<<"$phase2_out")"
+done
 unset -f phase2_identity_guard
 
 # --- the attention census: recorded, then asserted, never refused (#714) -----
@@ -1150,6 +1320,8 @@ ATT_SANDBOX="host/crew-drill-builder"
 ATT_MARK="📌 picked up"
 ATT_CENSUS=""
 ATT_CENSUS_PAGE2=""
+# What the endpoint answers AFTER the tick (#776); `same` is "nothing moved".
+ATT_CENSUS_AFTER=same
 ATT_CENSUS_RC=0
 ATT_MARK_CONF="$ATT_MARK"
 ATT_LABEL_CONF="attention"
@@ -1199,6 +1371,10 @@ att_bx() {
         *"labels=$ATT_LABEL_CONF"*) ;;
         *) return 0 ;;
       esac
+      if [ "${ATT_PHASE:-before}" = after ] && [ "$ATT_CENSUS_AFTER" != same ]; then
+        [ -z "$ATT_CENSUS_AFTER" ] || printf '%s\n' "$ATT_CENSUS_AFTER"
+        return 0
+      fi
       [ -z "$ATT_CENSUS" ] || printf '%s\n' "$ATT_CENSUS"
       # ...and a second page that exists on the server and is invisible to a
       # read which does not ask for it, which is how the endpoint behaves and
@@ -1281,6 +1457,8 @@ att_drive() {
   (
     ok()   { echo "ok $1"; }
     fail() { echo "FAIL $1"; }
+    # shellcheck disable=SC2317  # called by the sourced assert half
+    skip() { echo "skip $1"; }
     if [ "${2:-}" = drain ]; then
       bx() { cat >/dev/null 2>&1 || true; att_bx "$1"; }
     else
@@ -1334,6 +1512,31 @@ t drill-attention-census-suppressed-both-green 0 "$(att_fail "$ATT_BOTH")"
 # session row, and a suppressed + no-pickup pair PER recorded demand. A leg
 # that graded the demands as a set would read green here with two rows.
 t drill-attention-census-suppressed-rows 7 "$(att_ok "$ATT_BOTH")"
+# #776 — a recorded demand that left the identity's demands during the tick
+# (another role's fixture, on a parallel round sharing one identity) has no
+# suppressed record a correct engine could hold. Its suppression row is not
+# graded and says why; its pickup row still is.
+ATT_SCOPE_SAVED="$ATT_SCOPE" ATT_LOG_SAVED="$ATT_LOG"
+ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\n')"
+ATT_LOG="$(printf '%s\n' \
+  'WARN attention: outside repos.txt: 1 item(s) in repos this box does not carry, never picked up — heavy-duty/incubator#468(2026-09-10T21:00:00Z) ' \
+  'SESSION START kind=attention key=host/crew-drill-builder#7 timeout=1800s log=/l holder=x sid=1')"
+ATT_CENSUS_AFTER="$(printf 'heavy-duty/incubator 468\n')"
+ATT_LEFT="$(att_drive both)"
+t w776-census-a-demand-that-left-is-not-graded 1 \
+  "$(grep -c "^skip attention census: heavy-duty/incubator#469 seen and suppressed (not graded: it left the identity's demands during the tick)$" <<<"$ATT_LEFT" || true)"
+t w776-census-a-demand-that-left-keeps-its-pickup-row 1 \
+  "$(grep -c '^ok attention census: heavy-duty/incubator#469 drew no pickup$' <<<"$ATT_LEFT" || true)"
+t w776-census-a-demand-that-stayed-is-graded 1 \
+  "$(grep -c '^ok attention census: heavy-duty/incubator#468 seen and suppressed$' <<<"$ATT_LEFT" || true)"
+t w776-census-nothing-red-when-one-left 0 "$(att_fail "$ATT_LEFT")"
+# ...and a demand that STAYED but has no record is still red.
+ATT_CENSUS_AFTER=same
+ATT_STAYED="$(att_drive both)"
+t w776-census-a-standing-unsuppressed-demand-is-still-red 1 \
+  "$(grep -c '^FAIL attention census: heavy-duty/incubator#469 seen and suppressed' <<<"$ATT_STAYED" || true)"
+ATT_SCOPE="$ATT_SCOPE_SAVED" ATT_LOG="$ATT_LOG_SAVED"
+
 # A demand that already carried pickup comments from an earlier life is not a
 # failure: the assertion is a DELTA across the tick, and #469 arrives with 3.
 t drill-attention-census-standing-pickups-are-not-a-pickup 1 \
@@ -2895,7 +3098,7 @@ BRK_STUCK="$(brk_drive)"
 t drill-breaker-unreopenable-fixture-fails-arming 1 \
   "$(grep -c '^FAIL breaker: attention lane fixture armed$' <<<"$BRK_STUCK" || true)"
 t drill-breaker-unreopenable-fixture-names-what-it-read 1 \
-  "$(grep -c '^  read: state=closed labels=attention$' <<<"$BRK_STUCK" || true)"
+  "$(grep -c '^  read: state=closed labels=attention assignees=' <<<"$BRK_STUCK" || true)"
 # The point of failing there: nothing downstream is graded, because there is
 # no armed lane for any of it to be about.
 t drill-breaker-unreopenable-fixture-fires-no-tick 1 "$(brk_v "$BRK_STUCK" TICKS 0)"
@@ -2912,7 +3115,7 @@ BRK_UNLABELLED="$(brk_drive)"
 t drill-breaker-unlabelled-fixture-fails-arming 1 \
   "$(grep -c '^FAIL breaker: attention lane fixture armed$' <<<"$BRK_UNLABELLED" || true)"
 t drill-breaker-unlabelled-fixture-names-what-it-read 1 \
-  "$(grep -c '^  read: state=open labels=$' <<<"$BRK_UNLABELLED" || true)"
+  "$(grep -c '^  read: state=open labels= assignees=' <<<"$BRK_UNLABELLED" || true)"
 t drill-breaker-unlabelled-fixture-fires-no-tick 1 "$(brk_v "$BRK_UNLABELLED" TICKS 0)"
 BRK_LABEL_STICKS=1
 
@@ -3398,6 +3601,191 @@ for w749_fn in rehearsal_builder_left_the_queue rehearsal_attention_flag_cleared
   t "w749-$w749_fn-empty-name-says-so" 1 "$(grep -c 'cannot grade: the label name is empty' <<<"$w749_out")"
 done
 
+# #775 — a jq that cannot compile the predicate is "cannot grade", at once.
+# jq 1.6 refused the old `$label` binding with a compile error (exit 3), which
+# the predicate read as "not yet", so six rows of the rc1 round polled out their
+# budgets. The stub fails only the predicate's call (the one with --arg), so the
+# label-set read before it still runs on the real jq.
+w775_grade() {  # w775_grade <jq-exit> — "rc=N", then the predicate's stderr
+  (
+    W775_RC="$1"
+    # shellcheck disable=SC2317
+    gh() { printf '{"labels":[{"name":"claimed"}]}\n'; }
+    # shellcheck disable=SC2317
+    jq() {
+      case " $* " in
+        *" --arg "*) echo "jq: error: syntax error, unexpected label" >&2
+                     echo "jq: 1 compile error" >&2; return "$W775_RC" ;;
+      esac
+      command jq "$@"
+    }
+    # shellcheck disable=SC2317
+    bx() { return 1; }
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
+    err="$(rehearsal_issue_lacks_label owner/repo 1 attention 2>&1 >/dev/null)"; rc=$?
+    echo "rc=$rc"; printf '%s\n' "$err"
+  ) </dev/null
+}
+w775_out="$(w775_grade 3)"
+t w775-jq-compile-error-is-cannot-grade 1 "$(grep -cx 'rc=2' <<<"$w775_out")"
+t w775-jq-compile-error-names-jq-and-its-exit 1 \
+  "$(grep -c 'cannot grade: jq failed (exit 3): jq: error: syntax error, unexpected label jq: 1 compile error' <<<"$w775_out")"
+t w775-jq-compile-error-still-prints-the-label-set 1 \
+  "$(grep -cx 'labels on owner/repo#1: \[claimed\]' <<<"$w775_out")"
+t w775-jq-false-is-still-not-yet 1 "$(grep -cx 'rc=1' <<<"$(w775_grade 1)")"
+# And through the real wait_for: refused on the first poll, never a timeout.
+: >"$W749_COUNT"
+# shellcheck disable=SC2317
+w775_counted() { echo x >>"$W749_COUNT"; w775_grade 3 | sed 1d >&2; return 2; }
+w775_out="$(w749_run 30 row w775_counted)"
+t w775-wait-for-refuses-on-the-first-poll 1 "$(wc -l <"$W749_COUNT" | tr -d ' ')"
+t w775-wait-for-row-is-cannot-grade-not-timeout 0 "$(grep -c timeout <<<"$w775_out")"
+# No jq keyword is bound as a variable anywhere in the tree. jq 1.7 accepts
+# that, and jq 1.6, which Debian 12 and Ubuntu 22.04 still ship, refuses it.
+# The census reads the engine and the drill alike.
+w775_kw='__loc__|and|as|catch|def|elif|else|end|foreach|if|import|include|label|not|or|reduce|then|try'
+w775_hits="$(cd "$ROOT" || exit; grep -rnE -- "--(arg|argjson|slurpfile|rawfile) +($w775_kw) " \
+  drill shared/lib shared/bin shared/install.sh cli fleet-floor install.sh 2>/dev/null)"
+t w775-no-jq-keyword-is-bound-as-a-variable "" "$w775_hits"
+# shellcheck disable=SC2016  # the pattern matches a literal jq `$`
+w775_hits="$(cd "$ROOT" || exit; grep -rnE -- 'as +\\?\$('"$w775_kw"')\b' \
+  drill shared/lib shared/bin cli fleet-floor 2>/dev/null)"
+t w775-no-jq-keyword-is-a-destructured-name "" "$w775_hits"
+
+# #775 — the host token's scopes, read before any role.
+w775_gap() {  # w775_gap <headers> <scope>
+  (
+    eval "$(sed -n '/^host_token_scope_gap() {/,/^}/p' "$ROOT/drill/rehearsal-all.sh")"
+    host_token_scope_gap "$1" "$2"
+  )
+}
+w775_h=$'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: admin:org, admin:public_key, delete_repo, gist, repo, write:packages\r\n'
+t w775-missing-workflow-is-named-with-its-remedy \
+  'host token lacks the workflow scope (gh auth refresh -h github.com -s workflow)' "$(w775_gap "$w775_h" workflow)"
+t w775-present-scope-says-nothing "" "$(w775_gap "$w775_h" delete_repo)"
+t w775-last-scope-in-the-list-counts "" "$(w775_gap "$w775_h" write:packages)"
+t w775-a-scope-prefix-is-not-the-scope 'host token lacks the admin scope (gh auth refresh -h github.com -s admin)' \
+  "$(w775_gap "$w775_h" admin)"
+t w775-fine-grained-token-says-nothing "" "$(w775_gap $'HTTP/2.0 200 OK\r\nX-Github-Media-Type: github.v3\r\n' workflow)"
+t w775-no-headers-says-nothing "" "$(w775_gap '' workflow)"
+# shellcheck disable=SC2016  # the source text, $ included
+t w775-the-refusal-reaches-the-release-leg 1 \
+  "$(grep -c 'REHEARSAL_RELEASE_REFUSED="$REHEARSAL_RELEASE_REFUSED"' "$ROOT/drill/rehearsal-all.sh")"
+# shellcheck disable=SC2016  # the source text, $ included
+t w775-the-release-leg-skips-on-it-never-fails 1 \
+  "$(grep -c 'rehearsal_release_verdict skip "$REHEARSAL_RELEASE_REFUSED"' "$ROOT/drill/rehearsal-release.sh")"
+
+# #769 — an identity read is accepted only in a login's own shape.
+w769_login() {
+  (
+    # shellcheck disable=SC2317  # the sourced file's reads go through bx
+    bx() { return 1; }
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
+    gh_login_from "$1"; echo "rc=$?"
+  )
+}
+t w769-a-login-passes $'dan-claude-bot\nrc=0' "$(w769_login $'dan-claude-bot\r\n')"
+t w769-a-401-body-is-no-login "rc=1" "$(w769_login $'{\n  "message": "Bad credentials",\n  "status": "401"\n}')"
+t w769-empty-is-no-login "rc=1" "$(w769_login '')"
+t w769-a-leading-hyphen-is-no-login "rc=1" "$(w769_login '-x')"
+t w769-login-noise-is-no-login "rc=1" "$(w769_login 'Welcome to the box dan-claude-bot')"
+t w769-the-teardown-and-fixtures-copies-agree "" \
+  "$(diff <(sed -n '/^gh_login_from() {/,/^}/p' "$ROOT/drill/teardown.sh") \
+          <(sed -n '/^gh_login_from() {/,/^}/p' "$ROOT/drill/rehearsal-fixtures.sh"))"
+t w769-no-identity-read-keeps-a-failed-body 0 \
+  "$(cat "$ROOT"/drill/*.sh | grep -cE 'gh api user --jq \.login.*(\|\| *true|\|\| *echo)')"
+
+# #776 — fail fast: a wait whose upstream row failed is refused at once.
+w776_run() {  # w776_run <failed-row> <upstream> <budget> <name> <cmd...>
+  (
+    # shellcheck disable=SC2317  # supplied to the extracted functions
+    ok()   { echo "ok   $1"; }
+    # shellcheck disable=SC2317,SC2030,SC2031  # FAILS is this subshell's own
+    fail() { echo "FAIL $1"; FAILS+=("$1"); }
+    # shellcheck disable=SC2034  # read by the extracted wait_for
+    WAIT_FOR_INTERVAL=0
+    FAILS=()
+    [ -z "$1" ] || FAILS+=("$1")
+    shift
+    eval "$(sed -n '/^wait_for_duration() {/p; /^wait_for() {/,/^}/p; /^row_failed() {/,/^}/p; /^wait_for_after() {/,/^}/p' "$ROOT/drill/rehearsal.sh")"
+    wait_for_after "$@"; echo "rc=$?"
+  ) </dev/null
+}
+: >"$W749_COUNT"
+w776_out="$(w776_run 'review: verdict pinned to head (timeout 1200s; last observed: nothing)' \
+  'review: verdict pinned to head' 1200 'downstream row' w749_counted 1)"
+t w776-a-blocked-wait-is-refused-at-once 1 \
+  "$(grep -cx 'FAIL downstream row (blocked by: review: verdict pinned to head)' <<<"$w776_out")"
+t w776-a-blocked-wait-never-polls 0 "$(wc -l <"$W749_COUNT" | tr -d ' ')"
+t w776-a-blocked-wait-is-rc-2 1 "$(grep -cx 'rc=2' <<<"$w776_out")"
+w776_out="$(w776_run 'some other row' 'review: verdict pinned to head' 1 'downstream row' w749_say 0 '')"
+t w776-an-unblocked-wait-runs 1 "$(grep -cx 'ok   downstream row' <<<"$w776_out")"
+w776_out="$(w776_run '' 'review: verdict pinned to head' 1 'downstream row' w749_say 0 '')"
+t w776-no-failure-at-all-runs 1 "$(grep -cx 'ok   downstream row' <<<"$w776_out")"
+# A name that only shares a PREFIX is not the upstream row.
+w776_out="$(w776_run 'review: verdict pinned to head of something else' 'review: verdict pinned to head' 1 'downstream row' w749_say 0 '')"
+t w776-a-prefix-is-not-the-row 1 "$(grep -cx 'ok   downstream row' <<<"$w776_out")"
+t w776-the-duration-format "3m07s" \
+  "$(eval "$(sed -n '/^wait_for_duration() {/p' "$ROOT/drill/rehearsal.sh")"; wait_for_duration 187)"
+# The dependent rows that are wired: each names its upstream.
+for w776_pair in \
+    'attention: 📌 pickup comment|attention: label removed (ack re-arms)' \
+    'review: 🔎 announce at head|review: verdict pinned to head' \
+    'review: verdict pinned to head|re-request rule: auto off queues a real re-review' \
+    'review: verdict pinned to head|re-request: auto-approved (supersede)' \
+    'builder: host changes-requested review submitted|builder: changes-requested round returns PR to draft'; do
+  w776_up="${w776_pair%%|*}" w776_down="${w776_pair#*|}"
+  w776_flat="$(tr -d '\\\n' <"$ROOT/drill/rehearsal.sh")"
+  w776_wired=0
+  while [[ "$w776_flat" == *"_after \"$w776_up\""* ]]; do
+    w776_flat="${w776_flat#*_after \""$w776_up"\"}"
+    [[ "${w776_flat:0:160}" != *"\"$w776_down\""* ]] || { w776_wired=1; break; }
+  done
+  t "w776-wired-${w776_down// /-}" 1 "$w776_wired"
+done
+
+# #779 — the breaker's fixture is armed only while it is a DEMAND: open,
+# labelled, and assigned to the identity. Arming assigns it again.
+W779_DIR="$TMP/w779"; mkdir -p "$W779_DIR"
+w779_arm() {  # w779_arm <assignees-after-arm: "" or a login> <identity> — rc, the reading, then gh's writes
+  (
+    W779_AFTER="$1"
+    : >"$W779_DIR/writes"
+    # shellcheck disable=SC2317  # the stub the sourced file calls
+    gh() {
+      case "$*" in
+        *"-X POST"*) printf '%s\n' "$*" >>"$W779_DIR/writes" ;;
+        *"-X PATCH"*) : ;;
+        *)
+          if [ -n "$W779_AFTER" ]; then
+            printf '{"state":"open","labels":[{"name":"attention"}],"assignees":[{"login":"%s"}]}\n' "$W779_AFTER"
+          else
+            printf '{"state":"open","labels":[{"name":"attention"}],"assignees":[]}\n'
+          fi ;;
+      esac
+    }
+    # shellcheck source=drill/rehearsal-breaker.sh
+    . "$ROOT/drill/rehearsal-breaker.sh"
+    rehearsal_breaker_arm_fixture o/r 7 attention "$2"; echo "rc=$?"
+    echo "read: $REHEARSAL_BREAKER_ARM_READING"
+    cat "$W779_DIR/writes"
+  ) </dev/null 2>/dev/null
+}
+w779_out="$(w779_arm dan-claude-bot dan-claude-bot)"
+t w779-an-assigned-fixture-is-armed 1 "$(grep -cx 'rc=0' <<<"$w779_out")"
+t w779-arming-assigns-the-identity 1 "$(grep -c 'repos/o/r/issues/7/assignees -f assignees\[\]=dan-claude-bot' <<<"$w779_out")"
+w779_out="$(w779_arm '' dan-claude-bot)"
+t w779-an-unassigned-fixture-is-not-armed 1 "$(grep -cx 'rc=1' <<<"$w779_out")"
+t w779-the-reading-names-the-missing-assignee 1 "$(grep -cx 'read: state=open labels=attention assignees=' <<<"$w779_out")"
+w779_out="$(w779_arm someone-else dan-claude-bot)"
+t w779-another-assignee-is-not-armed 1 "$(grep -cx 'rc=1' <<<"$w779_out")"
+# Without an identity the check is the old one: state and label.
+w779_out="$(w779_arm '' '')"
+t w779-no-identity-is-state-and-label 1 "$(grep -cx 'rc=0' <<<"$w779_out")"
+t w779-no-identity-assigns-nobody 0 "$(grep -c assignees <<<"$(sed 1,2d <<<"$w779_out")")"
+
 # #750 — the budget is the box's, read the way the engine reads it.
 w750_budget() {  # w750_budget <bx-stdout> <bx-rc> <kind> — "rc=N value=V"
   (
@@ -3444,7 +3832,8 @@ t w750-unreadable-budget-rc 1 "$(w750_lane '' | grep -cx 'rc=2')"
 t w750-readable-budget-grades-the-row 1 "$(w750_lane 1 | grep -cx 'ok   row')"
 # The two rows name the lane and carry no literal, so a literal cannot drift back.
 t w750-attention-row-grades-on-the-lane 1 \
-  "$(grep -c 'wait_for_lane ATTENTION "attention: label removed (ack re-arms)"' "$ROOT/drill/rehearsal.sh")"
+  "$(grep -cE '(wait_for_lane|^ +) ATTENTION "attention: label removed \(ack re-arms\)"' "$ROOT/drill/rehearsal.sh" \
+     | awk '{print ($1 == 1)}')"
 t w750-builder-row-grades-on-the-lane 1 \
   "$(grep -c 'wait_for_lane BUILD "builder: issue moved off ready (claimed)"' "$ROOT/drill/rehearsal.sh")"
 t w750-neither-row-carries-a-literal 0 \
@@ -3698,6 +4087,199 @@ t fleet-verdict-fold-prefers-skip-over-ok skip \
   "$(fleet_worst_verdict 'ok a
 skip b' | awk '{print $1}')"
 t fleet-verdict-fold-of-nothing-is-empty '' "$(fleet_worst_verdict '')"
+
+# --- #770 / #771: the leg itself, against a stub `box` and a stub `crew` ------
+# The classifiers above are pure; these rows drive drill/rehearsal-fleet.sh end
+# to end, so the hold's grading, the cleanup's kill, the `--all` pin and the
+# per-box return are read from the leg's own transcript.
+FL_DIR="$TMP/fleet770"
+FL_STATE="$FL_DIR/state"
+FL_BIN="$FL_DIR/bin"
+mkdir -p "$FL_STATE" "$FL_BIN"
+cat >"$FL_BIN/box" <<'BOX'
+#!/usr/bin/env bash
+# State is one file per fact: held-<box>, stopped-<box>. Every call is logged.
+S="$FL_STATE"
+printf 'box %s\n' "$*" >>"$S/calls"
+case "${1:-}" in
+  exec)
+    n="$2"; script="${*: -1}"
+    case "$script" in
+      *"setsid flock"*)
+        : >"$S/held-$n"
+        exit "${FL_HOLD_RC:-0}" ;;
+      *"echo free; else echo held"*)
+        [ -z "${FL_PROBE_SILENT:-}" ] || exit 1
+        if [ -e "$S/held-$n" ]; then echo held; else echo free; fi ;;
+      *"sleep 20; "*)
+        # The timed release armed before `down`: recorded, and left to `down`,
+        # which releases the lock once it has waited (below).
+        printf 'timer %s\n' "$n" >>"$S/calls" ;;
+      *kill*)
+        printf 'killed %s\n' "$n" >>"$S/calls"
+        rm -f "$S/held-$n" ;;
+      true)
+        [ ! -e "$S/stopped-$n" ] ;;
+      *) echo 0 ;;
+    esac ;;
+  info)
+    if [ -e "$S/stopped-$2" ]; then st=Stopped; else st=Running; fi
+    printf '[{"name":"%s","status":"%s"}]\n' "$2" "$st" ;;
+  start) rm -f "$S/stopped-$2" ;;
+  down) : >"$S/stopped-$2" ;;
+  *) exit 0 ;;
+esac
+BOX
+cat >"$FL_BIN/crew" <<'CREW'
+#!/usr/bin/env bash
+S="$FL_STATE"
+printf 'crew %s\n' "$*" >>"$S/calls"
+names() { awk '!/^[[:space:]]*(#|$)/ {print $1}' "$CREW_CONFIG_DIR/fleet.roster"; }
+case "${1:-} ${2:-}" in
+  "init "*) mkdir -p "$2" ;;
+  "profiles "*) : ;;
+  "restart --all")
+    r=0 k=0
+    for n in $(names); do
+      if [ -e "$S/stopped-$n" ]; then
+        echo "  $n: stopped — left to the host tick, which starts it when there is work"
+      elif [ -e "$S/held-$n" ]; then
+        echo "  $n: SKIPPED busy — duty lock held for 12s"; k=$((k + 1))
+      else
+        echo "  $n: restarted; /tmp filesystem free 100 → 200 KiB (delta +100 KiB)"; r=$((r + 1))
+      fi
+    done
+    echo; echo "restart: $r restarted, $k skipped-busy, 0 failed" ;;
+  "restart "*)
+    n="$2"
+    if [ -n "${FL_NAMED_RESTART_FAILS:-}" ]; then echo "  restart FAILED on $n"; exit 1; fi
+    if [ -e "$S/stopped-$n" ]; then
+      echo "  $n: already stopped; starting"
+      rm -f "$S/stopped-$n"
+      echo "  $n: started from stopped; /tmp filesystem free 200 KiB"
+    else
+      echo "  $n: restarted; /tmp filesystem free 100 → 200 KiB (delta +100 KiB)"
+    fi
+    echo; echo "restart: 1 restarted, 0 skipped-busy, 0 failed" ;;
+  "down "*)
+    st=0 w=0
+    for n in $(names); do
+      if [ -e "$S/held-$n" ]; then
+        echo "  $n: waiting for duty lock held 25s; …"; w=$((w + 1))
+        grep -qx "timer $n" "$S/calls" && rm -f "$S/held-$n"
+      fi
+      : >"$S/stopped-$n"; echo "  $n: stopped"; st=$((st + 1))
+    done
+    echo; echo "down: $st stopped, $w waited, 0 absent, 0 failed" ;;
+  "reset --cut")
+    c=0
+    for n in $(names); do echo "  $n: armed cut at crew@0.1.4; root filesystem 40% used"; c=$((c + 1)); done
+    echo; echo "reset --cut: $c cut, 0 skipped-busy, 0 failed" ;;
+  "reset "*) echo "  $2: restored to armed and started"; echo; echo "reset: 1 restored, 0 skipped-busy, 0 failed" ;;
+  "status "*) echo "integrity: current (crew@0.1.4)" ;;
+  "upgrade "*)
+    echo "== upgrading $2"
+    if [ "$2" != --all ] && [ -e "$S/stopped-$2" ]; then
+      echo "  $2: stopped — woken for the upgrade, and put back to sleep after it"
+      [ -n "${FL_UPGRADE_LEAVES_UP:-}" ] && rm -f "$S/stopped-$2" \
+        || echo "  $2: back to sleep (stopped, as it was before the upgrade)"
+    fi ;;
+esac
+exit 0
+CREW
+chmod +x "$FL_BIN/box" "$FL_BIN/crew"
+fl_run() {  # env assignments... — the leg's transcript, then "rc=N"
+  rm -f "$FL_STATE"/held-* "$FL_STATE"/stopped-*
+  : >"$FL_STATE/calls"
+  (
+    # shellcheck disable=SC2030,SC2031  # the stub PATH is this subshell's alone
+    export FL_STATE PATH="$FL_BIN:$PATH" REHEARSAL_FLEET_CREW="$FL_BIN/crew"
+    export FLEET_AGENT_WAIT_S=0 FLEET_AGENT_POLL_S=0 FLEET_HOLD_POLL_S=0
+    unset CREW_CONFIG_DIR
+    for kv in "$@"; do export "${kv?}"; done
+    bash "$ROOT/drill/rehearsal-fleet.sh" \
+      --boxes "crew-drill-triage crew-drill-builder crew-drill-reviewer" \
+      --roles "triage builder reviewer" 2>&1
+    echo "rc=$?"
+  ) </dev/null
+}
+
+# #770 — the holder's call exits non-zero, the lock is held: the probe decides.
+fl_out="$(fl_run FL_HOLD_RC=255)"
+t fl770-a-misreporting-holder-call-is-graded-by-the-probe 1 \
+  "$(grep -cF "ok   a box is held busy by a live duty lock (crew-drill-builder; the holder's call returned 255, the probe reads the lock held)" <<<"$fl_out")"
+t fl770-the-busy-skip-is-read 1 "$(grep -cx 'ok   restart --all SKIPS a busy box (crew-drill-builder)' <<<"$fl_out")"
+t fl770-the-busy-wait-is-read 1 "$(grep -cx 'ok   down WAITS for a busy box (crew-drill-builder)' <<<"$fl_out")"
+# Mutation: the leg as it was graded the CALL. Restored, the same stub reds it.
+FL_MUT="$FL_DIR/rehearsal-fleet-mutant.sh"
+# shellcheck disable=SC2016  # the leg's source text, $ included
+sed 's/^  if \[ "\$hold_reading" = held \]; then$/  if [ "$hold_rc" -eq 0 ] \&\& [ "$hold_reading" = held ]; then/' \
+  "$ROOT/drill/rehearsal-fleet.sh" >"$FL_MUT"
+# shellcheck disable=SC2016  # the leg's source text, $ included
+t fl770-the-mutation-applies 1 "$(grep -c 'hold_rc" -eq 0 \] && \[ "\$hold_reading" = held' "$FL_MUT")"
+cp "$ROOT/drill/fleet-lifecycle.sh" "$FL_DIR/"
+mkdir -p "$FL_DIR/drill"
+cp "$FL_MUT" "$FL_DIR/drill/rehearsal-fleet.sh"
+cp "$ROOT/drill/fleet-lifecycle.sh" "$FL_DIR/drill/"
+# shellcheck disable=SC2031  # the stub PATH is this substitution's alone
+fl_mut_out="$(rm -f "$FL_STATE"/held-* "$FL_STATE"/stopped-*; : >"$FL_STATE/calls"
+  FL_STATE="$FL_STATE" PATH="$FL_BIN:$PATH" REHEARSAL_FLEET_CREW="$FL_BIN/crew" \
+  FLEET_AGENT_WAIT_S=0 FLEET_AGENT_POLL_S=0 FLEET_HOLD_POLL_S=0 FL_HOLD_RC=255 \
+  bash "$FL_DIR/drill/rehearsal-fleet.sh" --boxes "crew-drill-triage crew-drill-builder crew-drill-reviewer" \
+    --roles "triage builder reviewer" 2>&1 </dev/null)"
+t fl770-the-mutant-reds-the-hold 1 "$(grep -c '^FAIL a box is held busy' <<<"$fl_mut_out")"
+# ...and even graded failed, the holder it started is killed on the way out.
+t fl770-a-misgraded-hold-is-still-killed-in-cleanup 1 "$(grep -cx 'killed crew-drill-builder' "$FL_STATE/calls")"
+
+# A probe that answers nothing is `unreadable`, named on the FAIL row.
+fl_out="$(fl_run FL_PROBE_SILENT=1)"
+t fl770-an-unreadable-probe-is-a-named-fail 1 \
+  "$(grep -c '^FAIL a box is held busy by a live duty lock  — could not take the duty lock on crew-drill-builder (probe: unreadable; holder rc 0)' <<<"$fl_out")"
+t fl770-an-unreadable-hold-is-killed-in-cleanup 1 "$(grep -cx 'killed crew-drill-builder' "$FL_STATE/calls")"
+
+# #771 — after down, `restart --all` leaves every member to the host tick, and
+# the leg returns each box by name, reading each one back.
+fl_out="$(fl_run)"
+t fl771-the-all-meaning-is-pinned 1 \
+  "$(grep -cx 'ok   restart --all after down leaves every stopped member to the host tick and starts none (3/3)' <<<"$fl_out")"
+t fl771-every-box-came-back 1 "$(grep -cx 'ok   every box the round downed came back (3/3)' <<<"$fl_out")"
+t fl771-the-return-is-one-named-restart-per-box 3 "$(grep -cE '^crew restart crew-drill-(triage|builder|reviewer)$' "$FL_STATE/calls")"
+t fl771-the-cut-reads-standing-boxes 1 \
+  "$(grep -cx 'ok   reset --cut --all names an outcome for every roster member' <<<"$fl_out")"
+t fl771-the-canary-reads-current 1 \
+  "$(grep -cx "ok   the canary's per-box integrity line reads current before the rest of the roster" <<<"$fl_out")"
+# The stub keeps no boot-check.log, so the restore's boot-gate row is the one
+# FAIL a stubbed leg is allowed; every other row of the leg is green.
+t fl771-no-other-row-is-red "" \
+  "$(grep '^FAIL' <<<"$fl_out" | grep -v "boot gate passes on its first tick after the restore" || true)"
+t fl770-the-timed-release-is-armed-for-the-busy-box 1 "$(grep -cx 'timer crew-drill-builder' "$FL_STATE/calls")"
+# #772 — the canary is upgraded asleep and must come back asleep; then the leg
+# starts it to read its integrity.
+t fl772-the-sleeping-canary-row-is-green 1 \
+  "$(grep -cx 'ok   an upgrade of a sleeping member wakes it and puts it back to sleep (crew-drill-triage)' <<<"$fl_out")"
+t fl772-the-canary-is-started-again-for-its-integrity 1 "$(grep -cx 'box start crew-drill-triage' "$FL_STATE/calls")"
+fl_out="$(fl_run FL_UPGRADE_LEAVES_UP=1)"
+t fl772-an-upgrade-that-leaves-the-box-up-is-red 1 \
+  "$(grep -c '^FAIL an upgrade of a sleeping member wakes it and puts it back to sleep' <<<"$fl_out")"
+
+# A return that did not happen: cleanup starts what the leg left stopped.
+fl_out="$(fl_run FL_NAMED_RESTART_FAILS=1)"
+t fl771-a-failed-return-is-a-fail-row 1 "$(grep -c '^FAIL every box the round downed came back' <<<"$fl_out")"
+t fl771-cleanup-starts-every-box-left-stopped 3 "$(grep -cE '^box start crew-drill-' "$FL_STATE/calls")"
+# Two, not three: the canary step (#772) starts the canary itself to read its
+# integrity, so cleanup finds the other two still stopped.
+t fl771-cleanup-says-so 2 "$(grep -c '^teardown: started crew-drill-.*, which this leg left stopped' <<<"$fl_out")"
+t fl771-no-box-is-left-stopped "" "$(find "$FL_STATE" -name 'stopped-*')"
+
+# #771 — a reused box that is stopped is started and waited for before phase 0,
+# inside the --reuse branch and nowhere else (a fresh round mints its box).
+# shellcheck disable=SC2016  # the source text, $ included
+fl771_reuse="$(sed -n '/^  echo "== REUSE: \$REUSE_NOTE"$/,/^BOX_TOUCHED=1$/p' "$ROOT/drill/rehearsal.sh")"
+# shellcheck disable=SC2016  # the source text, $ included
+t fl771-reuse-starts-a-stopped-box 1 "$(grep -c 'box start "\$BOX_NAME"' <<<"$fl771_reuse")"
+t fl771-reuse-waits-for-the-agent-bounded 1 "$(grep -c 'REHEARSAL_BOX_ANSWER_S:-180' <<<"$fl771_reuse" | awk '{print ($1 > 0)}')"
+# shellcheck disable=SC2016  # the source text, $ included
+t fl771-reuse-reads-the-state-first 1 "$(grep -c '"\$reuse_state" = stopped' <<<"$fl771_reuse")"
 
 # --- #656: the leg's row in the round's record ------------------------------
 # Case 5: a leg that returns early out of a block must report `not-executed`,

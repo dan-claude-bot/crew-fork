@@ -21,7 +21,7 @@
 # cannot fold into one row.
 
 # fleet_restart_outcome NAME — `crew restart` output on stdin.
-#   cycled · skipped-busy · failed · unknown
+#   cycled · skipped-busy · left-to-tick · left-paused · failed · unknown
 #
 # Precedence is worst-first and it is load-bearing: a box that announces
 # `already stopped; starting` and then fails inside cycle_box has two lines,
@@ -45,9 +45,34 @@ fleet_restart_outcome() { # NAME
       # `crew restart` is documented to handle.
       *": restarted; "*|*": started from stopped; "*)
         [ "$outcome" = unknown ] && outcome=cycled ;;
+      # #759's `--all` meaning: a stopped member stays stopped, and the host
+      # tick starts it when there is work. Named as its own outcome so a leg
+      # can pin that contract instead of reading it as "never named" (#771).
+      *": stopped — left to the host tick"*)
+        [ "$outcome" = unknown ] && outcome=left-to-tick ;;
+      *": paused — left alone")
+        [ "$outcome" = unknown ] && outcome=left-paused ;;
     esac
   done
   printf '%s\n' "$outcome"
+}
+
+# fleet_lock_reading TEXT — the busy box's lock probe, as the probe printed it.
+#   held · free · unreadable
+#
+# The hold is graded by THIS reading and never by the exit status of the call
+# that started the holder: on the rc1 round that call returned non-zero while
+# the lock it started was held for the full 900 s, and the leg called the
+# busy readings unproved while `crew down` waited out the whole hold (#770).
+# The probe prints one word; anything else — an empty answer from a box that
+# did not respond, login-shell noise in place of the word — is `unreadable`.
+fleet_lock_reading() { # TEXT
+  local word
+  word="$(printf '%s\n' "$1" | tr -d '\r' | sed '/^[[:space:]]*$/d' | tail -1)"
+  case "$word" in
+    held|free) printf '%s\n' "$word" ;;
+    *) printf 'unreadable\n' ;;
+  esac
 }
 
 # fleet_down_outcome NAME — `crew down` output on stdin.

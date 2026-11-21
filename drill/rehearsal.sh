@@ -166,6 +166,7 @@ check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else
 # the transcript alone: the two label rows print the label set they read.
 # The interval is a variable so the suite can drive the loop without sleeping.
 WAIT_FOR_INTERVAL="${WAIT_FOR_INTERVAL:-10}"
+wait_for_duration() { printf '%dm%02ds' $(($1 / 60)) $(($1 % 60)); }
 wait_for() {
   local t="$1" name="$2"; shift 2
   local end=$((SECONDS + t)) rc=1 seen=""
@@ -173,7 +174,16 @@ wait_for() {
     seen="$("$@" 2>&1 >/dev/null)"; rc=$?
     seen="${seen//$'\n'/ | }"
     case "$rc" in
-      0) ok "$name"; return 0 ;;
+      0)
+        # A row that waited a minute or more says how long (#776): the waits
+        # are where a round's wall time goes, and the transcript is the only
+        # place a later cut of them can be measured from.
+        if [ $((SECONDS + t - end)) -ge 60 ]; then
+          ok "$name (after $(wait_for_duration $((SECONDS + t - end))))"
+        else
+          ok "$name"
+        fi
+        return 0 ;;
       2) fail "$name (cannot grade: ${seen:-the predicate refused to grade})"; return 2 ;;
     esac
     sleep "$WAIT_FOR_INTERVAL"
@@ -197,6 +207,68 @@ wait_for_lane() {
     return 2
   fi
   wait_for "$budget" "$name" "$@"
+}
+# row_failed NAME — whether a row of this run already FAILED under NAME, with
+# or without the parenthesised reason wait_for appends.
+row_failed() {
+  local f
+  for f in ${FAILS[@]+"${FAILS[@]}"}; do
+    case "$f" in "$1"|"$1 ("*) return 0 ;; esac
+  done
+  return 1
+}
+# wait_for_after <upstream row> <seconds> <name> <cmd...> — fail fast (#776).
+# A wait whose upstream row already failed is refused at once as `blocked by`,
+# never polled out: on a round where the agent never acted, every downstream
+# wait spent its whole budget proving the same absence again (the rc1 round's
+# pass 2 spent about 3.5 h that way). Blocked is a FAIL — it is a reading not
+# taken, never a pass — and it names the row that blocked it.
+wait_for_after() {
+  local upstream="$1"; shift
+  if row_failed "$upstream"; then
+    fail "$2 (blocked by: $upstream)"
+    return 2
+  fi
+  wait_for "$@"
+}
+wait_for_lane_after() {
+  local upstream="$1"; shift
+  if row_failed "$upstream"; then
+    fail "$2 (blocked by: $upstream)"
+    return 2
+  fi
+  wait_for_lane "$@"
+}
+# --- the fast tier (#776) -----------------------------------------------------
+# REHEARSAL_FAST=1 (rehearsal-all.sh --fast) proves the engine's plumbing and
+# reads nothing a real agent writes. A zero-action stub stands in for the
+# agent CLI for all of phase 2, so a tick that dispatches costs nothing and
+# returns at once; each section whose rows grade what an agent leaves behind —
+# a ruling, a pull request, a review — is skipped BY NAME, never graded on a
+# stub's silence. What still runs is everything the engine does itself.
+REHEARSAL_FAST_STUB_SET=0
+rehearsal_fast_skip() {  # NAME — true (and a skip row) in the fast tier
+  [ "${REHEARSAL_FAST:-0}" -eq 1 ] || return 1
+  skip "$1 (fast tier: a real agent session's output — not read)"
+  return 0
+}
+rehearsal_fast_install_stub() {
+  [ "${REHEARSAL_FAST:-0}" -eq 1 ] || return 0
+  if bx "cat >> ~/duty/conf/roles/$ROLE.conf <<'EOF'
+# rehearsal-fast-stub begin
+BOT_CLI_CMD=(true)
+# rehearsal-fast-stub end
+EOF"; then
+    REHEARSAL_FAST_STUB_SET=1
+    ok "fast tier: a zero-action agent stands in for the real CLI"
+  else
+    fail "fast tier: a zero-action agent stands in for the real CLI"
+  fi
+}
+rehearsal_fast_restore_cli() {
+  [ "$REHEARSAL_FAST_STUB_SET" -eq 1 ] || return 0
+  bx "sed -i '/^# rehearsal-fast-stub begin$/,/^# rehearsal-fast-stub end$/d' ~/duty/conf/roles/$ROLE.conf" \
+    && REHEARSAL_FAST_STUB_SET=0
 }
 bx() { box exec "$BOX_NAME" -- bash -lc "$1"; }
 # shellcheck disable=SC2034  # read and updated by rehearsal-safety.sh
@@ -238,6 +310,11 @@ fi
 cleanup_all() {
   local rc=$?
   if [ "$BOX_TOUCHED" -eq 1 ]; then
+    if declare -F rehearsal_fast_restore_cli >/dev/null 2>&1 \
+        && [ "${REHEARSAL_FAST_STUB_SET:-0}" -eq 1 ]; then
+      rehearsal_fast_restore_cli \
+        || echo "WARNING: could not remove the fast tier's stub agent from ~/duty/conf/roles/$ROLE.conf; stop the box: box down $BOX_NAME" >&2
+    fi
     if declare -F rehearsal_resume_restore_cli >/dev/null 2>&1 \
         && [ "${REHEARSAL_RESUME_NOOP_SET:-0}" -eq 1 ]; then
       rehearsal_resume_restore_cli \
@@ -437,6 +514,29 @@ else
    — login WARN, no .boot-id marker, no sessions spawned — SKIP on a box that is
    already gh-authenticated, so the creds-free half of phase 1 is unexercised (#116)."
   echo "== REUSE: $REUSE_NOTE"
+  # A reused box may be STOPPED: the previous round's fleet leg downed every
+  # drill box, and the rc1 round's next pass then failed every role's phase 0
+  # on `Instance is not running` (#771). Start it, and wait for the VM's guest
+  # agent to answer — `box exec` says "VM agent isn't currently running" for
+  # 20-60 s after a start. Bounded, and a box that never answers is refused
+  # here by name rather than three steps later as a transfer failure.
+  reuse_state="$(box info "$BOX_NAME" --json 2>/dev/null \
+    | jq -r 'if type == "array" then (.[0] // {}) else . end
+             | .status // (.state | if type == "object" then .status else . end) // ""' 2>/dev/null \
+    | head -1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+  if [ "$reuse_state" = stopped ]; then
+    echo "== REUSE: $BOX_NAME is stopped; starting it and waiting for it to answer"
+    box start "$BOX_NAME" >/dev/null \
+      || { echo "phase 0: could not start the reused box $BOX_NAME (box start $BOX_NAME)" >&2; exit 1; }
+    reuse_end=$((SECONDS + ${REHEARSAL_BOX_ANSWER_S:-180}))
+    until bx "true" >/dev/null 2>&1; do
+      if [ "$SECONDS" -ge "$reuse_end" ]; then
+        echo "phase 0: the reused box $BOX_NAME started but did not answer within ${REHEARSAL_BOX_ANSWER_S:-180}s" >&2
+        exit 1
+      fi
+      sleep "${REHEARSAL_BOX_ANSWER_POLL_S:-5}"
+    done
+  fi
 fi
 BOX_TOUCHED=1
 check "box reachable" bx "true"
@@ -515,7 +615,7 @@ printf '%s %s %s\n' "$BOX_NAME" "$AGENT" "$ROLE" >"$DRILL_CONFIG/fleet.roster"
 # seeding a drill box from one is how #51 happened. So the drill writes its
 # own, naming a sandbox repo it mints itself. The slug is resolvable from the HOST's gh identity
 # (the BOX stays creds-free); phase 2 mints the repo itself.
-DRILL_HOST_ME="$(gh api user --jq .login 2>/dev/null || echo crew-drill)"
+DRILL_HOST_ME="$(gh_login_from "$(gh api user --jq .login 2>/dev/null)")" || DRILL_HOST_ME=crew-drill
 printf '%s/crew-drill-%s\n' "$DRILL_HOST_ME" "$ROLE" >"$DRILL_CONFIG/repos.txt"
 CREW_CONFIG_DIR="$DRILL_CONFIG" "$CREW_BIN" hire "$BOX_NAME" --ref "$SOURCE_SHA" \
   || fail "crew hire"
@@ -568,7 +668,7 @@ bx "gh auth status >/dev/null 2>&1" && GH_AUTHED=1
 # address pass — provisioning writes the ID-prefixed one, and the 2026-08-02
 # hand sweep wrote the bare one.
 if [ "$GH_AUTHED" -eq 1 ]; then
-  DRILL_BOX_ME="$(bx "gh api user --jq .login" | tr -d '\r\n')"
+  DRILL_BOX_ME="$(gh_login_from "$(bx "gh api user --jq .login")")" || DRILL_BOX_ME=""
   check "hired box bylines itself as $DRILL_BOX_ME, before its first tick" \
     bx "out=\$(git config --global user.email); grep -qiE '^([0-9]+\\+)?$DRILL_BOX_ME@users\\.noreply\\.github\\.com\$' <<<\"\$out\""
 else
@@ -637,6 +737,40 @@ if [ "$QUICK" -eq 0 ]; then
   echo "== scheduled-boundary check omitted: rehearsal ticks are explicit and cron stays disarmed (#26)"
 fi
 
+# --- the pool logs the box in (#774) ---------------------------------------
+# `rehearsal-all.sh --creds gh:<name>,agent:<name>` hands the round the
+# operator's pool (CREW_CREDENTIALS_DIR). Pushed HERE, after the creds-free
+# rows above have read the box logged out and before phase 2 decides whether
+# it may run: one pass then proves both halves, and no box is logged in by
+# hand. The push goes through the drilled engine's own `crew creds push`, the
+# path a fleet member takes, from a throwaway fleet definition — the boxes are
+# off every roster (#51), so the entries are named, never assigned.
+if [ -n "${REHEARSAL_CREDS:-}" ]; then
+  creds_conf_tmp="$(mktemp -d)"
+  if "$CREW_BIN" init "$creds_conf_tmp/config" >/dev/null 2>&1 \
+     && creds_out="$(CREW_CONFIG_DIR="$creds_conf_tmp/config" "$CREW_BIN" creds push "$BOX_NAME" \
+          --entries "$REHEARSAL_CREDS" 2>&1)"; then
+    printf '%s\n' "$creds_out"
+    ok "creds: the pool's entries reached the box ($REHEARSAL_CREDS)"
+  else
+    printf '%s\n' "${creds_out:-}"
+    fail "creds: the pool's entries reached the box ($REHEARSAL_CREDS)"
+  fi
+  rm -rf "$creds_conf_tmp"
+  for creds_entry in ${REHEARSAL_CREDS//,/ }; do
+    [ "${creds_entry%%:*}" = gh ] || continue
+    creds_want="$(sed -n 's/^login=//p' "${CREW_CREDENTIALS_DIR:-}/entries/gh--${creds_entry#gh:}/meta" 2>/dev/null | head -1)"
+    creds_have="$(gh_login_from "$(bx "gh api user --jq .login")")" || creds_have=""
+    if [ -n "$creds_want" ] && [ "$creds_have" = "$creds_want" ]; then
+      ok "creds: the box answers as $creds_entry's recorded login ($creds_want)"
+    else
+      fail "creds: the box answers as $creds_entry's recorded login (${creds_want:-unrecorded}; the box answers ${creds_have:-nothing})"
+    fi
+  done
+  GH_AUTHED=0
+  bx "gh auth status >/dev/null 2>&1" && GH_AUTHED=1
+fi
+
 # Phase 1 produced a usable installation. A later red assertion must not hide
 # Section A, config or app; they are independent of the role's verdict.
 rehearsal_section_status installed
@@ -655,8 +789,10 @@ if [ "$GH_AUTHED" -eq 0 ] || ! bx "set -a; . ~/.crew-engine-stage/shared/conf/ag
 else
   PHASE2_RAN=1
   rehearsal_section_status phase2
-  ME2="$(bx "gh api user --jq .login" | tr -d '\r\n')"
-  HOST_ME="$(gh api user --jq .login)"
+  # Shape-checked (#769): a revoked token's error body is no identity, and
+  # the guard below refuses an empty one by name.
+  ME2="$(gh_login_from "$(bx "gh api user --jq .login")")" || ME2=""
+  HOST_ME="$(gh_login_from "$(gh api user --jq .login)")" || HOST_ME=""
   if ! phase2_identity_reason="$(
       rehearsal_phase2_identity_guard "$ROLE" "$ME2" "$HOST_ME"
     )"; then
@@ -815,10 +951,13 @@ else
     exit 1
   fi
 
+  rehearsal_fast_install_stub
+
   # -- attention wake --
   # Its fixture is `$inum`, minted above the census for the page-boundary
   # reason given there. The tick is what the wake rows are about.
   bx "~/duty/bin/tick.sh" || true
+  if ! rehearsal_fast_skip "attention: the wake's pickup comment and its ack"; then
   wait_for 900 "attention: 📌 pickup comment" bash -c \
     "out=\$(gh api 'repos/$SANDBOX/issues/$inum/comments' --jq '[.[] | select(.user.login == \"$ME2\")] | length'); grep -qE '^[1-9][0-9]*$' <<<\"\$out\""
   # The predicate lives in rehearsal-fixtures.sh beside the mint it grades, and
@@ -826,8 +965,10 @@ else
   # data, never into the filter as source text, and the answer comes back as an
   # exit status rather than through `gh api --jq`, which marshals a null to
   # NOTHING and so cannot carry a boolean at all.
-  wait_for_lane ATTENTION "attention: label removed (ack re-arms)" \
+  wait_for_lane_after "attention: 📌 pickup comment" \
+    ATTENTION "attention: label removed (ack re-arms)" \
     rehearsal_attention_flag_cleared "$SANDBOX" "$inum"
+  fi
 
   # The census's other half (#714, D2/D3). Deliberately AFTER the two rows
   # above: they are what establishes that a tick fetched, partitioned and
@@ -861,6 +1002,7 @@ else
     echo "triage: installed queue-label set is empty — refusing before the fixture wait" >&2
     exit 1
   fi
+  if ! rehearsal_fast_skip "triage: a stray draws a ruling, leaves the unlabelled queue, and a quiet board launches nothing"; then
   # -- triage: a stray (no queue label) must draw a ruling --
   # duty-triage.sh detects two signals; the STRAY is the one a fixture can
   # create without presupposing triage's own vocabulary: an open issue
@@ -898,6 +1040,8 @@ else
   check "triage: quiet-board tick launched no session" bx \
     "out=\$(tail -n +$((DUTY_LOG_LINES + 1)) ~/duty/duty.log); grep -Fq '$SANDBOX: quiet — no mentions, no triage signals, no session launched' <<<\"\$out\""
 
+  fi
+
   # -- the hygiene slot's board audit: both malformed shapes, not repaired --
   # Last in the triage block, after the existing assertions, which are
   # unchanged. The slot is triage-only (duty.sh), so this is the one role block
@@ -918,6 +1062,7 @@ else
   . "$ROOT/drill/rehearsal-resume.sh"
   # shellcheck source=drill/rehearsal-attention.sh
   . "$ROOT/drill/rehearsal-attention.sh"
+  if ! rehearsal_fast_skip "builder: a ready issue becomes a PR, its fix round, and its panel request"; then
   # -- builder: an unassigned `ready` issue must become a PR --
   # ready+ASSIGNED is deliberately NOT pickable (an assignee means mid-claim;
   # counting those launched sessions with nothing to do). The fixture must
@@ -1010,7 +1155,8 @@ else
       # post-tick-only read can miss the visible state #139 shipped.
       bx "~/duty/bin/tick.sh" </dev/null &
       builder_tick_pid=$!
-      wait_for 900 "builder: changes-requested round returns PR to draft" \
+      wait_for_after "builder: host changes-requested review submitted" \
+        900 "builder: changes-requested round returns PR to draft" \
         rehearsal_builder_pr_is_draft "$SANDBOX" "$bpr"
       rehearsal_wait_builder_signal_window_with_prereqs \
         1800 "$SANDBOX" "$bpr" "$REHEARSAL_MARK_ANSWERED" \
@@ -1049,6 +1195,8 @@ else
     fi
   fi
 
+  fi
+
   # -- attention: dispatch without code, and the timed-out pickup report --
   # Beside the wake rows above, not instead of them: those read the ACK, this
   # reads what #301 shipped behind it. Last in the builder block and outside
@@ -1058,6 +1206,8 @@ else
   # every leg above it.
   rehearsal_attention_drill "$SANDBOX" "$ME2"
 
+  elif rehearsal_fast_skip "review: the announce, the pinned verdict, dedup, the re-request rule and the gate"; then
+  :
   else
   # -- review round through the gates --
   main_sha="$(gh api "repos/$SANDBOX/git/ref/heads/main" --jq .object.sha)"
@@ -1079,7 +1229,7 @@ else
   have_verdict()      { [ "$(verdicts)" -ge 1 ]; }
   verdicts_unchanged() { [ "$(verdicts)" = "$VREF" ]; }
   verdicts_grew()      { [ "$(verdicts)" -gt "$VREF" ]; }
-  wait_for 1200 "review: verdict pinned to head" have_verdict
+  wait_for_after "review: 🔎 announce at head" 1200 "review: verdict pinned to head" have_verdict
   check "review: announce precedes verdict" \
     rehearsal_review_announce_precedes_verdict "$SANDBOX" "$pr" "$ME2" "$head_sha"
 
@@ -1122,7 +1272,8 @@ else
   VREF="$(verdicts)"
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
   bx "~/duty/bin/tick.sh" || true
-  wait_for 1200 "re-request rule: auto off queues a real re-review" verdicts_grew
+  wait_for_after "review: verdict pinned to head" \
+    1200 "re-request rule: auto off queues a real re-review" verdicts_grew
   # ...and it is a considered verdict, not the auto-approval under another
   # name: the supersede path stamps "re-request rule" into its body. This is
   # the one edge the flag still governs, and nothing asserted it before.
@@ -1135,7 +1286,7 @@ else
   # -- re-request at unchanged head -> auto-approve through the gate --
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
   bx "~/duty/bin/tick.sh" || true
-  wait_for 300 "re-request: auto-approved (supersede)" bash -c \
+  wait_for_after "review: verdict pinned to head" 300 "re-request: auto-approved (supersede)" bash -c \
     "gh api 'repos/$SANDBOX/pulls/$pr/reviews' --paginate | jq -se --arg m \"$ME2\" \
       '[add[] | select(.user.login == \$m) | .body] | any(contains(\"re-request rule\"))'"
 
@@ -1149,6 +1300,12 @@ else
   fi
   fi
 fi
+
+# The fast tier's stub leaves before the breaker: that leg stages its own
+# terminal CLI, and its recovery rows read a REAL session acting after the
+# lane reopens — the one real session a fast round buys.
+rehearsal_fast_restore_cli \
+  || fail "fast tier: the real agent CLI is restored before the breaker leg"
 
 # Role-independent: exercise the worktree hygiene that runs on every role box
 # only after that role's own phase-2 fixtures have finished.

@@ -255,24 +255,28 @@ rehearsal_breaker_attention_is_clear() {
 # rehearsal_breaker_attention_is_clear_from_json two functions above, which
 # took the opposite one until #724's round.
 rehearsal_breaker_fixture_is_armed_from_json() {
-  local label="$2"
+  local label="$2" identity="${3:-}"
   # stderr silenced like every other read here: an unparseable body already has
   # its own reading printed beside the row, and a raw jq parse error in the
   # transcript sends the operator to the parser rather than to the board.
-  jq -e --arg l "$label" \
-    '.state == "open" and ([.labels[]?.name] | index($l) != null)' \
+  # With an identity, the fixture is a DEMAND only while it is assigned to it
+  # (#779): an attention demand is an issue assigned to the identity carrying
+  # the label, and a labelled issue nobody is assigned is invisible to the lane.
+  jq -e --arg l "$label" --arg who "$identity" \
+    '.state == "open" and ([.labels[]?.name] | index($l) != null)
+     and ($who == "" or ([.assignees[]?.login] | index($who) != null))' \
     >/dev/null 2>&1 <<<"$1"
 }
 
 # What a failed arming row prints beside itself. A bare FAIL sends the operator
 # to the engine; `state=closed labels=claimed` sends them to the harness.
 rehearsal_breaker_fixture_reading_from_json() {
-  jq -r '"state=\(.state // "?") labels=\([.labels[]?.name] | join(",") )"' \
+  jq -r '"state=\(.state // "?") labels=\([.labels[]?.name] | join(",") ) assignees=\([.assignees[]?.login] | join(",") )"' \
     <<<"$1" 2>/dev/null
 }
 
 rehearsal_breaker_arm_fixture() {
-  local repo="$1" issue="$2" label="$3" json=""
+  local repo="$1" issue="$2" label="$3" identity="${4:-}" json=""
   REHEARSAL_BREAKER_ARM_READING=""
   if ! json="$(gh api "repos/$repo/issues/$issue" 2>/dev/null)" || [ -z "$json" ]; then
     REHEARSAL_BREAKER_ARM_READING="the fixture issue could not be read"
@@ -287,6 +291,10 @@ rehearsal_breaker_arm_fixture() {
   fi
   gh api -X POST "repos/$repo/issues/$issue/labels" \
     -f "labels[]=$label" >/dev/null 2>&1 || true
+  # ...and assigned to the identity again (#779): the ack the attention leg
+  # drove may have unassigned it, and then the label alone is no demand.
+  [ -z "$identity" ] || gh api -X POST "repos/$repo/issues/$issue/assignees" \
+    -f "assignees[]=$identity" >/dev/null 2>&1 || true
   # The re-read IS the assertion. Both mutations above are allowed to fail
   # quietly on purpose: neither exit status is evidence about the issue's
   # state, and grading one of them is the defect this function replaces.
@@ -297,7 +305,7 @@ rehearsal_breaker_arm_fixture() {
   REHEARSAL_BREAKER_ARM_READING="$(rehearsal_breaker_fixture_reading_from_json "$json")"
   [ -n "$REHEARSAL_BREAKER_ARM_READING" ] \
     || REHEARSAL_BREAKER_ARM_READING="the fixture issue read back unparseable"
-  rehearsal_breaker_fixture_is_armed_from_json "$json" "$label"
+  rehearsal_breaker_fixture_is_armed_from_json "$json" "$label" "$identity"
 }
 
 rehearsal_breaker_profile_is_restored() {
@@ -533,7 +541,7 @@ rehearsal_breaker_drill() {
     return 1
   fi
   fixture_dir="$REHEARSAL_BREAKER_DIR"
-  if rehearsal_breaker_arm_fixture "$repo" "$issue" "$REHEARSAL_BREAKER_LABEL"; then
+  if rehearsal_breaker_arm_fixture "$repo" "$issue" "$REHEARSAL_BREAKER_LABEL" "${ME2:-}"; then
     ok "breaker: $kind lane fixture armed"
   else
     fail "breaker: $kind lane fixture armed"

@@ -3028,11 +3028,11 @@ if grep -Fq -- '--no-hygiene-drill' "$ROOT/drill/rehearsal-all.sh" \
       "$ROOT/drill/rehearsal-hygiene.sh" \
     && grep -Fq 'rehearsal_hygiene_reset_refusal_ledger "$refusal_ledger"' \
       "$ROOT/drill/rehearsal-hygiene.sh" \
-    && grep -Fq 'REHEARSAL_HYGIENE_RESULT_FILE="$role_hygiene_file"' \
+    && grep -Fq 'REHEARSAL_HYGIENE_RESULT_FILE="${ROLE_HYGIENE_FILE[$role]}"' \
       "$ROOT/drill/rehearsal-all.sh" \
     && grep -Fq 'overall="$(rehearsal_hygiene_round_result "$overall" "$hygiene_result")"' \
       "$ROOT/drill/rehearsal-all.sh" \
-    && grep -Fq 'ROLE_HYGIENE_FILES+=("$role_hygiene_file")' \
+    && grep -Fq 'ROLE_HYGIENE_FILES+=("${ROLE_HYGIENE_FILE[$role]}")' \
       "$ROOT/drill/rehearsal-all.sh" \
     && grep -Fq 'trap cleanup_role_hygiene_files EXIT' \
       "$ROOT/drill/rehearsal-all.sh" \
@@ -11028,6 +11028,30 @@ case "$status_out" in
   *)                                    r1="$status_out" ;;
 esac
 t status-paused-box-says-paused paused "$r1"
+
+# #773 — logged out AND disarmed says BOTH. The disarmed note was the `elif`
+# after the login note, so a logged-out box never read `disarmed`, while the
+# floor said disarmed from the same counts; every creds-free drill pass carried
+# three false `agree` FAILs for it.
+printf 'gh: Bad credentials\n' >"$MSROOT/fixture-box/duty/.auth-fail.gh"
+status_out="$(MSCRON_EMPTY=1 crewstatus)"
+ms_row="$(printf '%s\n' "$status_out" | grep '^fixture-box' || true)"
+case "$ms_row" in *"⚠ log in: crew login fixture-box gh|agent"*"disarmed — no cron line; crew hire fixture-box arms it"*) r1=both ;; *) r1="$ms_row" ;; esac
+t status-logged-out-disarmed-box-says-both both "$r1"
+status_out="$(MSCRON_PAUSED=1 crewstatus)"
+ms_row="$(printf '%s\n' "$status_out" | grep '^fixture-box' || true)"
+case "$ms_row" in
+  *"⚠ log in:"*"paused by operator"*) r1=both ;;
+  *"⚠ log in:"*disarmed*) r1=WRONG-FIX-NAMED ;;
+  *) r1="$ms_row" ;;
+esac
+t status-logged-out-paused-box-says-both both "$r1"
+# An ARMED logged-out box says only the login: nothing to add.
+status_out="$(crewstatus)"
+ms_row="$(printf '%s\n' "$status_out" | grep '^fixture-box' || true)"
+case "$ms_row" in *"⚠ log in:"*disarmed*|*"⚠ log in:"*paused*) r1="$ms_row" ;; *"⚠ log in:"*) r1=login_only ;; *) r1="$ms_row" ;; esac
+t status-logged-out-armed-box-says-only-the-login login_only "$r1"
+rm -f "$MSROOT/fixture-box/duty/.auth-fail.gh"
 
 # A modified box, end to end.
 printf '# hotfix by hand\n' >>"$MSROOT/fixture-box/duty/bin/duty.sh"

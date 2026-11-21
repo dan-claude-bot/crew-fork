@@ -49,11 +49,12 @@ shared/host-crontab.example	cli-lifecycle,cli-reset,host-tick
 shared/docs/*	none
 shared/README.md	none
 shared/test/README.md	none
-shared/lib/host/credentials.sh	credentials,cli-reset,cli-lifecycle,host-tick,floor-no-browser
+shared/lib/host/credentials.sh	credentials,pool,cli-reset,cli-lifecycle,host-tick,floor-no-browser
+shared/lib/host/pool.sh	pool,cli-reset,cli-lifecycle,host-tick
 shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
-cli/crew	cli-lifecycle,cli-reset,cli-store,host-tick,common,floor-no-browser
+cli/crew	cli-lifecycle,cli-reset,cli-store,host-tick,common,floor-no-browser,pool
 drill/*	drill,install-drill,drill-teardown
 install.sh	install-lifecycle,artifact,install-drill
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate

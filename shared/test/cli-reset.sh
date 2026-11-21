@@ -1680,4 +1680,112 @@ capture hire alpha --pool claude-max-1
 t hire-pool-hires 0 "$RC"
 t hire-pool-reaches-the-install-line 1 "$(grep -c '^pool alpha claude-max-1$' "$STATE/calls" || true)"
 
+# ── #772 — `crew upgrade` wakes a stopped box, upgrades it, puts it back ─────
+# In 0.1.4 a sleeping member is the ordinary state. The upgrade used to meet
+# one with the first exec's "Instance is not running" and call it FAILED; the
+# operator's ruling is (a): wake it, upgrade it, and put it back to sleep — the
+# way the host tick does, never mid-session and only once it is drained.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+capture upgrade alpha
+t upgrade-stopped-box-succeeds 0 "$RC"
+case "$OUT" in *'alpha: stopped — woken for the upgrade, and put back to sleep after it'*) r1=said ;; *) r1="$OUT" ;; esac
+t upgrade-stopped-box-says-it-is-woken said "$r1"
+t upgrade-stopped-box-is-started 1 "$(calls_of 'start alpha')"
+t upgrade-stopped-box-is-installed 1 "$(calls_of 'install alpha')"
+t upgrade-stopped-box-is-drained-before-it-sleeps 1 "$(calls_of 'drain alpha')"
+t upgrade-stopped-box-is-put-back-down 1 "$(calls_of 'down alpha')"
+t upgrade-stopped-box-is-stopped-again stopped "$(cat "$STATE/state-alpha")"
+case "$OUT" in *'upgrade FAILED'*) r1="$OUT" ;; *) r1=clean ;; esac
+t upgrade-stopped-box-is-not-a-failure clean "$r1"
+case "$OUT" in *'alpha: back to sleep (stopped, as it was before the upgrade)'*) r1=said ;; *) r1="$OUT" ;; esac
+t upgrade-stopped-box-says-it-sleeps-again said "$r1"
+# The order: started, installed, drained, stopped.
+t upgrade-stopped-box-order "start install drain down" \
+  "$(grep -oE '^(start|install|drain|down) alpha' "$STATE/calls" | awk '{print $1}' | paste -sd' ')"
+
+# A running box is upgraded as it always was: no start, no stop.
+reset_case
+capture upgrade alpha
+t upgrade-running-box-succeeds 0 "$RC"
+t upgrade-running-box-is-not-started 0 "$(calls_of 'start alpha')"
+t upgrade-running-box-is-not-stopped 0 "$(calls_of 'down alpha')"
+
+# A duty that took the lock while the box was up keeps it up.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+printf 'busy:30\n' >"$STATE/probe-alpha"
+capture upgrade alpha
+t upgrade-woken-box-busy-after-succeeds 0 "$RC"
+t upgrade-woken-box-busy-is-not-stopped 0 "$(calls_of 'down alpha')"
+case "$OUT" in *'alpha: a duty holds its lock (busy) — left running; the host tick stops it when it is idle'*) r1=said ;; *) r1="$OUT" ;; esac
+t upgrade-woken-box-busy-says-why said "$r1"
+
+# A drain that fails keeps the box up: its evidence is not in the store.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+RST_DRAIN_FAIL=alpha capture upgrade alpha
+t upgrade-woken-box-undrained-is-not-stopped 0 "$(calls_of 'down alpha')"
+case "$OUT" in *'alpha: left running — its drain to the store failed'*) r1=said ;; *) r1="$OUT" ;; esac
+t upgrade-woken-box-undrained-says-why said "$r1"
+
+# A box that will not start is a FAILED upgrade, named, and nothing installed.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+RST_START_FAIL=alpha capture upgrade alpha
+case "$OUT" in *'upgrade FAILED on alpha — it is stopped and could not be started (box start alpha)'*) r1=named ;; *) r1="$OUT" ;; esac
+t upgrade-unstartable-box-is-named named "$r1"
+t upgrade-unstartable-box-installs-nothing 0 "$(calls_of 'install alpha')"
+case "$OUT" in *'Instance is not running'*) r1="$OUT" ;; *) r1=clean ;; esac
+t upgrade-unstartable-box-never-shows-the-raw-incus-error clean "$r1"
+
+# --all over a resting fleet: the sleeping member is woken and slept, the
+# running one only upgraded.
+reset_case
+printf 'stopped\n' >"$STATE/state-beta"
+capture upgrade --all
+t upgrade-all-resting-fleet-succeeds 0 "$RC"
+t upgrade-all-installs-both 2 "$(grep -cE '^install (alpha|beta)$' "$STATE/calls")"
+t upgrade-all-wakes-only-the-sleeper "start beta" "$(grep -E '^start ' "$STATE/calls" | paste -sd' ')"
+t upgrade-all-sleeps-only-the-sleeper "down beta" "$(grep -E '^down ' "$STATE/calls" | paste -sd' ')"
+
+# A box the checkpoint gate refuses still goes back to sleep.
+reset_case
+printf 'stopped\n' >"$STATE/state-alpha"
+arm alpha
+chmod a-w "$CONF/checkpoints"
+capture upgrade alpha
+chmod u+w "$CONF/checkpoints"
+case "$OUT" in *'upgrade REFUSED on alpha'*) r1=refused ;; *) r1=not-refused ;; esac
+if [ "$r1" = refused ]; then
+  t upgrade-refused-woken-box-sleeps-again 1 "$(calls_of 'down alpha')"
+else
+  t upgrade-refused-woken-box-fixture-reaches-the-gate refused "$r1"
+fi
+
+# ── #774 — the pool's assigned entries are carried at hire and after a reset ──
+# The roster line names the entry; the box gets it through the credentials
+# shell (the stub logs that exec by its marker) and the pool records it.
+RST_POOL="$TMP/pool"
+mkdir -p "$RST_POOL/entries/gh--bot" "$RST_POOL/delivered" "$RST_POOL/verdicts"
+printf 'ghp_rst_secret' >"$RST_POOL/entries/gh--bot/secret"
+printf 'svc=gh\nkind=token\nagent=\nlogin=bot\nset_at=x\ndigest=d1\n' >"$RST_POOL/entries/gh--bot/meta"
+cp "$CONF/fleet.roster" "$TMP/roster.saved"
+printf 'alpha claude builder  creds=gh:bot\nbeta codex reviewer\n' >"$CONF/fleet.roster"
+reset_case
+CREW_CREDENTIALS_DIR="$RST_POOL" capture hire alpha
+t pool-hire-succeeds 0 "$RC"
+case "$OUT" in *'alpha: credential gh:bot:'*) r1=carried ;; *) r1="$OUT" ;; esac
+t pool-hire-carries-the-assigned-entry carried "$r1"
+t pool-hire-records-the-delivery "gh:bot d1" "$(cat "$RST_POOL/delivered/alpha" 2>/dev/null)"
+case "$OUT" in *ghp_rst_secret*) r1=LEAKED ;; *) r1=clean ;; esac
+t pool-hire-never-prints-the-secret clean "$r1"
+# beta has no assignment: nothing is carried, nothing said.
+reset_case
+CREW_CREDENTIALS_DIR="$RST_POOL" capture hire beta
+case "$OUT" in *credential*) r1="$OUT" ;; *) r1=silent ;; esac
+t pool-hire-without-an-assignment-is-silent silent "$r1"
+t pool-hire-without-an-assignment-records-nothing absent "$([ -e "$RST_POOL/delivered/beta" ] && echo present || echo absent)"
+cp "$TMP/roster.saved" "$CONF/fleet.roster"
+
 suite_finish
