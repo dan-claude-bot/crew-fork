@@ -3845,6 +3845,7 @@ case "${1:-}" in
     if [ -e "$S/stopped-$2" ]; then st=Stopped; else st=Running; fi
     printf '[{"name":"%s","status":"%s"}]\n' "$2" "$st" ;;
   start) rm -f "$S/stopped-$2" ;;
+  down) : >"$S/stopped-$2" ;;
   *) exit 0 ;;
 esac
 BOX
@@ -3895,7 +3896,13 @@ case "${1:-} ${2:-}" in
     echo; echo "reset --cut: $c cut, 0 skipped-busy, 0 failed" ;;
   "reset "*) echo "  $2: restored to armed and started"; echo; echo "reset: 1 restored, 0 skipped-busy, 0 failed" ;;
   "status "*) echo "integrity: current (crew@0.1.4)" ;;
-  "upgrade "*) echo "== upgrading $2" ;;
+  "upgrade "*)
+    echo "== upgrading $2"
+    if [ "$2" != --all ] && [ -e "$S/stopped-$2" ]; then
+      echo "  $2: stopped — woken for the upgrade, and put back to sleep after it"
+      [ -n "${FL_UPGRADE_LEAVES_UP:-}" ] && rm -f "$S/stopped-$2" \
+        || echo "  $2: back to sleep (stopped, as it was before the upgrade)"
+    fi ;;
 esac
 exit 0
 CREW
@@ -3965,11 +3972,22 @@ t fl771-the-canary-reads-current 1 \
 t fl771-no-other-row-is-red "" \
   "$(grep '^FAIL' <<<"$fl_out" | grep -v "boot gate passes on its first tick after the restore" || true)"
 t fl770-the-timed-release-is-armed-for-the-busy-box 1 "$(grep -cx 'timer crew-drill-builder' "$FL_STATE/calls")"
+# #772 — the canary is upgraded asleep and must come back asleep; then the leg
+# starts it to read its integrity.
+t fl772-the-sleeping-canary-row-is-green 1 \
+  "$(grep -cx 'ok   an upgrade of a sleeping member wakes it and puts it back to sleep (crew-drill-triage)' <<<"$fl_out")"
+t fl772-the-canary-is-started-again-for-its-integrity 1 "$(grep -cx 'box start crew-drill-triage' "$FL_STATE/calls")"
+fl_out="$(fl_run FL_UPGRADE_LEAVES_UP=1)"
+t fl772-an-upgrade-that-leaves-the-box-up-is-red 1 \
+  "$(grep -c '^FAIL an upgrade of a sleeping member wakes it and puts it back to sleep' <<<"$fl_out")"
+
 # A return that did not happen: cleanup starts what the leg left stopped.
 fl_out="$(fl_run FL_NAMED_RESTART_FAILS=1)"
 t fl771-a-failed-return-is-a-fail-row 1 "$(grep -c '^FAIL every box the round downed came back' <<<"$fl_out")"
 t fl771-cleanup-starts-every-box-left-stopped 3 "$(grep -cE '^box start crew-drill-' "$FL_STATE/calls")"
-t fl771-cleanup-says-so 3 "$(grep -c '^teardown: started crew-drill-.*, which this leg left stopped' <<<"$fl_out")"
+# Two, not three: the canary step (#772) starts the canary itself to read its
+# integrity, so cleanup finds the other two still stopped.
+t fl771-cleanup-says-so 2 "$(grep -c '^teardown: started crew-drill-.*, which this leg left stopped' <<<"$fl_out")"
 t fl771-no-box-is-left-stopped "" "$(find "$FL_STATE" -name 'stopped-*')"
 
 # #771 — a reused box that is stopped is started and waited for before phase 0,

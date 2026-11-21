@@ -705,6 +705,11 @@ act on a known target, which --all is not.
 A box's armed state is preserved rather than asserted: an upgrade that arms
 a box nobody armed is a behaviour change wearing a version bump's clothes.
 
+A STOPPED box — a member the host tick put to sleep — is woken for its
+upgrade and put back to sleep after it: drained to the store first, and left
+running only if a duty took its lock while it was up, for the host tick to
+stop when it is idle. A box that cannot be started is a FAILED upgrade, named.
+
 A box whose engine files no longer match the version they were installed at
 is REFUSED, naming what differs, and nothing is written. Somebody patched
 that box; this is the last moment anyone can be told before the patch is
@@ -5276,6 +5281,31 @@ cmd_status() {
   done < <(read_roster)
 }
 
+# upgrade_back_to_sleep NAME — a box `crew upgrade` woke goes back to sleep
+# the way the host tick puts one to sleep (#772): never mid-session, and only
+# once the store holds its evidence. A box a duty took while it was up is left
+# running, and the host tick stops it when it is idle — which is where it
+# would have been left had the operator started it by hand.
+upgrade_back_to_sleep() { # NAME
+  local name="$1" pstate
+  read -r pstate _ <<<"$(drain_probe "$name")"
+  if [ "$pstate" != idle ]; then
+    echo "  $name: a duty holds its lock ($pstate) — left running; the host tick stops it when it is idle"
+    return 0
+  fi
+  # In a subshell: a drain that dies ends the drain, never the upgrade of the
+  # members after this one.
+  if ! ( cmd_drain "$name" ) >/dev/null 2>&1; then
+    echo "  $name: left running — its drain to the store failed, and a box whose evidence the store does not hold is not stopped"
+    return 0
+  fi
+  if box down "$name" </dev/null; then
+    echo "  $name: back to sleep (stopped, as it was before the upgrade)"
+  else
+    echo "  $name: could not be put back to sleep (box down $name failed) — the host tick stops it when it is idle"
+  fi
+}
+
 cmd_upgrade() {
   need_box
   local targets="" skipped="" target="" ref="HEAD" want force_arg=""
@@ -5314,10 +5344,30 @@ cmd_upgrade() {
   # After the target `case`, so `crew upgrade` with no target still earns its
   # invocation-fault 2 rather than this world-fault 1.
   require_operator_config "crew upgrade"
-  local b armed flags line agent role identity_args registry_arg
+  local b armed flags line agent role identity_args registry_arg woken
+  local ready_s="${HOST_TICK_READY_S:-180}"
   registry_arg="$(registry_install_arg)"
   for b in $targets; do
     echo "== upgrading $b"
+    # In 0.1.4 a sleeping box is the ordinary state of a member — the host
+    # tick stops the idle ones — so a stopped box is woken for its upgrade and
+    # put back to sleep after it, its pause and its armed state untouched
+    # (operator ruling on #772). The upgrade used to meet a stopped box with
+    # the first `box exec`'s raw "Instance is not running" and call it FAILED.
+    woken=0
+    if [ "$(box_state "$b")" = stopped ]; then
+      echo "  $b: stopped — woken for the upgrade, and put back to sleep after it"
+      if ! box start "$b" </dev/null; then
+        echo "  upgrade FAILED on $b — it is stopped and could not be started (box start $b)"
+        continue
+      fi
+      woken=1
+      if ! tick_box_ready "$b" "$ready_s"; then
+        echo "  upgrade FAILED on $b — started, but its guest did not answer within ${ready_s}s"
+        upgrade_back_to_sleep "$b"
+        continue
+      fi
+    fi
     if [[ "$want" == *-dev* ]]; then
       echo "$b: crew@$want is a development tree — upgrade re-bakes unconditionally"
     fi
@@ -5346,6 +5396,7 @@ cmd_upgrade() {
     # refuses, the rest carry on.
     if ! checkpoint_stale_gate "$b" "$want"; then
       echo "  upgrade REFUSED on $b — its engine is unchanged"
+      [ "$woken" -eq 0 ] || upgrade_back_to_sleep "$b"
       continue
     fi
     if ! stage_engine "$b" ||
@@ -5366,6 +5417,7 @@ cmd_upgrade() {
     if [ "$armed" -eq 0 ]; then
       echo "  note: $b was NOT cron-armed; left disarmed (arm it with: crew hire $b)"
     fi
+    [ "$woken" -eq 0 ] || upgrade_back_to_sleep "$b"
   done
   if [ -n "$skipped" ]; then
     echo

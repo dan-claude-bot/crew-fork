@@ -546,8 +546,33 @@ fi
 echo
 echo "-- crew upgrade (canary-first across the roster)"
 CANARY="${TARGETS[0]}"
+# The canary is upgraded ASLEEP: in 0.1.4 a resting member is the ordinary
+# state, and the ruled contract (#772) is that the upgrade wakes it, upgrades
+# it and puts it back to sleep. It is then started again here, because the
+# integrity line below is read from the live box.
+if box down "$CANARY" </dev/null >/dev/null 2>&1 && [ "$(box_state_of "$CANARY")" = stopped ]; then
+  canary_slept=1
+else
+  canary_slept=0
+fi
 "$CREW" upgrade "$CANARY" >"$TMP/upgrade-canary.out" 2>&1 || true
 cat "$TMP/upgrade-canary.out"
+if [ "$canary_slept" -eq 0 ]; then
+  fail "an upgrade of a sleeping member wakes it and puts it back to sleep" \
+    "the canary $CANARY could not be stopped first, so the reading was not taken"
+elif grep -qF "  $CANARY: stopped — woken for the upgrade, and put back to sleep after it" "$TMP/upgrade-canary.out" \
+    && grep -qF "  $CANARY: back to sleep (stopped, as it was before the upgrade)" "$TMP/upgrade-canary.out" \
+    && ! grep -qF "upgrade FAILED on $CANARY" "$TMP/upgrade-canary.out" \
+    && [ "$(box_state_of "$CANARY")" = stopped ]; then
+  ok "an upgrade of a sleeping member wakes it and puts it back to sleep ($CANARY)"
+else
+  fail "an upgrade of a sleeping member wakes it and puts it back to sleep" \
+    "$CANARY read $(box_state_of "$CANARY") after the upgrade; see its transcript above"
+fi
+if [ "$(box_state_of "$CANARY")" = stopped ]; then
+  box start "$CANARY" </dev/null >/dev/null 2>&1 || true
+  wait_box_answers "$CANARY" || true
+fi
 integrity_of() { # NAME
   "$CREW" status "$1" 2>/dev/null | sed -n 's/^integrity: //p' | head -1
 }
