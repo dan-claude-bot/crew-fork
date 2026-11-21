@@ -515,7 +515,7 @@ printf '%s %s %s\n' "$BOX_NAME" "$AGENT" "$ROLE" >"$DRILL_CONFIG/fleet.roster"
 # seeding a drill box from one is how #51 happened. So the drill writes its
 # own, naming a sandbox repo it mints itself. The slug is resolvable from the HOST's gh identity
 # (the BOX stays creds-free); phase 2 mints the repo itself.
-DRILL_HOST_ME="$(gh api user --jq .login 2>/dev/null || echo crew-drill)"
+DRILL_HOST_ME="$(gh_login_from "$(gh api user --jq .login 2>/dev/null)")" || DRILL_HOST_ME=crew-drill
 printf '%s/crew-drill-%s\n' "$DRILL_HOST_ME" "$ROLE" >"$DRILL_CONFIG/repos.txt"
 CREW_CONFIG_DIR="$DRILL_CONFIG" "$CREW_BIN" hire "$BOX_NAME" --ref "$SOURCE_SHA" \
   || fail "crew hire"
@@ -568,7 +568,7 @@ bx "gh auth status >/dev/null 2>&1" && GH_AUTHED=1
 # address pass — provisioning writes the ID-prefixed one, and the 2026-08-02
 # hand sweep wrote the bare one.
 if [ "$GH_AUTHED" -eq 1 ]; then
-  DRILL_BOX_ME="$(bx "gh api user --jq .login" | tr -d '\r\n')"
+  DRILL_BOX_ME="$(gh_login_from "$(bx "gh api user --jq .login")")" || DRILL_BOX_ME=""
   check "hired box bylines itself as $DRILL_BOX_ME, before its first tick" \
     bx "out=\$(git config --global user.email); grep -qiE '^([0-9]+\\+)?$DRILL_BOX_ME@users\\.noreply\\.github\\.com\$' <<<\"\$out\""
 else
@@ -655,8 +655,10 @@ if [ "$GH_AUTHED" -eq 0 ] || ! bx "set -a; . ~/.crew-engine-stage/shared/conf/ag
 else
   PHASE2_RAN=1
   rehearsal_section_status phase2
-  ME2="$(bx "gh api user --jq .login" | tr -d '\r\n')"
-  HOST_ME="$(gh api user --jq .login)"
+  # Shape-checked (#769): a revoked token's error body is no identity, and
+  # the guard below refuses an empty one by name.
+  ME2="$(gh_login_from "$(bx "gh api user --jq .login")")" || ME2=""
+  HOST_ME="$(gh_login_from "$(gh api user --jq .login)")" || HOST_ME=""
   if ! phase2_identity_reason="$(
       rehearsal_phase2_identity_guard "$ROLE" "$ME2" "$HOST_ME"
     )"; then

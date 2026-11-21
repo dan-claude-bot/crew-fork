@@ -274,6 +274,18 @@ rehearsal_attention_flag_cleared() {
   rehearsal_issue_lacks_label "$1" "$2" "$REHEARSAL_LABEL_ATTENTION"
 }
 
+# gh_login_from TEXT — TEXT as a GitHub login, or nothing and status 1. An
+# identity read is accepted only in a login's own shape: `gh api user --jq
+# .login` that fails prints the error BODY to stdout ({"message":"Bad
+# credentials",…}), and a substitution that kept it read a revoked token as an
+# identity no repo is owned by (#769).
+gh_login_from() {
+  local login
+  login="$(printf '%s' "$1" | tr -d '\r\n')"
+  [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] || return 1
+  printf '%s\n' "$login"
+}
+
 # rehearsal_issue_lacks_label REPO NUM LABEL — the one predicate behind both
 # label-removal rows, speaking wait_for's state protocol (#749):
 #   0  the label is absent — the row is satisfied

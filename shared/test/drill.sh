@@ -1134,6 +1134,18 @@ phase2_identity_guard triage danmt danmt >/dev/null
 t drill-phase2-triage-equal-identities-pass 0 "$?"
 phase2_identity_guard triage dan-claude-bot danmt >/dev/null
 t drill-phase2-triage-different-identities-pass 0 "$?"
+# #769 — an identity that could not be read is refused, never compared: two
+# empty reads are equal, and triage would otherwise run phase 2 as nobody.
+for phase2_role in triage builder reviewer; do
+  phase2_out="$(phase2_identity_guard "$phase2_role" "" danmt 2>&1)"
+  t "drill-phase2-$phase2_role-unread-box-identity-refused" 1 "$?"
+  t "drill-phase2-$phase2_role-unread-box-identity-named" 1 \
+    "$(grep -cF 'the box gh identity could not be read' <<<"$phase2_out")"
+  phase2_out="$(phase2_identity_guard "$phase2_role" dan-claude-bot "" 2>&1)"
+  t "drill-phase2-$phase2_role-unread-host-identity-refused" 1 "$?"
+  t "drill-phase2-$phase2_role-unread-host-identity-named" 1 \
+    "$(grep -cF 'the host gh identity could not be read' <<<"$phase2_out")"
+done
 unset -f phase2_identity_guard
 
 # --- the attention census: recorded, then asserted, never refused (#714) -----
@@ -3472,6 +3484,27 @@ t w775-the-refusal-reaches-the-release-leg 1 \
 # shellcheck disable=SC2016  # the source text, $ included
 t w775-the-release-leg-skips-on-it-never-fails 1 \
   "$(grep -c 'rehearsal_release_verdict skip "$REHEARSAL_RELEASE_REFUSED"' "$ROOT/drill/rehearsal-release.sh")"
+
+# #769 — an identity read is accepted only in a login's own shape.
+w769_login() {
+  (
+    # shellcheck disable=SC2317  # the sourced file's reads go through bx
+    bx() { return 1; }
+    # shellcheck source=drill/rehearsal-fixtures.sh
+    . "$ROOT/drill/rehearsal-fixtures.sh"
+    gh_login_from "$1"; echo "rc=$?"
+  )
+}
+t w769-a-login-passes $'dan-claude-bot\nrc=0' "$(w769_login $'dan-claude-bot\r\n')"
+t w769-a-401-body-is-no-login "rc=1" "$(w769_login $'{\n  "message": "Bad credentials",\n  "status": "401"\n}')"
+t w769-empty-is-no-login "rc=1" "$(w769_login '')"
+t w769-a-leading-hyphen-is-no-login "rc=1" "$(w769_login '-x')"
+t w769-login-noise-is-no-login "rc=1" "$(w769_login 'Welcome to the box dan-claude-bot')"
+t w769-the-teardown-and-fixtures-copies-agree "" \
+  "$(diff <(sed -n '/^gh_login_from() {/,/^}/p' "$ROOT/drill/teardown.sh") \
+          <(sed -n '/^gh_login_from() {/,/^}/p' "$ROOT/drill/rehearsal-fixtures.sh"))"
+t w769-no-identity-read-keeps-a-failed-body 0 \
+  "$(cat "$ROOT"/drill/*.sh | grep -cE 'gh api user --jq \.login.*(\|\| *true|\|\| *echo)')"
 
 # #750 — the budget is the box's, read the way the engine reads it.
 w750_budget() {  # w750_budget <bx-stdout> <bx-rc> <kind> — "rc=N value=V"

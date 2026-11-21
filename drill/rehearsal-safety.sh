@@ -46,6 +46,16 @@ REHEARSAL_ATTENTION_REASON=""
 # Kept here so shared/test/drill.sh can drive both sides without a box host.
 rehearsal_phase2_identity_guard() { # <role> <box-identity> <host-identity>
   local role="$1" box_identity="$2" host_identity="$3"
+  # An identity that could not be read is refused by name before any compare:
+  # two empty reads are EQUAL, and a triage box would otherwise run phase 2 as
+  # nobody (#769).
+  local unread=""
+  [ -n "$host_identity" ] || unread=host
+  [ -n "$box_identity" ] || unread=box
+  if [ -n "$unread" ]; then
+    printf '%s\n' "phase 2 $role refused: the $unread gh identity could not be read (gh api user failed or answered no login)"
+    return 1
+  fi
   case "$role" in
     triage) return 0 ;;
     builder|reviewer)
