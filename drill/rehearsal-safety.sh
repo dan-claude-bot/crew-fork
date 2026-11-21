@@ -659,14 +659,28 @@ rehearsal_attention_census_assert() {
   rehearsal_attention_graded \
     "attention census: no attention session launched outside $sandbox" \
     rehearsal_attention_no_outside_session "$sandbox" "$log" || rc=1
+  # The demands standing NOW, after the tick (#776). A demand recorded before
+  # the tick that has since left the identity's demands — closed, unlabelled,
+  # unassigned by whoever owns it, most often another drill role's own fixture
+  # when the roles run in parallel on one identity — may have left before the
+  # engine's fetch, and then no correct engine holds a suppressed record for
+  # it. Its suppression row is not graded, and says why. Its pickup row and
+  # the no-outside-session row still are: an engine that WRONGLY acted on it
+  # is caught there, so nothing an engine can get wrong goes unread.
+  local standing standing_ok=1
+  standing="$(rehearsal_attention_census "$sandbox" "$REHEARSAL_ATTENTION_LABEL")" || standing_ok=0
   # fd 3, as in _take above and for the same forward-looking reason: every
   # predicate this loop calls is pure today and pickups_after is read before
   # it, so the shape is harmless right now and the guard is for the next read.
   while read -r repo num <&3; do
     [ -n "${num:-}" ] || continue
     id="$repo#$num"
-    rehearsal_attention_graded "attention census: $id seen and suppressed" \
-      rehearsal_attention_demand_suppressed "$id" "$scope" "$log" || rc=1
+    if [ "$standing_ok" -eq 1 ] && ! grep -qxF -- "$repo $num" <<<"$standing"; then
+      skip "attention census: $id seen and suppressed (not graded: it left the identity's demands during the tick)"
+    else
+      rehearsal_attention_graded "attention census: $id seen and suppressed" \
+        rehearsal_attention_demand_suppressed "$id" "$scope" "$log" || rc=1
+    fi
     before="$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$REHEARSAL_ATTENTION_PICKUPS_BEFORE")"
     after="$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$pickups_after")"
     rehearsal_attention_graded "attention census: $id drew no pickup" \

@@ -1162,6 +1162,8 @@ ATT_SANDBOX="host/crew-drill-builder"
 ATT_MARK="📌 picked up"
 ATT_CENSUS=""
 ATT_CENSUS_PAGE2=""
+# What the endpoint answers AFTER the tick (#776); `same` is "nothing moved".
+ATT_CENSUS_AFTER=same
 ATT_CENSUS_RC=0
 ATT_MARK_CONF="$ATT_MARK"
 ATT_LABEL_CONF="attention"
@@ -1211,6 +1213,10 @@ att_bx() {
         *"labels=$ATT_LABEL_CONF"*) ;;
         *) return 0 ;;
       esac
+      if [ "${ATT_PHASE:-before}" = after ] && [ "$ATT_CENSUS_AFTER" != same ]; then
+        [ -z "$ATT_CENSUS_AFTER" ] || printf '%s\n' "$ATT_CENSUS_AFTER"
+        return 0
+      fi
       [ -z "$ATT_CENSUS" ] || printf '%s\n' "$ATT_CENSUS"
       # ...and a second page that exists on the server and is invisible to a
       # read which does not ask for it, which is how the endpoint behaves and
@@ -1293,6 +1299,8 @@ att_drive() {
   (
     ok()   { echo "ok $1"; }
     fail() { echo "FAIL $1"; }
+    # shellcheck disable=SC2317  # called by the sourced assert half
+    skip() { echo "skip $1"; }
     if [ "${2:-}" = drain ]; then
       bx() { cat >/dev/null 2>&1 || true; att_bx "$1"; }
     else
@@ -1346,6 +1354,31 @@ t drill-attention-census-suppressed-both-green 0 "$(att_fail "$ATT_BOTH")"
 # session row, and a suppressed + no-pickup pair PER recorded demand. A leg
 # that graded the demands as a set would read green here with two rows.
 t drill-attention-census-suppressed-rows 7 "$(att_ok "$ATT_BOTH")"
+# #776 — a recorded demand that left the identity's demands during the tick
+# (another role's fixture, on a parallel round sharing one identity) has no
+# suppressed record a correct engine could hold. Its suppression row is not
+# graded and says why; its pickup row still is.
+ATT_SCOPE_SAVED="$ATT_SCOPE" ATT_LOG_SAVED="$ATT_LOG"
+ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\n')"
+ATT_LOG="$(printf '%s\n' \
+  'WARN attention: outside repos.txt: 1 item(s) in repos this box does not carry, never picked up — heavy-duty/incubator#468(2026-09-10T21:00:00Z) ' \
+  'SESSION START kind=attention key=host/crew-drill-builder#7 timeout=1800s log=/l holder=x sid=1')"
+ATT_CENSUS_AFTER="$(printf 'heavy-duty/incubator 468\n')"
+ATT_LEFT="$(att_drive both)"
+t w776-census-a-demand-that-left-is-not-graded 1 \
+  "$(grep -c "^skip attention census: heavy-duty/incubator#469 seen and suppressed (not graded: it left the identity's demands during the tick)$" <<<"$ATT_LEFT" || true)"
+t w776-census-a-demand-that-left-keeps-its-pickup-row 1 \
+  "$(grep -c '^ok attention census: heavy-duty/incubator#469 drew no pickup$' <<<"$ATT_LEFT" || true)"
+t w776-census-a-demand-that-stayed-is-graded 1 \
+  "$(grep -c '^ok attention census: heavy-duty/incubator#468 seen and suppressed$' <<<"$ATT_LEFT" || true)"
+t w776-census-nothing-red-when-one-left 0 "$(att_fail "$ATT_LEFT")"
+# ...and a demand that STAYED but has no record is still red.
+ATT_CENSUS_AFTER=same
+ATT_STAYED="$(att_drive both)"
+t w776-census-a-standing-unsuppressed-demand-is-still-red 1 \
+  "$(grep -c '^FAIL attention census: heavy-duty/incubator#469 seen and suppressed' <<<"$ATT_STAYED" || true)"
+ATT_SCOPE="$ATT_SCOPE_SAVED" ATT_LOG="$ATT_LOG_SAVED"
+
 # A demand that already carried pickup comments from an earlier life is not a
 # failure: the assertion is a DELTA across the tick, and #469 arrives with 3.
 t drill-attention-census-standing-pickups-are-not-a-pickup 1 \
