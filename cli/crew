@@ -3907,14 +3907,45 @@ restore_box() { # NAME
     esac
     return 0
   fi
-  if ! box down "$name" </dev/null; then
-    echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its ${why%%:*} state asks for FAILED — the host tick will"
-    return 1
+  if ! reset_settle_down "$name"; then
+    case "$why" in
+      # A paused box is the host's to keep down and the host tick never
+      # touches it: a stop that did not take is the operator's to repeat.
+      paused)
+        echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its paused state asks for FAILED twice — its crontab is paused; stop it with: box down $name"
+        return 1 ;;
+      # Past the cap the restore LANDED: the box is on its checkpoint with its
+      # memory back, and the host tick's idle rule stops a box that buys
+      # nothing (#786: a stop sent while the guest was still settling timed
+      # out, and a landed restore read as a failed reset).
+      *)
+        echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is ${why%%:*} (${why#held:} of $FLEET_MAX_RUNNING boxes running), but its stop did not take after a retry — left running for the host tick, which stops it once idle"
+        return 0 ;;
+    esac
   fi
   case "$why" in
     paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — it is paused" ;;
     *) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — ${why#held:} of $FLEET_MAX_RUNNING boxes running; the host tick starts it when there is work" ;;
   esac
+}
+
+# reset_settle_down NAME — the settle's stop, given the guest's boot a chance
+# to finish first (#786). A stop sent to a guest still starting its units can
+# be ignored until systemd is up, and `box down` then gives up on its own
+# deadline; the restore has just booted this guest. So: wait (bounded) for
+# systemd to call the boot done, stop, and on a refusal wait once more and
+# retry. rc 0 when the box went down.
+RESET_SETTLE_BOOT_S="${CREW_RESET_SETTLE_BOOT_S:-90}"
+RESET_STOP_RETRY_S="${CREW_RESET_STOP_RETRY_S:-15}"
+reset_settle_down() {
+  local name="$1"
+  # `--wait` blocks until the boot transaction ends, whatever it ends in;
+  # its answer is not graded here — `degraded` is a booted guest too.
+  bxn "$name" "timeout $RESET_SETTLE_BOOT_S systemctl is-system-running --wait >/dev/null 2>&1; true" >/dev/null 2>&1 || true
+  box down "$name" </dev/null && return 0
+  echo "  $name: the stop did not take; retrying once in ${RESET_STOP_RETRY_S}s"
+  sleep "$RESET_STOP_RETRY_S"
+  box down "$name" </dev/null
 }
 
 # reset_settle_why NAME — why a freshly restored box goes back down: `paused`

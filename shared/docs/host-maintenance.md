@@ -46,7 +46,14 @@ own rule applied to the one verb that could undo it:
   writes its memory back, pauses its crontab again and stops it.
 - **The cap holds.** A box restored while `FLEET_MAX_RUNNING` other boxes
   are running goes back down once its memory is written; the host tick
-  starts it when there is work for it.
+  starts it when there is work for it. The stop waits (up to
+  `CREW_RESET_SETTLE_BOOT_S`, 90 s) for the freshly booted guest to finish
+  its boot, because a guest still starting its units can ignore the graceful
+  stop, and a stop that does not take is retried once
+  (`CREW_RESET_STOP_RETRY_S`, 15 s, later). If it still does not take, the
+  restore has landed anyway: the box is left running and counted restored,
+  and the host tick's idle rule stops it. A paused box whose stop fails twice
+  is a failed reset, because the host tick never stops a paused box (#786).
 - **The first tick waits for the memory.** `crew reset --cut` leaves
   `~/duty/.memory-pending` inside the checkpoint, so a box restored from it
   boots with the marker and `duty.sh` skips every tick (under its own lock)

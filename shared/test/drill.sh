@@ -79,6 +79,7 @@ source_ref="${source_ref:--}"
 # end out of order and the collection is seen to run in role order anyway.
 [ -z "${DRILL_CREDS_LOG:-}" ] || printf '%s %s %s\n' "$role" "${REHEARSAL_CREDS:--}" "${CREW_CREDENTIALS_DIR:--}" >>"$DRILL_CREDS_LOG"
 [ -z "${DRILL_FAST_LOG:-}" ] || printf '%s %s\n' "$role" "${REHEARSAL_FAST:-unset}" >>"$DRILL_FAST_LOG"
+[ -z "${DRILL_SIBLINGS_LOG:-}" ] || printf '%s:%s\n' "$role" "${REHEARSAL_SIBLING_ROLES:-}" >>"$DRILL_SIBLINGS_LOG"
 role_sleep_var="DRILL_SLEEP_$role"
 [ -z "${!role_sleep_var:-}" ] || sleep "${!role_sleep_var}"
 printf '%s %s %s %s %s\n' "$role" "$remote" "$ref" "$shipped" "$source_ref" \
@@ -311,7 +312,8 @@ w776_round() {  # extra args… — the orchestrator's transcript, then "rc=N"
   printf '%s\nrc=%s\n' "$out" "$rc"
 }
 : >"$ROLE_LOG"
-w776_out="$(DRILL_SLEEP_triage=1.2 DRILL_SLEEP_builder=0.6 w776_round --roles 'triage builder reviewer' --keep --parallel \
+W783_SIBS="$TMP/w783-siblings.log"; : >"$W783_SIBS"
+w776_out="$(DRILL_SIBLINGS_LOG="$W783_SIBS" DRILL_SLEEP_triage=1.2 DRILL_SLEEP_builder=0.6 w776_round --roles 'triage builder reviewer' --keep --parallel \
   --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
   --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
 t w776-parallel-runs-every-role 3 "$(wc -l <"$ROLE_LOG" | tr -d ' ')"
@@ -328,12 +330,17 @@ t w776-parallel-heartbeat-names-who-is-still-running 1 \
 t w776-parallel-wall-time-line 1 \
   "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
 t w776-parallel-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
+# #783: each role is told which roles tick alongside it.
+t w783-parallel-each-role-hears-its-siblings "builder:triage reviewer|reviewer:triage builder|triage:builder reviewer" \
+  "$(sort "$W783_SIBS" | paste -sd'|' -)"
 # Sequential is still the default, and still timed.
 : >"$ROLE_LOG"
-w776_out="$(DRILL_SLEEP_triage=0.6 w776_round --roles 'triage builder' --keep \
+: >"$W783_SIBS"
+w776_out="$(DRILL_SIBLINGS_LOG="$W783_SIBS" DRILL_SLEEP_triage=0.6 w776_round --roles 'triage builder' --keep \
   --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
   --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
 t w776-sequential-keeps-role-order "triage builder" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
+t w783-sequential-roles-have-no-siblings "builder:|triage:" "$(sort "$W783_SIBS" | paste -sd'|' -)"
 t w776-sequential-wall-time-line 1 \
   "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
 
@@ -1536,6 +1543,54 @@ ATT_STAYED="$(att_drive both)"
 t w776-census-a-standing-unsuppressed-demand-is-still-red 1 \
   "$(grep -c '^FAIL attention census: heavy-duty/incubator#469 seen and suppressed' <<<"$ATT_STAYED" || true)"
 ATT_SCOPE="$ATT_SCOPE_SAVED" ATT_LOG="$ATT_LOG_SAVED"
+
+# #783 — the rc2 round's builder red: under --parallel a sibling role's own
+# fixture (host/crew-drill-triage#1) is recorded by this role's census, the
+# sibling's box picks it up inside this tick (0 -> 1 on one login) and acks it
+# away. The comment is unattributable, so its pickup row is a skip that says
+# why; the session row stays graded. Not a sibling — or not --parallel — and
+# the same count is the red it always was.
+ATT_CENSUS_SAVED="$ATT_CENSUS" ATT_PICKUPS_BEFORE_SAVED="$ATT_PICKUPS_BEFORE" ATT_PICKUPS_AFTER_SAVED="$ATT_PICKUPS_AFTER"
+ATT_CENSUS="$(printf 'host/crew-drill-triage 1\nheavy-duty/incubator 468\n')"
+ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\n')"
+ATT_LOG="$(printf '%s\n' \
+  'WARN attention: outside repos.txt: 1 item(s) in repos this box does not carry, never picked up — heavy-duty/incubator#468(2026-09-10T21:00:00Z) ' \
+  'SESSION START kind=attention key=host/crew-drill-builder#7 timeout=1800s log=/l holder=x sid=1')"
+ATT_CENSUS_AFTER="$(printf 'heavy-duty/incubator 468\n')"
+ATT_PICKUPS_BEFORE="$(printf 'host/crew-drill-triage#1 0\nheavy-duty/incubator#468 0\n')"
+ATT_PICKUPS_AFTER="$(printf 'host/crew-drill-triage#1 1\nheavy-duty/incubator#468 0\n')"
+W783_SIB="$(REHEARSAL_SIBLING_ROLES='triage reviewer' att_drive both)"
+t w783-census-a-siblings-own-pickup-is-not-graded 1 \
+  "$(grep -c '^skip attention census: host/crew-drill-triage#1 drew no pickup (not graded: a sibling role' <<<"$W783_SIB" || true)"
+t w783-census-sibling-round-is-green 0 "$(att_fail "$W783_SIB")"
+t w783-census-the-session-row-stays-graded 1 \
+  "$(grep -c '^ok attention census: no attention session launched outside host/crew-drill-builder$' <<<"$W783_SIB" || true)"
+t w783-census-a-non-sibling-demand-keeps-its-pickup-row 1 \
+  "$(grep -c '^ok attention census: heavy-duty/incubator#468 drew no pickup$' <<<"$W783_SIB" || true)"
+# Sequential (no siblings): the same comment is this box's to answer for.
+W783_SEQ="$(REHEARSAL_SIBLING_ROLES='' att_drive both)"
+t w783-census-without-siblings-the-pickup-is-red 1 \
+  "$(grep -c '^FAIL attention census: host/crew-drill-triage#1 drew no pickup$' <<<"$W783_SEQ" || true)"
+# A sibling's sandbox whose demand is STILL standing: nobody acked it away, so
+# the delta is graded — a sibling's ack is what makes the comment explicable.
+ATT_CENSUS_AFTER="$(printf 'host/crew-drill-triage 1\nheavy-duty/incubator 468\n')"
+ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\nhost/crew-drill-triage#1 2026-09-10T21:00:02Z\n')"
+W783_STAND="$(REHEARSAL_SIBLING_ROLES='triage reviewer' att_drive both)"
+t w783-census-a-standing-sibling-demand-that-drew-a-pickup-is-red 1 \
+  "$(grep -c '^FAIL attention census: host/crew-drill-triage#1 drew no pickup$' <<<"$W783_STAND" || true)"
+# A non-sibling demand that left and drew a pickup is red under --parallel too.
+ATT_CENSUS="$(printf 'heavy-duty/incubator 470\nheavy-duty/incubator 468\n')"
+ATT_CENSUS_AFTER="$(printf 'heavy-duty/incubator 468\n')"
+ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\n')"
+ATT_PICKUPS_BEFORE="$(printf 'heavy-duty/incubator#470 0\nheavy-duty/incubator#468 0\n')"
+ATT_PICKUPS_AFTER="$(printf 'heavy-duty/incubator#470 1\nheavy-duty/incubator#468 0\n')"
+W783_OUT="$(REHEARSAL_SIBLING_ROLES='triage reviewer' att_drive both)"
+t w783-census-a-left-non-sibling-demand-that-drew-a-pickup-is-red 1 \
+  "$(grep -c '^FAIL attention census: heavy-duty/incubator#470 drew no pickup$' <<<"$W783_OUT" || true)"
+ATT_CENSUS="$ATT_CENSUS_SAVED" ATT_PICKUPS_BEFORE="$ATT_PICKUPS_BEFORE_SAVED" ATT_PICKUPS_AFTER="$ATT_PICKUPS_AFTER_SAVED"
+ATT_SCOPE="$ATT_SCOPE_SAVED" ATT_LOG="$ATT_LOG_SAVED"
+ATT_CENSUS_AFTER=same
+unset ATT_CENSUS_SAVED ATT_PICKUPS_BEFORE_SAVED ATT_PICKUPS_AFTER_SAVED
 
 # A demand that already carried pickup comments from an earlier life is not a
 # failure: the assertion is a DELTA across the tick, and #469 arrives with 3.
@@ -4049,6 +4104,23 @@ t fleet-restore-failure-is-not-a-restore failed \
     <<<'  crew-drill-triage: FAILED — restore failed; the box is stopped and NOT started')"
 t fleet-restore-silence-is-not-a-restore unknown \
   "$(fleet_restore_landing crew-drill-triage armed </dev/null)"
+# #784 — every ending of a restore that landed reads `restored` off its
+# label: held past the cap and stopped again, held and left running, paused.
+t w784-restore-held-and-stopped-again-is-a-restore restored \
+  "$(fleet_restore_landing crew-drill-triage armed \
+    <<<'  crew-drill-triage: restored to armed (crew@0.1.4-rc2), its memory written back, and stopped again — 2 of 2 boxes running; the host tick starts it when there is work')"
+t w784-restore-held-and-left-running-is-a-restore restored \
+  "$(fleet_restore_landing crew-drill-triage armed \
+    <<<'  crew-drill-triage: restored to armed (crew@0.1.4-rc2) and started; it is held (2 of 2 boxes running), but its stop did not take after a retry — left running for the host tick, which stops it once idle')"
+t w784-restore-rc2-stop-failed-shape-is-a-restore restored \
+  "$(fleet_restore_landing crew-drill-triage armed \
+    <<<'  crew-drill-triage: restored to armed (crew@0.1.4-rc2) and started, but the stop its held state asks for FAILED — the host tick will')"
+t w784-restore-held-to-bootstrapped-still-fails wrong-label \
+  "$(fleet_restore_landing crew-drill-triage armed \
+    <<<'  crew-drill-triage: restored to bootstrapped (crew@0.1.4-rc2), its memory written back, and stopped again — 2 of 2 boxes running; the host tick starts it when there is work')"
+t w784-restore-the-label-is-read-to-its-first-space wrong-label \
+  "$(fleet_restore_landing crew-drill-triage armed \
+    <<<'  crew-drill-triage: restored to armed-old (crew@0.1.4-rc2) and started')"
 
 # The restored box's own first-tick evidence. Two files, because neither
 # answers it alone: duty.log carries the gate's verdict and boot-check.log the
@@ -4073,6 +4145,39 @@ cli probe: FAILED')"
 # reading on the FIRST tick.
 t fleet-boot-gate-never-ran-is-unreadable unreadable \
   "$(fleet_boot_gate_reading 'boot gate: new boot id 1a2b3c4d — the box restarted since the last tick' '')"
+# #785 — the rc2 round's restored box: phase 1's logged-out boot in the
+# history, the restored boot passing. Only THIS boot's block is read.
+W785_CHECK='== boot check 2026-11-21T18:18:52+00:00 ==
+You are not logged into any GitHub hosts. To log in, run: gh auth login
+/dev/sda2        29G  6.7G   23G  24% /
+cli probe: FAILED
+== boot check 2026-11-21T18:19:17+00:00 ==
+  ✓ Logged in to github.com account dan-claude-bot (/home/claude/.config/gh/hosts.yml)
+cli probe: ok
+== boot check 2026-11-21T19:01:21+00:00 ==
+  ✓ Logged in to github.com account dan-claude-bot (/home/claude/.config/gh/hosts.yml)
+cli probe: ok'
+W785_DUTY='2026-11-21T18:18:52Z boot gate: first tick on this box (boot id bb62785e)
+2026-11-21T18:18:52Z WARN: boot gate: auth probe failed — duty continues degraded, re-checking every tick
+2026-11-21T18:19:17Z boot gate: first tick on this box (boot id bb62785e)
+2026-11-21T18:19:18Z auth: gh is working again
+2026-11-21T19:01:21Z boot gate: first tick on this box (boot id cda243c8)
+2026-11-21T19:01:22Z duty run start'
+t w785-an-older-boots-failure-is-not-this-boots passing "$(fleet_boot_gate_reading "$W785_DUTY" "$W785_CHECK")"
+t w785-with-the-boot-id-named-it-passes passing \
+  "$(fleet_boot_gate_reading "$W785_DUTY" "$W785_CHECK" cda243c8-1111-2222-3333-444455556666)"
+t w785-a-gate-that-never-ran-on-this-boot-is-unreadable unreadable \
+  "$(fleet_boot_gate_reading "$W785_DUTY" "$W785_CHECK" 0f0f0f0f-1111-2222-3333-444455556666)"
+t w785-this-boots-failed-probe-still-fails failing \
+  "$(fleet_boot_gate_reading "$W785_DUTY" "$W785_CHECK
+== boot check 2026-11-21T19:30:00+00:00 ==
+cli probe: FAILED")"
+t w785-this-boots-auth-failure-still-fails failing \
+  "$(fleet_boot_gate_reading "$W785_DUTY
+2026-11-21T19:30:00Z boot gate: new boot id 77777777 — the box restarted since the last tick
+2026-11-21T19:30:00Z WARN: boot gate: auth probe failed — duty continues degraded, re-checking every tick" "$W785_CHECK")"
+t w785-an-older-boots-auth-failure-is-not-this-boots passing \
+  "$(fleet_boot_gate_reading "$W785_DUTY" "$W785_CHECK" cda243c8)"
 t fleet-boot-gate-without-a-duty-log-verdict-is-unreadable unreadable \
   "$(fleet_boot_gate_reading '' "$FLEET_BOOT_OK")"
 
@@ -4175,7 +4280,10 @@ case "${1:-} ${2:-}" in
     c=0
     for n in $(names); do echo "  $n: armed cut at crew@0.1.4; root filesystem 40% used"; c=$((c + 1)); done
     echo; echo "reset --cut: $c cut, 0 skipped-busy, 0 failed" ;;
-  "reset "*) echo "  $2: restored to armed and started"; echo; echo "reset: 1 restored, 0 skipped-busy, 0 failed" ;;
+  "reset "*)
+    # #784: the cap the round's fleet definition gives the restore.
+    printf 'cap %s\n' "$(sed -n 's/^FLEET_MAX_RUNNING=//p' "$CREW_CONFIG_DIR/fleet.conf" 2>/dev/null | tail -1)" >>"$S/calls"
+    echo "  $2: restored to armed and started"; echo; echo "reset: 1 restored, 0 skipped-busy, 0 failed" ;;
   "status "*) echo "integrity: current (crew@0.1.4)" ;;
   "upgrade "*)
     echo "== upgrading $2"
@@ -4243,6 +4351,7 @@ fl_out="$(fl_run)"
 t fl771-the-all-meaning-is-pinned 1 \
   "$(grep -cx 'ok   restart --all after down leaves every stopped member to the host tick and starts none (3/3)' <<<"$fl_out")"
 t fl771-every-box-came-back 1 "$(grep -cx 'ok   every box the round downed came back (3/3)' <<<"$fl_out")"
+t w784-the-round-caps-its-fleet-at-the-roster-size "cap 3" "$(grep '^cap ' "$FL_STATE/calls" | tail -1)"
 t fl771-the-return-is-one-named-restart-per-box 3 "$(grep -cE '^crew restart crew-drill-(triage|builder|reviewer)$' "$FL_STATE/calls")"
 t fl771-the-cut-reads-standing-boxes 1 \
   "$(grep -cx 'ok   reset --cut --all names an outcome for every roster member' <<<"$fl_out")"

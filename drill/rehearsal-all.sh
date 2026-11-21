@@ -456,6 +456,21 @@ role_prepare() {
   : >"${ROLE_SECTION_FILE[$role]}"
 }
 
+# role_siblings ROLE — the other roles of this round that tick WHILE this one
+# does: every other role under --parallel, none when the roles run one after
+# another (#783). Their boxes answer as the same login, so a demand of their
+# sandbox that this role's census records can be picked up by them, legitimately,
+# inside this role's tick — and a comment by that login cannot say which box
+# wrote it.
+role_siblings() {
+  local r out=""
+  [ "$PARALLEL" -eq 1 ] || return 0
+  for r in $ROLES; do
+    [ "$r" = "$1" ] || out="$out${out:+ }$r"
+  done
+  printf '%s' "$out"
+}
+
 role_invoke() {
   local role="$1"
   REHEARSAL_RESUME_DRILL="$RESUME_DRILL" \
@@ -476,6 +491,7 @@ role_invoke() {
   REHEARSAL_NOTIFY_STATUS="$NOTIFY_STATUS" \
   REHEARSAL_CREDS="$CREDS" \
   REHEARSAL_FAST="$FAST" \
+  REHEARSAL_SIBLING_ROLES="$(role_siblings "$role")" \
   REHEARSAL_SECTION_STATUS="${ROLE_SECTION_FILE[$role]}" \
     "$HERE/rehearsal.sh" --role "$role" "${PASSTHRU[@]+"${PASSTHRU[@]}"}"
 }

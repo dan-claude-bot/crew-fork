@@ -180,6 +180,12 @@ for i in "${!TARGETS[@]}"; do
   printf '%s %s %s\n' "${TARGETS[$i]}" "$AGENT" "${TARGET_ROLES[$i]:-reviewer}" \
     >>"$CONFIG/fleet.roster"
 done
+# The cap at the roster's size (#784). The shipped default is 2 and this
+# fixture has three rows, so with it the restore below lands on `armed` and
+# is then sent back down because the other two run — the settle's held path,
+# not the stay-up path #589 D4 reads its first tick on. The held path is
+# cli-reset.sh's to pin; here the restored box stays up for its gate.
+printf 'FLEET_MAX_RUNNING=%s\n' "${#TARGETS[@]}" >>"$CONFIG/fleet.conf"
 ok "fixture fleet built by crew init (${#TARGETS[@]} roster rows)"
 
 export CREW_CONFIG_DIR="$CONFIG"
@@ -525,9 +531,12 @@ else
   # boot-check.log carries the probe it was taken from; neither answers it alone.
   # shellcheck disable=SC2016  # HOME expands inside the box, not here
   bx "$RESTORE_BOX" '"$HOME"/duty/bin/tick.sh' >/dev/null 2>&1 || true
-  boot_check="$(bx "$RESTORE_BOX" 'tail -40 ~/duty/boot-check.log 2>/dev/null' || true)"
-  duty_log="$(bx "$RESTORE_BOX" 'tail -40 ~/duty/duty.log 2>/dev/null' || true)"
-  gate="$(fleet_boot_gate_reading "$duty_log" "$boot_check")"
+  # Read wide and sliced by the reader to THIS boot (#785); the box's boot
+  # id is what the gate's opening line must name.
+  boot_check="$(bx "$RESTORE_BOX" 'tail -200 ~/duty/boot-check.log 2>/dev/null' || true)"
+  duty_log="$(bx "$RESTORE_BOX" 'tail -400 ~/duty/duty.log 2>/dev/null' || true)"
+  boot_id="$(bx "$RESTORE_BOX" 'cat /proc/sys/kernel/random/boot_id 2>/dev/null' | tr -d '\r' | head -1 || true)"
+  gate="$(fleet_boot_gate_reading "$duty_log" "$boot_check" "$boot_id")"
   echo "  boot gate on the first tick after the restore: $gate"
   case "$gate" in
     passing) ok "$RESTORE_BOX's boot gate passes on its first tick after the restore" ;;

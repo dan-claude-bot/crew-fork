@@ -110,7 +110,7 @@ changing what a full round proves:
 
 | flag | what it does |
 |---|---|
-| `--parallel` | Runs the three roles at once. Each role writes its own transcript, printed whole and in role order once all have ended, with a heartbeat while they run. Safe on one shared identity: the attention census grades suppression only for demands still standing after the tick. |
+| `--parallel` | Runs the three roles at once. Each role writes its own transcript, printed whole and in role order once all have ended, with a heartbeat while they run. Safe on one shared identity: the attention census grades suppression only for demands still standing after the tick, and skips the pickup count for a sibling role's own fixture that its box picked up and acked during the tick, since a comment by the shared login cannot name its box (#783). The session row, read from this box's own `duty.log`, stays graded. |
 | `--legs a,b,…` | Runs only the named legs. The role sections always run. Every other leg reads `not selected by --legs`, and teardown keeps the boxes. A name that is not a declared leg is refused before anything runs. |
 | `--only-failed <log>` | Runs only the legs that `<log>`'s `## leg …` block read FAIL or INCOMPLETE, and lists every other leg as `carried` with that log's state. A selective run can never be mistaken for a whole round. |
 | `--creds gh:<name>,agent:<name>` | Logs the boxes in from the operator's credential pool (`crew creds`, `shared/docs/host-maintenance.md`). The entries are pushed after the creds-free rows have read each box logged out and before phase 2 decides whether it may run, so one pass proves both halves. Rows check the delivery and the login each box answers as. The pool is never written and no entry is assigned. |
