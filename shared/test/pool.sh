@@ -82,7 +82,22 @@ case "$1 $2" in
   *) exit 1 ;;
 esac
 EOF
-chmod +x "$STUB/box" "$STUB/gh"
+cat >"$STUB/curl" <<'CURL'
+#!/usr/bin/env bash
+# Telegram's getMe (#788), on the host and in the boxes alike: the URL comes
+# in on curl's config (-K -), never argv. Every argv is logged so a row can
+# prove no token was ever in one. tg-123:ok answers as crew_alerts_bot,
+# tg-456:ok as crew_second_bot; anything else is refused.
+printf '%s\n' "$*" >>"$POOL_STUB/curl-argv"
+url="$(sed -n 's/^url = "\(.*\)"$/\1/p')"
+tok="${url#https://api.telegram.org/bot}"; tok="${tok%/getMe}"
+case "$tok" in
+  tg-123:ok) echo '{"ok":true,"result":{"id":1,"is_bot":true,"username":"crew_alerts_bot"}}' ;;
+  tg-456:ok) echo '{"ok":true,"result":{"id":2,"is_bot":true,"username":"crew_second_bot"}}' ;;
+  *) echo '{"ok":false,"error_code":401,"description":"Unauthorized"}' ;;
+esac
+CURL
+chmod +x "$STUB/box" "$STUB/gh" "$STUB/curl"
 export BOXES POOL_STUB="$STUB"
 
 ALL_OUT="$TMP/all-output"
@@ -235,8 +250,79 @@ printf '%s\n' "$OUT" >>"$ALL_OUT"
 t pool-another-definition-reaches-the-pool 0 "$RC"
 t pool-another-definition-sets-the-value ghp_bot "$(cat "$BOXES/offroster/.config/gh/token")"
 
+# --- telegram: bots in the pool, one group chat for the fleet (#788) -----------
+creds 'tg-123:ok' add tg alerts
+t tg-add-succeeds 0 "$RC"
+t tg-add-names-the-bot yes "$(has 'tg:alerts stored (bot @crew_alerts_bot)')"
+t tg-add-says-the-chat-is-not-set-yet yes "$(has 'the fleet has no Telegram group chat yet')"
+t tg-add-records-the-bot crew_alerts_bot "$(sed -n 's/^login=//p' "$POOL/entries/tg--alerts/meta")"
+t tg-the-token-is-0600 600 "$(stat -c %a "$POOL/entries/tg--alerts/secret")"
+creds 'tg-999:dead' add tg dead
+t tg-a-refused-token-is-refused 1 "$RC"
+t tg-a-refused-token-says-so yes "$(has 'Telegram refused the token for tg:dead')"
+t tg-a-refused-token-stores-nothing absent "$([ -e "$POOL/entries/tg--dead" ] && echo present || echo absent)"
+creds 'tg-123:ok' add tg x extra
+t tg-add-takes-no-chat-argument 2 "$RC"
+creds '' list
+t tg-list-says-the-chat-is-not-set yes "$(has 'telegram group chat: NOT SET')"
+t tg-list-names-the-bot yes "$(has 'telegram bot @crew_alerts_bot')"
+# Assigned before the chat exists: stored on the roster, refused at the box.
+printf 'running\n' >"$BOXES/beta/.state"
+creds '' assign alpha tg:alerts
+t tg-assign-writes-the-roster-line 1 "$(grep -cE '^alpha claude builder  creds=tg:alerts$' "$CONF/fleet.roster")"
+t tg-without-a-chat-nothing-is-set yes "$(has 'alpha: credential tg:alerts: REFUSED — the fleet has no Telegram group chat yet')"
+t tg-without-a-chat-the-box-has-no-files absent "$([ -e "$BOXES/alpha/.tg_bot_token" ] && echo present || echo absent)"
+# The chat: refused when it is not a chat id; set once; reaches the holders.
+creds '' chat 'my group'
+t tg-a-bad-chat-is-a-usage-error 2 "$RC"
+creds '' chat -1001234567890
+t tg-chat-set-succeeds 0 "$RC"
+t tg-chat-is-stored -1001234567890 "$(cat "$POOL/tg-chat")"
+t tg-chat-reaches-a-running-holder yes "$(has 'alpha: credential tg:alerts: tg: set — bot @crew_alerts_bot, group chat -1001234567890')"
+t tg-the-box-holds-the-token tg-123:ok "$(cat "$BOXES/alpha/.tg_bot_token")"
+t tg-the-box-holds-the-chat -1001234567890 "$(cat "$BOXES/alpha/.tg_chat_id")"
+t tg-the-token-file-is-0600 600 "$(stat -c %a "$BOXES/alpha/.tg_bot_token")"
+creds '' chat
+t tg-chat-reads-back -1001234567890 "$(sed -n 's/^telegram group chat: //p' <<<"$OUT")"
+creds '' chat -1001234567890
+t tg-the-same-chat-again-sends-nothing yes "$(has 'already -1001234567890')"
+# Several bots, shared or one each: a second bot, and two members on one.
+creds 'tg-456:ok' add tg second
+creds '' assign beta tg:alerts
+t tg-a-bot-is-shareable 0 "$RC"
+t tg-the-sharer-holds-the-same-bot tg-123:ok "$(cat "$BOXES/beta/.tg_bot_token")"
+creds '' assign gamma tg:second
+t tg-a-member-may-have-its-own-bot tg-456:ok "$(cat "$BOXES/gamma/.tg_bot_token")"
+t tg-every-holder-gets-the-one-chat -1001234567890 "$(cat "$BOXES/gamma/.tg_chat_id")"
+t tg-a-tg-entry-joins-the-other-services 1 "$(grep -cE '^gamma claude triage  creds=gh:third,tg:second$' "$CONF/fleet.roster")"
+creds '' assign gamma tg:alerts,tg:second
+t tg-two-bots-at-once-is-a-usage-error 2 "$RC"
+# A changed chat reaches every running tg holder, and a stopped one owes it.
+printf 'Stopped\n' >"$BOXES/gamma/.state"
+creds '' chat -1009999999999
+t tg-a-new-chat-reaches-the-running-holders "-1009999999999 -1009999999999" "$(cat "$BOXES/alpha/.tg_chat_id") $(cat "$BOXES/beta/.tg_chat_id")"
+t tg-a-new-chat-names-the-sleeper yes "$(has 'gamma: not running — it gets the new chat when it is next up')"
+creds '' list
+t tg-the-sleeper-owes-its-value 1 "$(grep -A3 'tg:second' <<<"$OUT" | grep -c 'gamma:.*owes the current value' || true)"
+printf 'running\n' >"$BOXES/gamma/.state"
+# A rotation re-asks Telegram and refuses a dead token, keeping the old one.
+creds 'tg-999:dead' rotate tg:alerts
+t tg-a-dead-rotation-is-refused 1 "$RC"
+t tg-a-dead-rotation-keeps-the-old-value tg-123:ok "$(cat "$POOL/entries/tg--alerts/secret")"
+creds 'tg-456:ok' rotate tg:alerts
+t tg-a-rotation-that-changes-the-bot-says-so yes "$(has 'tg:alerts was bot @crew_alerts_bot and is now bot @crew_second_bot')"
+t tg-a-rotation-reaches-the-holders "tg-456:ok tg-456:ok" "$(cat "$BOXES/alpha/.tg_bot_token") $(cat "$BOXES/beta/.tg_bot_token")"
+# The floor's listing carries the chat and the bots, never a token.
+creds '' list --json
+t tg-json-carries-the-chat -1009999999999 "$(jq -r .tg_chat <<<"$OUT")"
+t tg-json-a-tg-entry-has-its-bot crew_second_bot "$(jq -r '.entries[] | select(.id == "tg:alerts") | .login' <<<"$OUT")"
+t tg-json-the-service-is-tg tg "$(jq -r '.entries[] | select(.id == "tg:second") | .service' <<<"$OUT")"
+# The token is in no curl argv, on the host or in a box.
+t tg-no-token-in-any-curl-argv 0 "$(grep -cE 'tg-[0-9]+:' "$STUB/curl-argv" || true)"
+t tg-curl-was-asked 1 "$([ -s "$STUB/curl-argv" ] && echo 1 || echo 0)"
+
 # --- no secret anywhere it should not be --------------------------------------
-for secret in ghp_bot ghp_bot2 ghp_other ghp_third ghp_nope ghp_dead sk-ant-oat-first sk-ant-oat-second; do
+for secret in ghp_bot ghp_bot2 ghp_other ghp_third ghp_nope ghp_dead sk-ant-oat-first sk-ant-oat-second tg-123:ok tg-456:ok tg-999:dead; do
   t "pool-no-output-carries-$secret" 0 "$(grep -c -- "$secret" "$ALL_OUT" || true)"
   t "pool-the-journal-carries-no-$secret" 0 "$(grep -c -- "$secret" "$CONF/.credentials-journal.log" 2>/dev/null || true)"
   t "pool-no-record-carries-$secret" 0 "$(cat "$POOL"/delivered/* "$POOL"/verdicts/* "$POOL"/entries/*/meta 2>/dev/null | grep -c -- "$secret" || true)"

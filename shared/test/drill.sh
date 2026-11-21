@@ -52,6 +52,39 @@ cp "$ROOT/drill/rehearsal-all.sh" "$ROOT/drill/rehearsal-notify.sh" \
 # fixture (#656).
 cp "$ROOT/drill/fleet-lifecycle.sh" "$HARNESS/"
 cp "$ROOT/drill/rehearsal-report.sh" "$HARNESS/"
+# #789: the self-armed app pass, through a stub transport that keeps one
+# box's cron and clock offset in files. Exported once: every round in this
+# suite that reaches the app phase without --app-roster drives it.
+cp "$ROOT/drill/rehearsal-armed-self.sh" "$HARNESS/"
+ARMED_STATE="$TMP/armed-state"; mkdir -p "$ARMED_STATE"
+cat >"$TMP/armed-box" <<'ABOX'
+#!/usr/bin/env bash
+S="$ARMED_STATE"
+printf '%s\n' "$*" >>"$S/calls"
+off() { cat "$S/offset" 2>/dev/null || echo 0; }
+case "$1" in
+  exec)
+    cmd="${*: -1}"
+    case "$cmd" in
+      *'echo "*/5 * * * * $HOME/duty/bin/tick.sh"'*) [ -n "${ARMED_STUB_NO_ARM:-}" ] || : >"$S/armed" ;;
+      *'crontab "$tmp"'*) [ -n "${ARMED_STUB_STUCK_CRON:-}" ] || rm -f "$S/armed" ;;
+      *'grep -qF "$HOME/duty/bin/tick.sh" <<<"$out"'*) [ -e "$S/armed" ] ;;
+      'date +%s') echo "$(( $(date +%s) + $(off) ))" ;;
+      *'duty/bin/tick.sh') printf 'tick offset=%s armed=%s\n' "$(off)" "$([ -e "$S/armed" ] && echo 1 || echo 0)" >>"$S/ticks" ;;
+      *) exit 1 ;;
+    esac ;;
+  incus)
+    [ -z "${ARMED_STUB_NO_ROOT:-}" ] || exit 1
+    cmd="${*: -1}"
+    case "$cmd" in
+      *'+ '*) n="${cmd##*+ }"; n="${n%% *}"; echo "$n" >"$S/offset" ;;
+      *'date -s @'[0-9]*) [ -n "${ARMED_STUB_STUCK_CLOCK:-}" ] || echo 0 >"$S/offset" ;;
+    esac ;;
+  *) exit 2 ;;
+esac
+ABOX
+chmod +x "$TMP/armed-box"
+export ARMED_SELF_BOX_CMD="$TMP/armed-box" ARMED_STATE
 cat >"$HARNESS/rehearsal.sh" <<'ROLE'
 #!/usr/bin/env bash
 role="" remote="" ref="" tree="" source_ref=""
@@ -400,9 +433,20 @@ w774_out="$(w774_round --creds gh:nobody)"
 t w774-a-missing-entry-is-refused-before-any-role 1 "$(grep -c "no pool entry gh:nobody in $W774_POOL" <<<"$w774_out")"
 t w774-a-missing-entry-runs-no-role 0 "$(grep -c . "$W774_LOG")"
 w774_out="$(w774_round --creds gh:bot,gh:other)"
-t w774-two-gh-entries-are-refused 1 "$(grep -c 'one gh and one agent entry at most' <<<"$w774_out")"
+t w774-two-gh-entries-are-refused 1 "$(grep -c 'one gh, one agent and one tg entry at most' <<<"$w774_out")"
 w774_out="$(w774_round --creds 'bot')"
-t w774-a-malformed-entry-is-refused 1 "$(grep -c "'bot' is not gh:<name> or agent:<name>" <<<"$w774_out")"
+t w774-a-malformed-entry-is-refused 1 "$(grep -c "'bot' is not gh:<name>, agent:<name> or tg:<name>" <<<"$w774_out")"
+# #788 — a tg entry rides --creds, and needs the pool's group chat first.
+mkdir -p "$W774_POOL/entries/tg--alerts"; printf 'tg-x\n' >"$W774_POOL/entries/tg--alerts/secret"
+w774_out="$(w774_round --creds gh:bot,agent:max,tg:alerts)"
+t w788-a-tg-entry-without-the-chat-is-refused-first 1 "$(grep -c 'tg:alerts needs the fleet.s Telegram group chat — set it first: crew creds chat <chat-id>' <<<"$w774_out")"
+t w788-a-tg-entry-without-the-chat-runs-no-role 0 "$(grep -c . "$W774_LOG")"
+printf -- '-1001234567890\n' >"$W774_POOL/tg-chat"
+w774_out="$(w774_round --creds gh:bot,agent:max,tg:alerts)"
+t w788-a-tg-entry-reaches-every-role "triage gh:bot,agent:max,tg:alerts $W774_POOL|builder gh:bot,agent:max,tg:alerts $W774_POOL" "$(paste -sd'|' "$W774_LOG")"
+w774_out="$(w774_round --creds tg:alerts,tg:other)"
+t w788-two-tg-entries-are-refused 1 "$(grep -c 'one gh, one agent and one tg entry at most' <<<"$w774_out")"
+rm -rf "$W774_POOL/entries/tg--alerts" "$W774_POOL/tg-chat"
 w774_out="$(w774_round)"
 t w774-no-creds-hands-the-roles-nothing "triage - -|builder - -" "$(sed "s|$W774_POOL|-|" "$W774_LOG" | paste -sd'|')"
 # The push sits after the creds-free rows and before phase 2 decides.
@@ -512,12 +556,13 @@ t drill-phase2-failure-runs-app 1 \
 t drill-phase2-records-browser-executed 1 \
   "$(grep -c '^## leg executed browser  (ok; read-only browser walk executed)' \
     <<<"$phase2_out")"
-t drill-phase2-records-app-armed-blocker 1 \
-  "$(grep -c '^## leg not-executed app-armed  (skip; not requested: no --app-roster; requires an armed member)' \
+# #789: with no --app-roster the round's own box is armed for the second pass.
+t drill-phase2-records-app-armed-on-its-own-box 1 \
+  "$(grep -c "^## leg executed app-armed  (ok; agreement compared; the round's own box" \
     <<<"$phase2_out")"
-t drill-phase2-failure-invokes-config-and-app $'config\napp' "$(cat "$SECTION_LOG")"
-t drill-phase2-summary-counts-four-passed 1 \
-  "$(grep -cE '^## section states: 4 passed, 1 failed, [0-9]+ skipped/not-run$' <<<"$phase2_out")"
+t drill-phase2-failure-invokes-config-and-app $'config\napp\napp' "$(cat "$SECTION_LOG")"
+t drill-phase2-summary-counts-five-passed 1 \
+  "$(grep -cE '^## section states: 5 passed, 1 failed, [0-9]+ skipped/not-run$' <<<"$phase2_out")"
 
 if armed_out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
     DRILL_SECTION_LOG="$SECTION_LOG" DRILL_REMOTE="$REMOTE" \
@@ -696,7 +741,7 @@ t drill-missing-app-roster-runs-no-installer 0 "$(wc -l <"$INSTALL_LOG" | tr -d 
 if disarmed_out="$(DRILL_ROLE_LOG="$ROLE_LOG" \
     DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_SECTION_LOG="$SECTION_LOG" \
     DRILL_APP_STATUS=could-not-compare DRILL_REMOTE="$REMOTE" \
-    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles reviewer --keep \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles reviewer --keep --no-app-armed-self \
       --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
       --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill 2>&1)"; then
   disarmed_rc=0
@@ -709,6 +754,87 @@ t drill-disarmed-only-record-says-could-not-compare 1 \
     <<<"$disarmed_out")"
 t drill-disarmed-only-record-has-no-green-app-row 0 \
   "$(grep -cE '^##   ok +app  ' <<<"$disarmed_out" || true)"
+
+# #789, option 1 — with no --app-roster the round arms ITS OWN box, skews its
+# clock, ticks it, runs the armed pass on it, and puts back what it changed.
+w789_round() {  # env… — the orchestrator's transcript, then rc=N
+  local out rc=0
+  rm -f "$ARMED_STATE"/*
+  : >"$APP_LOG"
+  out="$(env DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
+    DRILL_SECTION_LOG="$SECTION_LOG" DRILL_APP_LOG="$APP_LOG" DRILL_REMOTE="$REMOTE" \
+    DRILL_APP_STATUS=could-not-compare "$@" \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles 'reviewer builder' --keep \
+      --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+      --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+w789_out="$(w789_round)"
+t w789-self-armed-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w789_out")"
+t w789-self-armed-pass-is-recorded 1 \
+  "$(grep -cF "ok         app-armed  (agreement compared; the round's own box, armed and skewed 120s for the pass, then restored)" <<<"$w789_out")"
+t w789-the-generated-pass-hands-over-to-it 1 \
+  "$(grep -cF 'ok         app  (agreement could-not-compare; armed comparison follows)' <<<"$w789_out")"
+t w789-the-first-drilled-box-is-the-one-armed 1 \
+  "$(grep -c "^## fleet app — armed comparison on the round's own box (crew-drill-reviewer)$" <<<"$w789_out")"
+t w789-the-second-pass-is-named-and-read-only 1 \
+  "$(sed -n '2p' "$APP_LOG" | grep -cE -- '^--roster [^ ]+ --no-browser$')"
+t w789-the-tick-ran-armed-and-skewed "tick offset=120 armed=1" "$(cat "$ARMED_STATE/ticks")"
+t w789-the-box-ends-disarmed absent "$([ -e "$ARMED_STATE/armed" ] && echo present || echo absent)"
+t w789-the-box-ends-on-the-host-clock 0 "$(cat "$ARMED_STATE/offset")"
+t w789-the-restore-is-said 1 "$(grep -c '^== crew-drill-reviewer restored: cron disarmed, clock back on the host clock' <<<"$w789_out")"
+# Arm, skew and tick come in that order, all before the pass.
+t w789-arm-then-skew-then-tick 1 \
+  "$(awk '/crontab -$/{a=NR} /date -s @\$\(\( \$\(date \+%s\) \+ 120/{s=NR} /duty\/bin\/tick.sh$/{if(!k)k=NR} END{print (a && s && k && a<s && s<k) ? 1 : 0}' "$ARMED_STATE/calls")"
+# The root call could not move the clock: not presented, and the cron it DID
+# arm is taken back off — the clock, never moved, is still set to the host's.
+w789_out="$(w789_round ARMED_STUB_NO_ROOT=1)"
+t w789-no-root-is-incomplete 1 "$(grep -cx 'rc=2' <<<"$w789_out")"
+t w789-no-root-says-why 1 \
+  "$(grep -cF "INCOMPLETE app-armed  (not presented: crew-drill-reviewer's clock did not move as root" <<<"$w789_out")"
+t w789-no-root-runs-no-armed-pass 1 "$(wc -l <"$APP_LOG" | tr -d ' ')"
+t w789-no-root-still-disarms absent "$([ -e "$ARMED_STATE/armed" ] && echo present || echo absent)"
+# Cron that would not arm: nothing touched, nothing "restored", no root call.
+w789_out="$(w789_round ARMED_STUB_NO_ARM=1)"
+t w789-no-arm-is-incomplete 1 "$(grep -cF "INCOMPLETE app-armed  (not presented: could not arm crew-drill-reviewer's cron)" <<<"$w789_out")"
+t w789-no-arm-touches-nothing-else 0 "$(grep -c '^incus ' "$ARMED_STATE/calls" || true)"
+t w789-no-arm-says-untouched 1 "$(grep -c '^== crew-drill-reviewer untouched: nothing to restore$' <<<"$w789_out")"
+# A box left armed or skewed is a FAILED leg, whatever the pass said.
+w789_out="$(w789_round ARMED_STUB_STUCK_CRON=1)"
+t w789-a-cron-left-armed-is-red 1 "$(grep -cx 'rc=1' <<<"$w789_out")"
+t w789-a-cron-left-armed-says-so 1 \
+  "$(grep -cF "FAIL       app-armed  (the round's own box was not restored: its cron is STILL armed" <<<"$w789_out")"
+w789_out="$(w789_round ARMED_STUB_STUCK_CLOCK=1)"
+t w789-a-clock-left-skewed-is-red 1 \
+  "$(grep -cF "FAIL       app-armed  (the round's own box was not restored: its clock is -120s off the host's" <<<"$w789_out")"
+# Opted out: said so, and no box is touched.
+rm -f "$ARMED_STATE"/*
+w789_out="$(env DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
+    DRILL_SECTION_LOG="$SECTION_LOG" DRILL_REMOTE="$REMOTE" \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles reviewer --keep --no-app-armed-self \
+      --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+      --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill 2>&1)"
+t w789-opted-out-says-so 1 "$(grep -cF 'skip       app-armed  (not requested: --no-app-armed-self and no --app-roster)' <<<"$w789_out")"
+t w789-opted-out-touches-no-box 0 "$({ grep -c . "$ARMED_STATE/calls" 2>/dev/null || echo 0; } | tail -1)"
+
+# #789 — the browser leg's needs are said at the START of the round.
+eval "$(sed -n '/^browser_preflight_gap() {/,/^}/p' "$ROOT/drill/rehearsal-all.sh")"
+W789_ROOT="$TMP/w789-root"; mkdir -p "$W789_ROOT/drill"
+W789_CHROME="$TMP/w789-chrome"; printf '#!/bin/sh\n' >"$W789_CHROME"; chmod +x "$W789_CHROME"
+if command -v node >/dev/null 2>&1; then
+  t w789-preflight-names-a-missing-module 1 \
+    "$(PW_CHROME="$W789_CHROME" browser_preflight_gap "$W789_ROOT" | grep -c "playwright-core is not installed in $W789_ROOT — (cd $W789_ROOT && npm i --no-save playwright-core)")"
+  mkdir -p "$W789_ROOT/node_modules/playwright-core"
+  printf 'module.exports = {};\n' >"$W789_ROOT/node_modules/playwright-core/index.js"
+  t w789-preflight-is-silent-when-ready "" "$(PW_CHROME="$W789_CHROME" browser_preflight_gap "$W789_ROOT")"
+  t w789-preflight-names-a-missing-browser 1 \
+    "$(PW_CHROME="$TMP/no-such-chrome" browser_preflight_gap "$W789_ROOT" | grep -c 'no Chrome/Chromium found — install one, or set PW_CHROME=/path/to/chrome')"
+else
+  t w789-preflight-names-a-missing-node 1 "$(PW_CHROME="$W789_CHROME" browser_preflight_gap "$W789_ROOT" | grep -c 'node is not installed')"
+fi
+# The orchestrator prints it before any role runs.
+t w789-preflight-precedes-the-roles 1 \
+  "$(awk '/browser_gap="\$\(browser_preflight_gap/{p=NR} /^role_prepare\(\) \{/{r=NR} END{print (p && r && p < r) ? 1 : 0}' "$ROOT/drill/rehearsal-all.sh")"
 
 summary_count_matches_rows() {
   local record="$1" headline counted rows

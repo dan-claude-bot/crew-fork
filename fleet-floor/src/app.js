@@ -7048,14 +7048,14 @@ function poolAssignCell(m){
       +poolEntriesOf(svc,m.agent).map(function(e){return '<option value="'+esc(e.id)+'"'+(e.id===cur?' selected':'')+'>'+esc(e.id)+(e.login?' ('+esc(e.login)+')':'')+'</option>';}).join('')
       +'</select>';
   };
-  return '<td>'+sel("gh","gh")+sel("agent",m.agent)
+  return '<td>'+sel("gh","gh")+sel("agent",m.agent)+sel("tg","telegram")
     +'<div class="rosst">'+(held.length?'assigned: '+esc(held.join(", ")):'nothing assigned')+'</div>'
     +'<button class="lbtn" data-pool-act="assign">Assign</button>'
     +(held.length?' <button class="lbtn" data-pool-act="unassign" title="the box keeps the value it holds until it is set again">Clear</button>':'')
     +'<div class="rosst poolverdict"></div></td>';
 }
 function poolEntryRow(e){
-  var who=e.service==="gh"?"answers as "+(e.login||"?"):(e.agent+" "+e.kind);
+  var who=e.service==="gh"?"answers as "+(e.login||"?"):e.service==="tg"?"telegram bot @"+(e.login||"?"):(e.agent+" "+e.kind);
   var refused=(e.members||[]).filter(function(m){return m.verdict&&!m.verdict.ok;}).map(function(m){return m.box;});
   var holders=(e.members||[]).length?(e.members||[]).map(function(m){
       return esc(m.box)+": "+(m.verdict?(m.verdict.ok?"✓":"✗")+" "+esc(m.verdict.text||""):"not delivered yet")+(m.owes?" · owes the current value":"");
@@ -7075,11 +7075,16 @@ function poolSection(members){
   POOL.kinds=agents;
   var names=Object.keys(agents);
   return '<div class="regnote">The <b>pool</b>: a credential stored once on the host, assigned to members above, and carried to each box by the system — at hire, when the host tick wakes it, after a reset, and at once to every running member when you rotate. '
-    +'One GitHub entry may feed several members only while their repositories do not overlap. Values are never shown back.'
+    +'One GitHub entry may feed several members only while their repositories do not overlap. A Telegram bot may feed any number of members, and every bot delivers the fleet\'s one group chat. Values are never shown back.'
     +(POOL.error?'<br><b>'+esc(POOL.error)+'</b>':'')+'</div>'
+    /* The fleet's Telegram group chat (#788): one for the whole fleet, not a secret. */
+    +'<div class="regnote poolchat">Telegram group chat: <input class="rosin" data-k="pool-chat" spellcheck="false" placeholder="-1001234567890" value="'+esc(POOL.tg_chat||"")+'">'
+    +'<button class="lbtn" data-pool-act="chat">Set chat</button>'
+    +(POOL.tg_chat?'':' <span class="rosst bad">not set — no telegram bot reaches a box until it is</span>')
+    +'<span class="rosst poolverdict"></span></div>'
     +'<table class="rostbl"><thead><tr><th>entry</th><th>held by</th><th></th></tr></thead><tbody id="poollist">'
     +(POOL.entries||[]).map(poolEntryRow).join('')
-    +'<tr class="pooladd"><td><select class="rosin" data-k="pool-svc"><option value="gh">gh</option>'+(names.length?'<option value="agent">agent</option>':'')+'</select>'
+    +'<tr class="pooladd"><td><select class="rosin" data-k="pool-svc"><option value="gh">gh</option>'+(names.length?'<option value="agent">agent</option>':'')+'<option value="tg">tg</option></select>'
     +'<input class="rosin" data-k="pool-name" placeholder="name" spellcheck="false"></td>'
     +'<td><select class="rosin" data-k="pool-agent" disabled>'+names.map(function(a){return '<option>'+esc(a)+'</option>';}).join('')+'</select>'
     +'<select class="rosin" data-k="pool-kind" disabled>'+((agents[names[0]]||[]).map(function(k){return '<option>'+esc(k)+'</option>';}).join(''))+'</select></td>'
@@ -7101,6 +7106,11 @@ function onPoolClick(b){
     if(what==="unassign"&&!confirm("Clear "+box+"'s pool assignment? Its box keeps the values it holds until they are set again."))return;
     return act("box:"+box,"pool-"+what,what==="assign"?{box:box,entries:picked}:{box:box})
       .then(function(r){poolSay(tr,r);if(r&&r.ok)openCreds();});
+  }
+  if(what==="chat"){
+    var row=b.closest(".poolchat"),chat=row.querySelector('[data-k="pool-chat"]').value.trim();
+    if(!/^-?[0-9]{1,20}$/.test(chat)){setStatus("pool-chat: a Telegram chat id is digits, negative for a group",true);return;}
+    return act("ov:pool","pool-chat",{chat:chat}).then(function(r){poolSay(row,r);if(r&&r.ok)openCreds();});
   }
   var inp=tr.querySelector('[data-k="pool-secret"]'),secret=inp?inp.value:"";
   if(what==="rm"){

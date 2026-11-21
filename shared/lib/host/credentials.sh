@@ -14,6 +14,9 @@
 #   file-fn:FN     a file at the path the profile's FN prints (CODEX_HOME…)
 #   codex-login:   `codex login --with-api-key`, the secret on its stdin
 # gh takes one kind, `token`: `gh auth login --with-token`, then setup-git.
+# tg takes one kind, `bot` (#788): the bot token and the fleet's group chat
+# (the header's third field — a chat id is not a secret) land in the two
+# files shared/bin/notify.sh reads, ~/.tg_bot_token and ~/.tg_chat_id.
 #
 # shellcheck shell=bash
 
@@ -30,7 +33,8 @@ credentials_kinds() {
   printf '%s' "${out# }"
 }
 
-# host_credentials_set_sh — stdin: one header line `<gh|agent> <kind>`, then
+# host_credentials_set_sh — stdin: one header line `<gh|agent> <kind>` (or
+# `tg bot <chat>`), then
 # the secret. Prints one verdict line; never the secret. rc 0 set and not
 # known bad, 1 set and refused or logged out, 2 nothing set (a bad request).
 host_credentials_set_sh() {
@@ -39,7 +43,7 @@ host_credentials_set_sh() {
 umask 077
 DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
 CRED_ENV="$HOME/.config/crew/credentials.env"
-IFS=' ' read -r svc kind _ || { echo "credentials: nothing arrived — nothing set" >&2; exit 2; }
+IFS=' ' read -r svc kind chat _ || { echo "credentials: nothing arrived — nothing set" >&2; exit 2; }
 secret="$(cat)"
 # A pasted token's trailing newline is the paste's; a JSON file keeps its own.
 case "$kind" in *-json) ;; *) secret="${secret%$'\n'}"; secret="${secret%$'\r'}" ;; esac
@@ -128,7 +132,30 @@ case "$svc" in
       *) echo "agent: $kind set ($agent) — it cannot be checked locally; the next session is the test" ;;
     esac
     ;;
-  *) echo "credentials: the service is gh or agent — nothing set" >&2; exit 2 ;;
+  tg)
+    [ "$kind" = bot ] || { echo "tg: the one kind is 'bot' (a bot token) — nothing set" >&2; exit 2; }
+    case "$secret" in *[[:space:]]*|'') echo "tg: a bot token is one word — nothing set" >&2; exit 2 ;; esac
+    [[ "$chat" =~ ^-?[0-9]{1,20}$ ]] || { echo "tg: the group chat '$chat' is not a chat id — nothing set" >&2; exit 2; }
+    cred_write "$HOME/.tg_bot_token" || { echo "tg: ~/.tg_bot_token could not be written — nothing set" >&2; exit 2; }
+    secret="$chat"
+    cred_write "$HOME/.tg_chat_id" || { echo "tg: ~/.tg_chat_id could not be written" >&2; exit 1; }
+    # The verdict is Telegram's own getMe, asked FROM the box (its egress is
+    # the one notify.sh uses). The token rides curl's config on stdin, never
+    # its argv, so no process listing in the box carries it.
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "tg: set (chat $chat) — curl is missing, so it cannot be checked here; the next alert is the test"; exit 0
+    fi
+    me="$(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$(cat "$HOME/.tg_bot_token")" \
+      | curl -sS -m 20 -K - 2>/dev/null || true)"
+    case "$me" in
+      *'"ok":true'*)
+        bot="$(printf '%s' "$me" | jq -r '.result.username // empty' 2>/dev/null || true)"
+        echo "tg: set — bot @${bot:-?}, group chat $chat" ;;
+      *'"ok":false'*) echo "tg: set, but Telegram refused the token (getMe) — rotate it"; exit 1 ;;
+      *) echo "tg: set (chat $chat) — Telegram did not answer from this box; the next alert is the test" ;;
+    esac
+    ;;
+  *) echo "credentials: the service is gh, agent or tg — nothing set" >&2; exit 2 ;;
 esac
 # ---END---
 CREDENTIALS_SH

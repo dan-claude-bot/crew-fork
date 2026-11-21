@@ -46,6 +46,9 @@ KEEP=0
 APP=1
 APP_ARGS=()
 APP_ROSTER=""
+# #789: with no --app-roster, the round arms one of its own boxes, skews its
+# clock and runs the armed pass against it (drill/rehearsal-armed-self.sh).
+ARMED_SELF=1
 # Operator-config convergence is a real-host rehearsal too. One installed box
 # is enough to exercise the registry contract; running the destructive/restore
 # cycle once per role adds risk without adding a distinct code path.
@@ -144,6 +147,7 @@ while [ $# -gt 0 ]; do
     --app-boxes) APP_ARGS+=(--boxes "$2"); shift 2 ;;
     --app-allow-control) APP_ARGS+=(--allow-control); shift ;;
     --app-roster) APP_ROSTER="$2"; shift 2 ;;
+    --no-app-armed-self) ARMED_SELF=0; shift ;;
     --app-shots) APP_ARGS+=(--shots "$2"); shift 2 ;;
     --parallel) PARALLEL=1; shift ;;
     --fast) FAST=1; shift ;;
@@ -152,7 +156,7 @@ while [ $# -gt 0 ]; do
     --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
        echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--app-boxes \"a b\"] [--app-allow-control]"
-       echo "         [--app-roster <path>] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>]"; exit 1 ;;
+       echo "         [--app-roster <path>] [--no-app-armed-self] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>[,tg:<name>]]"; exit 1 ;;
   esac
 done
 
@@ -218,10 +222,10 @@ fi
 if [ -n "$CREDS" ]; then
   creds_seen=""
   for creds_entry in ${CREDS//,/ }; do
-    [[ "$creds_entry" =~ ^(gh|agent):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] \
-      || { echo "drill/rehearsal-all.sh: --creds: '$creds_entry' is not gh:<name> or agent:<name>" >&2; exit 1; }
+    [[ "$creds_entry" =~ ^(gh|agent|tg):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] \
+      || { echo "drill/rehearsal-all.sh: --creds: '$creds_entry' is not gh:<name>, agent:<name> or tg:<name>" >&2; exit 1; }
     case " $creds_seen " in *" ${creds_entry%%:*} "*)
-      echo "drill/rehearsal-all.sh: --creds: one gh and one agent entry at most" >&2; exit 1 ;; esac
+      echo "drill/rehearsal-all.sh: --creds: one gh, one agent and one tg entry at most" >&2; exit 1 ;; esac
     creds_seen="$creds_seen ${creds_entry%%:*}"
   done
   if [ -z "${CREW_CREDENTIALS_DIR:-}" ]; then
@@ -235,6 +239,11 @@ if [ -n "$CREDS" ]; then
   for creds_entry in ${CREDS//,/ }; do
     [ -r "$CREW_CREDENTIALS_DIR/entries/${creds_entry%%:*}--${creds_entry#*:}/secret" ] \
       || { echo "drill/rehearsal-all.sh: --creds: no pool entry $creds_entry in $CREW_CREDENTIALS_DIR" >&2; exit 1; }
+    # A bot without the fleet's group chat reaches no box (#788): refused
+    # here, before an hour of round, not at the push.
+    if [ "${creds_entry%%:*}" = tg ] && [ ! -s "$CREW_CREDENTIALS_DIR/tg-chat" ]; then
+      echo "drill/rehearsal-all.sh: --creds: $creds_entry needs the fleet's Telegram group chat — set it first: crew creds chat <chat-id>" >&2; exit 1
+    fi
   done
   export CREW_CREDENTIALS_DIR
   echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
@@ -314,6 +323,8 @@ fi
 # where the two could drift.
 # shellcheck source=drill/fleet-lifecycle.sh
 . "$HERE/fleet-lifecycle.sh"
+# shellcheck source=drill/rehearsal-armed-self.sh
+. "$HERE/rehearsal-armed-self.sh"
 NOTIFY_STATUS="$(mktemp)"
 RESUME_STATUS="$(mktemp)"
 ATTENTION_STATUS="$(mktemp)"
@@ -383,6 +394,12 @@ cleanup_role_hygiene_files() {
   [ -z "${APP_AGREEMENT_STATUS:-}" ] || rm -f -- "$APP_AGREEMENT_STATUS"
   [ -z "${APP_OUTPUT:-}" ] || rm -f -- "$APP_OUTPUT"
   [ -z "${FLEET_STATUS:-}" ] || rm -f -- "$FLEET_STATUS"
+  # A round interrupted inside the self-armed pass (#789) must not leave its
+  # box armed or skewed: the stage says what was changed, and only that is
+  # undone. Here and not under a second trap, for the reason given above.
+  if [ "${ARMED_SELF_STAGE:-0}" -gt 0 ] && [ -n "${ARMED_SELF_BOX:-}" ]; then
+    armed_self_restore "$ARMED_SELF_BOX" >&2 || true
+  fi
 }
 trap cleanup_role_hygiene_files EXIT
 
@@ -421,6 +438,34 @@ if [ "$KEEP" -eq 0 ]; then
   teardown_gap="$(host_token_scope_gap "$HOST_TOKEN_HEADERS" delete_repo)"
   [ -z "$teardown_gap" ] \
     || echo "preflight: WARNING — a green round's teardown will not delete the sandboxes: $teardown_gap"
+fi
+
+# The browser leg's two needs (#789), said NOW rather than in the summary an
+# hour later. The same probes rehearsal-app.sh runs before its walk: the module
+# resolved from the checkout the page reader lives in (node looks beside the
+# script, so it is resolved from ROOT, not the cwd), and a browser binary.
+browser_preflight_gap() { # ROOT — prints what is missing, nothing when ready
+  local root="$1" gap="" cand found="${PW_CHROME:-}"
+  if ! command -v node >/dev/null 2>&1; then
+    gap="node is not installed"
+  elif ! (cd "$root" && node -e "require('playwright-core')") >/dev/null 2>&1; then
+    gap="playwright-core is not installed in $root — (cd $root && npm i --no-save playwright-core)"
+  fi
+  if [ -z "$found" ]; then
+    for cand in /usr/bin/google-chrome /usr/bin/google-chrome-stable \
+                /opt/google/chrome/chrome /usr/bin/chromium-browser /usr/bin/chromium; do
+      if [ -x "$cand" ]; then found="$cand"; break; fi
+    done
+  fi
+  if [ -z "$found" ] || [ ! -x "$found" ]; then
+    gap="${gap}${gap:+; }no Chrome/Chromium found — install one, or set PW_CHROME=/path/to/chrome"
+  fi
+  printf '%s' "$gap"
+}
+if [ "$APP" -eq 1 ]; then
+  browser_gap="$(browser_preflight_gap "$(dirname "$HERE")")"
+  [ -z "$browser_gap" ] \
+    || echo "preflight: the browser leg will read INCOMPLETE: $browser_gap"
 fi
 
 # --- the role sections ---------------------------------------------------
@@ -881,7 +926,7 @@ if [ "$APP" -eq 1 ] && [ "$GENERATED_APP" -eq 1 ]; then
   app_agreement="$(cat "$APP_AGREEMENT_STATUS" 2>/dev/null || true)"
   case "$rc" in
     0)
-      case "$app_agreement:$APP_ROSTER" in
+      case "$app_agreement:$APP_ROSTER$([ "$ARMED_SELF" -eq 0 ] || echo self)" in
         compared:*) SUMMARY+=("ok         app  (agreement compared; collector + page)") ;;
         could-not-compare:?*) SUMMARY+=("ok         app  (agreement could-not-compare; armed comparison follows)") ;;
         could-not-compare:)
@@ -935,8 +980,53 @@ if [ "$APP" -eq 1 ] && [ -n "$APP_ROSTER" ]; then
       esac ;;
     *) SUMMARY+=("FAIL       app-armed"); overall=1 ;;
   esac
+elif [ "$APP" -eq 1 ] && [ "$ARMED_SELF" -eq 1 ] && [ "$GENERATED_APP" -eq 1 ]; then
+  # #789, option 1: the round's OWN box, armed, ticked and clock-skewed for
+  # this one pass, and put back after it whatever the pass said.
+  ARMED_SELF_BOX="crew-drill-${DRILLED# }"; ARMED_SELF_BOX="${ARMED_SELF_BOX%% *}"
+  ARMED_SELF_ROLE="${ARMED_SELF_BOX#crew-drill-}"
+  echo
+  echo "############################################################"
+  echo "## fleet app — armed comparison on the round's own box ($ARMED_SELF_BOX)"
+  echo "############################################################"
+  ARMED_SELF_ROSTER="$(mktemp)"
+  printf '%s %s %s\n' "$ARMED_SELF_BOX" "$AGENT" "$ARMED_SELF_ROLE" >"$ARMED_SELF_ROSTER"
+  # In THIS shell, not `$(…)`: the stage it reaches is what the restore undoes.
+  if armed_self_prepare "$ARMED_SELF_BOX"; then
+    echo "== $ARMED_SELF_WHY"
+    : >"$APP_AGREEMENT_STATUS"
+    REHEARSAL_AGREEMENT_STATUS="$APP_AGREEMENT_STATUS" \
+      "$HERE/rehearsal-app.sh" --roster "$ARMED_SELF_ROSTER" --no-browser
+    rc=$?
+    app_agreement="$(cat "$APP_AGREEMENT_STATUS" 2>/dev/null || true)"
+  else
+    echo "== the round could not present an armed, skewed box: $ARMED_SELF_WHY"
+    rc=0; app_agreement=not-presented
+  fi
+  armed_self_back="$(armed_self_restore "$ARMED_SELF_BOX")"; armed_self_back_rc=$?
+  echo "== $armed_self_back"
+  rm -f -- "$ARMED_SELF_ROSTER"
+  if [ "$armed_self_back_rc" -ne 0 ]; then
+    # A box left armed or skewed is a box the rest of the round (and the
+    # operator) reads wrong: that outranks whatever the pass said.
+    SUMMARY+=("FAIL       app-armed  (the round's own box was not restored: ${armed_self_back#* NOT fully restored: })"); overall=1
+  else
+    case "$rc:$app_agreement" in
+      0:compared) SUMMARY+=("ok         app-armed  (agreement compared; the round's own box, armed and skewed ${ARMED_SELF_SKEW_S}s for the pass, then restored)") ;;
+      0:could-not-compare)
+        SUMMARY+=("INCOMPLETE app-armed  (agreement could-not-compare on the round's own armed, skewed box)")
+        [ "$overall" -eq 1 ] || overall=2 ;;
+      0:not-presented)
+        SUMMARY+=("INCOMPLETE app-armed  (not presented: $ARMED_SELF_WHY)")
+        [ "$overall" -eq 1 ] || overall=2 ;;
+      0:*) SUMMARY+=("FAIL       app-armed  (agreement verdict missing)"); overall=1 ;;
+      *) SUMMARY+=("FAIL       app-armed"); overall=1 ;;
+    esac
+  fi
+elif [ "$APP" -eq 1 ] && [ "$ARMED_SELF" -eq 0 ]; then
+  SUMMARY+=("skip       app-armed  (not requested: --no-app-armed-self and no --app-roster)")
 elif [ "$APP" -eq 1 ]; then
-  SUMMARY+=("skip       app-armed  (not requested: no --app-roster; requires an armed member)")
+  SUMMARY+=("SKIPPED    app-armed  (no drill box reached: nothing to arm)")
 else
   SUMMARY+=("skip       app-armed  ($(omitted --no-app))")
 fi

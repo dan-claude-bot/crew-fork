@@ -23,6 +23,16 @@ case "$1 $2:${GH_TOKEN:-}" in
 esac
 GH
 chmod +x "$TMP/bin/gh"
+# Telegram's getMe (#788), from the host: the URL on curl's config (stdin).
+cat >"$TMP/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${0%/*}/curl-argv"
+case "$(cat)" in
+  *'/botTG-POOLFLOOR:ok/getMe"'*) echo '{"ok":true,"result":{"username":"floor_alerts_bot"}}' ;;
+  *) echo '{"ok":false}' ;;
+esac
+CURL
+chmod +x "$TMP/bin/curl"
 pl_do() {  # pl_do JSON — "<body>\n<status>"
   api POST /api/command "$1"
 }
@@ -95,6 +105,29 @@ t "pool-unassign: the roster line is back to what it was" 1 "$(grep -cE '^ff-idl
 t "pool-rm: an unassigned entry is removed" 200 "$(pl_status '{"action":"pool-rm","entry":"agent:max"}')"
 t "pool: the listing no longer names it" "gh:bot" "$(body GET /api/pool | jqf "' '.join(sorted(e['id'] for e in d['entries']))")"
 
+# Telegram (#788): a bot entry, the fleet's one group chat, delivered with it.
+PL_TG="TG-POOLFLOOR:ok"
+t "pool-chat: a chat that is not a chat id is 400" 400 "$(pl_status '{"action":"pool-chat","chat":"my group"}')"
+t "pool-chat: setting the fleet's group chat lands" 200 "$(pl_status '{"action":"pool-chat","chat":"-1001234567890"}')"
+t "pool: the listing carries the group chat" "-1001234567890" "$(body GET /api/pool | jqf "d['tg_chat']")"
+PL_R="$(pl_keep "$(pl_do "{\"action\":\"pool-add\",\"service\":\"tg\",\"name\":\"alerts\",\"secret\":\"$PL_TG\"}")")"
+t "pool-add: a telegram bot is stored" 200 "$(printf '%s' "$PL_R" | tail -1)"
+t "pool: a tg entry carries the bot it answers as" "floor_alerts_bot" \
+  "$(body GET /api/pool | jqf "[e for e in d['entries'] if e['id']=='tg:alerts'][0]['login']")"
+t "pool-assign: a telegram bot is assigned from the console" 200 \
+  "$(pl_status '{"action":"pool-assign","box":"ff-idle","entries":["tg:alerts"]}')"
+t "pool-assign: ...and reaches the box with the fleet's chat in its header" "tg bot -1001234567890" \
+  "$(tail -1 "$FLOOR_STATE/ff-idle.credential-headers")"
+t "pool-assign: ...the token arriving as stdin" "$PL_TG" "$(cat "$FLOOR_STATE/ff-idle.credential")"
+t "pool-assign: one bot feeds a second member" 200 \
+  "$(pl_status '{"action":"pool-assign","box":"ff-working","entries":["tg:alerts"]}')"
+t "pool: the page offers the group chat" 1 "$(grep -c 'data-pool-act="chat"' "$FLOOR/index.html")"
+t "pool: the page offers telegram on Add and on Assign" "1 1" \
+  "$(grep -c '<option value="tg">tg</option>' "$FLOOR/index.html") $(grep -c 'sel("tg","telegram")' "$FLOOR/index.html")"
+t "pool: no curl argv carried the bot token" 0 "$(grep -c -- "$PL_TG" "$TMP/bin/curl-argv" 2>/dev/null || true)"
+pl_status '{"action":"pool-unassign","box":"ff-idle"}' >/dev/null
+pl_status '{"action":"pool-unassign","box":"ff-working","entry":"tg:alerts"}' >/dev/null
+
 # Refused before the CLI runs: nothing moved.
 t "pool-add: a bad name is 400" 400 "$(pl_status '{"action":"pool-add","service":"gh","name":"bad name","secret":"x"}')"
 t "pool-add: an empty secret is 400" 400 "$(pl_status '{"action":"pool-add","service":"gh","name":"x","secret":"  "}')"
@@ -103,7 +136,7 @@ t "pool-assign: a malformed entry is 400" 400 "$(pl_status '{"action":"pool-assi
 t "pool-rotate: a malformed entry is 400" 400 "$(pl_status '{"action":"pool-rotate","entry":"x","secret":"y"}')"
 
 # No value anywhere it must not be.
-for pl_secret in "$PL_GH" "$PL_GH2" "$PL_AGENT" "$PL_AGENT2"; do
+for pl_secret in "$PL_GH" "$PL_GH2" "$PL_AGENT" "$PL_AGENT2" "$PL_TG"; do
   t "pool: no reply or listing carries ${pl_secret:0:14}…" 0 "$(grep -c -- "$pl_secret" "$PL_ALL" || true)"
   t "pool: the collector's log never holds ${pl_secret:0:14}…" 0 "$(grep -c -- "$pl_secret" "$TMP/server.log" || true)"
   t "pool: the journal never holds ${pl_secret:0:14}…" 0 "$(grep -c -- "$pl_secret" "$PL_JOURNAL" 2>/dev/null || true)"
@@ -117,4 +150,4 @@ t "pool: a value field is cleared before the request is sent" 1 \
   "$(sed -n '/^function onPoolClick(b){/,/^}/p' "$FLOOR/src/app.js" | awk '/inp.value="";/ {c=NR} /act\("ov:pool","pool-"\+what,body\)/ {a=NR} END {print (c && a && c < a) ? 1 : 0}')"
 t "pool: closing the overlay forgets a typed pool value" 1 \
   "$(grep -c "querySelectorAll('\[data-k=\"secret\"\],\[data-k=\"pool-secret\"\]')" "$FLOOR/src/app.js")"
-rm -f "$TMP/bin/gh"
+rm -f "$TMP/bin/gh" "$TMP/bin/curl"
