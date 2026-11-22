@@ -115,10 +115,16 @@ changing what a full round proves:
 | flag | what it does |
 |---|---|
 | `--parallel` | Runs the three roles at once. Each role writes its own transcript, printed whole and in role order once all have ended, with a heartbeat while they run. Safe on one shared identity: the attention census grades suppression only for demands still standing after the tick, and skips the pickup count for a sibling role's own fixture that its box picked up and acked during the tick, since a comment by the shared login cannot name its box (#783). The session row, read from this box's own `duty.log`, stays graded. |
-| `--legs a,b,…` | Runs only the named legs. The role sections always run. Every other leg reads `not selected by --legs`, and teardown keeps the boxes. A name that is not a declared leg is refused before anything runs. |
-| `--only-failed <log>` | Runs only the legs that `<log>`'s `## leg …` block read FAIL or INCOMPLETE, and lists every other leg as `carried` with that log's state. A selective run can never be mistaken for a whole round. |
+| `--legs a,b,…` | Runs only the named legs. The role sections always run. Every other leg reads `not selected by --legs`, and teardown keeps the boxes. Like every round, it needs the earlier round's drill boxes gone (#806). A name that is not a declared leg is refused before anything runs. |
+| `--only-failed <log>` | Runs only the legs that `<log>`'s `## leg …` block read FAIL or INCOMPLETE, and lists every other leg as `carried` with that log's state. A selective run can never be mistaken for a whole round. The role sections run again on fresh boxes, so tear down a `--keep` round's boxes first (`drill/teardown.sh --roles "…" --yes`). A round that finds them still standing refuses before anything runs and names that command (#806). |
 | `--creds gh:<name>,agent:<name>` | Logs the boxes in from the operator's credential pool (`crew creds`, `shared/docs/host-maintenance.md`). The entries are pushed after the creds-free rows have read each box logged out and before phase 2 decides whether it may run, so one pass proves both halves. Rows check the delivery and the login each box answers as. The pool is never written and no entry is assigned. |
 | `--fast` | The plumbing tier, described below. |
+
+A round that ends INCOMPLETE (exit 2) is NOT a pass. Its closing footer names
+every row that read INCOMPLETE. When a role is among them, the footer sends the
+operator to log those boxes in. When only legs are incomplete, every role
+reached phase 2, and the footer points at `--only-failed` once the kept boxes
+are torn down (#805).
 
 Every round now ends with a `## wall time:` line, per section and total. A
 wait that took a minute or more prints its time on its own row. A wait whose
