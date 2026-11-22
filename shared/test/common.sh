@@ -8211,11 +8211,14 @@ ATT_MOD="$SHARED/lib/duty-attention.sh"
 # keeping the registry read and the partition function intact, and the suite
 # stayed 185 ok / 0 failed. So the wiring is pinned too: the acted set and the
 # reported set must both come from $partitioned, and $outside must be what
-# feeds the suppression report the operator alert keys on.
+# feeds the suppression report the operator alert keys on — through the fleet
+# split (#794): $outside is divided into carried and uncarried, and the
+# uncarried half is what the outside report and the alert read.
 # shellcheck disable=SC2016  # the literals the module contains, not expansions
 if grep -q 'inside=.*\$partitioned' "$ATT_MOD" &&
    grep -q 'outside=.*\$partitioned' "$ATT_MOD" &&
-   grep -q 'printf .* "\$outside" *\\*$' "$ATT_MOD"; then
+   grep -q 'uncarried=.*"\$outside" | _attention_carried .* OUT' "$ATT_MOD" &&
+   grep -q 'printf .* "\$uncarried" *\\*$' "$ATT_MOD"; then
   r1=wired
 else
   r1=UNWIRED
@@ -8235,7 +8238,7 @@ report_suppressed_out="$(printf 'x#1 T1\n' | report_suppressed "$RSW" "lbl" "nev
 t report-suppressed-custom-phrase reported \
   "$(grep -q 'never actionable here' <<<"$report_suppressed_out" && echo reported || echo MISSING)"
 rm -f "$RSW"
-if grep -q 'report_suppressed .*sc_state.*\\$' "$ATT_MOD" &&
+if grep -q 'report_suppressed .*suppressed-attention-scope.*\\$' "$ATT_MOD" &&
    grep -q 'this box does not carry' "$ATT_MOD"; then r1=distinct; else r1=BORROWED; fi
 t attention-scope-report-has-its-own-phrase distinct "$r1"
 # shellcheck disable=SC2016  # the literal the module contains, not an expansion
@@ -11158,5 +11161,54 @@ t install-a-re-install-keeps-the-pool 1 "$(grep -c '^SESSION_CREDENTIAL_POOL="cl
 env HOME="$P761_HOME" DUTY_DIR="$P761_HOME/duty" PATH="$ISHIM" CRON_STATE="$CRON_STATE" \
   /bin/bash "$SHARED/install.sh" --agent claude --role reviewer --pool claude-max-2 >/dev/null 2>&1
 t install-a-new-pool-replaces-the-old 1 "$(grep -c '^SESSION_CREDENTIAL_POOL="claude-max-2"$' "$P761_HOME/duty/conf/instance.conf")"
+
+# ── #794 — the outside-repos attention alert, carried vs uncarried ──────────
+# Driven through the real duty_attention over a scratch DUTY_DIR, with gh,
+# alert and the log stubbed: every demand here is outside repos.txt, so the
+# function returns after the report and the alert and no session is reached.
+W794_DIR="$TMP/w794"
+w794_tick() { # ROWS — one tick; prints the alerts it sent, one per line
+  (
+    BOT_ROLES="${BOT_ROLES:-}"; DUTY_DIR="$W794_DIR"
+    # shellcheck source=shared/lib/common.sh
+    source "$SHARED/lib/common.sh"
+    # shellcheck source=shared/lib/duty-attention.sh
+    source "$SHARED/lib/duty-attention.sh"
+    DUTY_DIR="$W794_DIR" REPOS_FILE="$W794_DIR/repos.txt" FLEET_REPOS_FILE="$W794_DIR/fleet-repos.txt"
+    LABEL_ATTENTION=attention
+    gh() { printf '%s\n' "$W794_ROWS"; }
+    alert() { printf 'ALERT %s\n' "$*"; }
+    log() { printf 'LOG %s\n' "$*" >>"$W794_DIR/log"; }
+    warn() { printf 'WARN %s\n' "$*" >>"$W794_DIR/log"; }
+    hostname() { echo box-a; }
+    W794_ROWS="$1" duty_attention
+  )
+}
+rm -rf "$W794_DIR"; mkdir -p "$W794_DIR"
+printf 'me/own\n' >"$W794_DIR/repos.txt"
+printf '# header\nme/sib\n' >"$W794_DIR/fleet-repos.txt"
+r1="$(W794_ROWS='' w794_tick "$(printf 'me/sib 1 2026-11-22T10:00:00Z\nme/lost 2 2026-11-22T10:00:00Z')")"
+t w794-only-the-uncarried-demand-alerts 1 "$(grep -c '^ALERT 📥 box-a: .* — me/lost#2 — ' <<<"$r1" || true)"
+t w794-the-carried-demand-is-not-in-the-alert 0 "$(grep -c 'me/sib#1' <<<"$r1" || true)"
+t w794-the-carried-demand-is-logged-as-carried 1 \
+  "$(grep -c '^WARN attention: carried by the fleet: 1 item(s) in repos another fleet member carries, left to it and not alerted — me/sib#1(' "$W794_DIR/log" || true)"
+t w794-the-carried-state-names-it 'me/sib#1 2026-11-22T10:00:00Z' "$(cat "$W794_DIR/.suppressed-attention-carried")"
+t w794-the-outside-state-names-only-the-uncarried 'me/lost#2 2026-11-22T10:00:00Z' "$(cat "$W794_DIR/.suppressed-attention-scope")"
+# The same demand UPDATED (a comment moved updated_at): logged anew, not re-alerted.
+r1="$(w794_tick "$(printf 'me/sib 1 2026-11-22T10:05:00Z\nme/lost 2 2026-11-22T10:05:00Z')")"
+t w794-an-update-does-not-re-alert 0 "$(grep -c '^ALERT' <<<"$r1" || true)"
+t w794-an-update-is-still-logged 1 "$(grep -c 'outside repos.txt: 1 item(s) .* me/lost#2(2026-11-22T10:05:00Z)' "$W794_DIR/log" || true)"
+# A NEW uncarried demand alerts, naming the whole standing set.
+r1="$(w794_tick "$(printf 'me/lost 2 2026-11-22T10:05:00Z\nme/lost 3 2026-11-22T10:06:00Z')")"
+t w794-a-new-demand-alerts-again 1 "$(grep -c '^ALERT 📥 box-a: .* — me/lost#2 me/lost#3 — ' <<<"$r1" || true)"
+# The set empties, then the same demand comes back: it speaks up again.
+w794_tick "$(printf 'me/own 9 2026-11-22T10:07:00Z')" >/dev/null
+t w794-an-emptied-set-clears-the-alert-state absent "$([ -e "$W794_DIR/.alerted-attention-scope" ] && echo present || echo absent)"
+r1="$(w794_tick "$(printf 'me/lost 2 2026-11-22T10:08:00Z')")"
+t w794-a-returning-demand-alerts-again 1 "$(grep -c '^ALERT' <<<"$r1" || true)"
+# A standalone box (no fleet-repos.txt) alerts every outside demand, as before.
+rm -rf "$W794_DIR"; mkdir -p "$W794_DIR"; printf 'me/own\n' >"$W794_DIR/repos.txt"
+r1="$(w794_tick "$(printf 'me/sib 1 2026-11-22T10:00:00Z')")"
+t w794-without-a-fleet-file-every-outside-demand-alerts 1 "$(grep -c '^ALERT 📥 box-a: .* — me/sib#1 — ' <<<"$r1" || true)"
 
 suite_finish

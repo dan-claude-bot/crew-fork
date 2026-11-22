@@ -75,7 +75,14 @@ jobs:
         run: |
           shellcheck --version | head -2
           for f in install.sh dist/*.sh shared/bin/*.sh shared/lib/*.sh shared/lib/common/*.sh shared/install.sh shared/test/*.sh shared/test/common/*.sh cli/crew drill/*.sh fleet-floor/server/probe.sh fleet-floor/test/*.sh fleet-floor/test/stub-box shared/conf/fleet.defaults.conf examples/fleet.conf shared/conf/agents/*.conf shared/conf/roles/*.conf .github/ci/*.sh; do
-            shellcheck -x "$f"
+            # Each file named and bounded: a file that stalls fails here with
+            # its name in a log GitHub keeps, instead of the job hitting its
+            # limit and losing the log (the 46-minute stalls after #787).
+            start=$SECONDS
+            echo "::group::shellcheck $f"
+            timeout 600 shellcheck -x "$f" || { rc=$?; echo "::endgroup::"; echo "::error file=$f::shellcheck rc=$rc after $((SECONDS - start))s (124 = timed out)"; exit "$rc"; }
+            echo "::endgroup::"
+            echo "$f: $((SECONDS - start))s"
           done
       - name: the plan's own contract (offline)
         run: .github/ci/plan.test.sh

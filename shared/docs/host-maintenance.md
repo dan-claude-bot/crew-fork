@@ -277,7 +277,9 @@ engine downgrade of the whole fleet, with nothing red anywhere — and on a
 schedule it would be that every week, which is the shape `0.1.4` restores.
 Every verb that installs an engine — `crew hire`, `crew up`, `crew upgrade` —
 marks the checkpoint stale before installing, and the reset refuses any box
-whose mark is set:
+whose mark is set. An install of the release the checkpoint was cut at is not
+an engine change and marks nothing (#797); a development tree (`-dev`) still
+does, because its bytes can change under one version:
 
 ```
   claude-builder: REFUSED — its armed checkpoint was cut at crew@0.1.2 and the
@@ -418,6 +420,12 @@ crew creds assign builder-1 tg:alerts        # any number of members may share o
     one repository read each other's work as their own, and cannot review it.
   - The refusal names the other member and the repositories they share.
   - An agent entry may feed any number of members.
+- **A shared login sees the fleet's demands (#794).** `attention` demands are
+  fetched by assignee, so members on one login each see every member's. Each
+  box is staged `~/duty/fleet-repos.txt`, the repositories the other members
+  work (refreshed on every `crew hire` and `crew upgrade`). A demand there is
+  logged as carried by the fleet and not alerted; only a demand no member
+  carries reaches the chat, once per demand rather than once per update.
 - **A refused entry is said once.** When the verdict on an entry is a refusal
   on some member, `crew creds list` names the entry once, lists every member
   it feeds, and says how to rotate it.

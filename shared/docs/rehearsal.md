@@ -272,7 +272,13 @@ census recorded: the engine's own
 suppressed report names it (`attention: outside repos.txt` in `duty.log`, or the
 `~/duty/.suppressed-attention-scope` set that same call leaves behind), no
 `SESSION START kind=attention` names a repository other than the sandbox, and
-the demand drew no new `📌 picked up` comment across the tick. Any miss is a
+the demand drew no new `📌 picked up` comment across the tick. Under
+`--parallel` the round first writes the sibling roles' sandboxes into the box's
+`~/duty/fleet-repos.txt`, as `crew` does for a real fleet's members (#794), and a
+standing demand in a sibling's sandbox must then read as **carried by the fleet**
+(`attention: carried by the fleet`, or `~/duty/.suppressed-attention-carried`) and
+must not be named by the operator alert (`~/duty/.alerted-attention-scope`). The
+file is put back at teardown. Any miss is a
 `FAIL` row and the round stops there rather than ticking again — which is the
 independent verification the old refusal claimed to be, made real, and on the
 one fixture the drill could never mint for itself. An identity carrying no
@@ -583,7 +589,10 @@ re-read after `notify-repos.txt` is written and the round aborts if it moved.
 
 - **Needs** a reachable operator channel on the host, and phase 2. It runs
   inside every role's phase 2, so its verdict is the ROUND's, folded across the
-  roles that wrote one — not any single role's.
+  roles that wrote one — not any single role's. It checks the notify half
+  against the pre-drill `repos.txt` backup; under `--creds` the box is logged in
+  only after the phase 1 tick, and the backup is taken right after the push,
+  before any authenticated tick (#793).
 - **Produces** the `notify` row: `ok (repos.txt + notify-repos.txt union)`,
   `FAIL`, `INCOMPLETE (leg skipped: operator channel unreachable: <channel>
   — union UNPROVEN)`, `INCOMPLETE (no role reached a box — union UNPROVEN)`,
@@ -757,7 +766,14 @@ fleet that is half down.
 - **Needs** at least one role to have reached a box, and **two** for the
   busy-box readings: one box is held busy by a real `flock` on the real duty
   lock — the same path a duty tick takes and the one `drain_probe()` reads — so
-  the skip is exercised rather than assumed. It builds its own operator trio
+  the skip is exercised rather than assumed. The holder runs in its own
+  session and is released by process group: `flock` keeps the lock in its
+  child too, so releasing `flock` alone left `crew down` waiting out the full
+  hold (#796). A round's boxes are never over the cut ceiling, so the leg
+  supplies the refusal it grades (#795): one box the `--all` pass cut is cut
+  again with `CREW_RESET_CUT_MAX_USED_PCT` at half its reported figure, the
+  refusal must name what is large, and the checkpoint record must be unchanged.
+  It builds its own operator trio
   with a real `crew init` and `CREW_EXPECT_OPERATOR_CONFIG=1`, and it refuses
   any target that is not a `crew-drill-*` box.
 - **Produces** the `fleet` row: `ok (per-box outcomes on restart/down/cut +

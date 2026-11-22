@@ -137,7 +137,7 @@ cleanup() {
   local box_name state
   if [ -n "$HOLD_BOX" ]; then
     if bx "$HOLD_BOX" "
-      if [ -r ~/$LOCK_TAG.pid ]; then kill \"\$(cat ~/$LOCK_TAG.pid)\" 2>/dev/null || true; fi
+      if [ -r ~/$LOCK_TAG.pid ]; then p=\"\$(cat ~/$LOCK_TAG.pid)\"; kill -- -\"\$p\" 2>/dev/null || kill \"\$p\" 2>/dev/null || true; fi
       rm -f ~/$LOCK_TAG.pid ~/duty/.duty.lock.since
     " >/dev/null 2>&1; then
       echo "teardown: released the drill-held duty lock on $HOLD_BOX"
@@ -214,8 +214,13 @@ hold_duty_lock() { # NAME
     mkdir -p "$HOME/duty" || exit 1
     command -v flock >/dev/null 2>&1 || { echo "no flock in the box" >&2; exit 3; }
     date +%s >"$HOME/duty/.duty.lock.since"
-    setsid flock "$HOME/duty/.duty.lock" sleep 900 </dev/null >/dev/null 2>&1 &
-    printf "%s\n" "$!" >"$HOME/'"$LOCK_TAG"'.pid"
+    # The pid written is the SESSION LEADER the holder runs in, from inside
+    # it: flock keeps the lock in its child (sleep) too, so killing flock
+    # alone left sleep holding it for the full 900 s and `crew down` waited
+    # all of it (#796). The release kills the whole group: kill -- -PGID.
+    setsid sh -c '"'"'printf "%s\n" "$$" >"$1"; exec flock "$2" sleep 900'"'"' sh \
+      "$HOME/'"$LOCK_TAG"'.pid" "$HOME/duty/.duty.lock" </dev/null >/dev/null 2>&1 &
+    i=0; while [ ! -s "$HOME/'"$LOCK_TAG"'.pid" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
   ' >/dev/null 2>"$TMP/hold.err"
 }
 # duty_lock_probe NAME — one word from inside the box: held while a process
@@ -363,7 +368,7 @@ if [ -n "$BUSY_BOX" ]; then
   # lock is released on a timer from inside the box while `down` is waiting.
   # Releasing it BEFORE the verb runs would leave nothing to wait for.
   bx "$BUSY_BOX" "
-    setsid sh -c 'sleep 20; if [ -r ~/$LOCK_TAG.pid ]; then kill \"\$(cat ~/$LOCK_TAG.pid)\" 2>/dev/null || true; fi; rm -f ~/$LOCK_TAG.pid' \
+    setsid sh -c 'sleep 20; if [ -r ~/$LOCK_TAG.pid ]; then p=\$(cat ~/$LOCK_TAG.pid); kill -- -\$p 2>/dev/null || kill \$p 2>/dev/null || true; fi; rm -f ~/$LOCK_TAG.pid' \
       >/dev/null 2>&1 &
   " >/dev/null 2>&1 || true
 fi
@@ -492,9 +497,49 @@ grade_table cut \
 # with no refusal at all cannot answer it either way and says so — the criterion
 # is the operator's to read on the candidate, and a silent `ok` here would be
 # the leg claiming a reading it never took.
+#
+# A round's boxes are fresh, so none is ever over the ceiling, and the row could
+# not be answered by any round (#795). Ruled: the round supplies the refusal.
+# One box the --all pass cut is cut again with the ceiling set UNDER its own
+# reported figure (half of it), through the knob the verb already reads,
+# CREW_RESET_CUT_MAX_USED_PCT. A disk-ceiling refusal is decided before any
+# snapshot is touched, so the checkpoint just cut stands, and that is read
+# back too.
 if [ "$cut_refusals" -eq 0 ]; then
-  skip "a reset --cut refusal is recorded with its COMPOSITION" \
-    "no box was refused this round; the reading is unproved, not passed"
+  induce_box="" induce_pct=""
+  for box_name in "${TARGETS[@]}"; do
+    [ "$(fleet_cut_outcome "$box_name" <"$TMP/cut.out")" = cut ] || continue
+    induce_pct="$(fleet_cut_used_pct "$box_name" <"$TMP/cut.out")"
+    if [ -n "$induce_pct" ] && [ "$induce_pct" -ge 2 ]; then induce_box="$box_name"; break; fi
+  done
+  if [ -z "$induce_box" ]; then
+    skip "a reset --cut refusal is recorded with its COMPOSITION" \
+      "no box was refused, and no cut box reported a usage figure to set a ceiling under; the reading is unproved, not passed"
+  else
+    induce_ceiling=$((induce_pct / 2))
+    induce_rec="$CONFIG/checkpoints/$induce_box.conf"
+    induce_before="$(cat "$induce_rec" 2>/dev/null || true)"
+    echo
+    echo "-- crew reset --cut $induce_box (the round's own refusal: ceiling ${induce_ceiling}%, under its ${induce_pct}%)"
+    CREW_RESET_CUT_MAX_USED_PCT="$induce_ceiling" "$CREW" reset --cut "$induce_box" >"$TMP/cut-refused.out" 2>&1 || true
+    cat "$TMP/cut-refused.out"
+    case "$(fleet_refusal_answer "$induce_box" <"$TMP/cut-refused.out")" in
+      composed)
+        ok "a reset --cut refusal is recorded with its COMPOSITION (the round's own, on $induce_box under a ${induce_ceiling}% ceiling)" ;;
+      no-refusal)
+        fail "a reset --cut refusal is recorded with its COMPOSITION" \
+          "$induce_box was not refused under a ${induce_ceiling}% ceiling at ${induce_pct}% used" ;;
+      *)
+        fail "a reset --cut refusal is recorded with its COMPOSITION" \
+          "$induce_box's refusal reported a figure and no composition" ;;
+    esac
+    if [ -n "$induce_before" ] && [ "$(cat "$induce_rec" 2>/dev/null || true)" = "$induce_before" ]; then
+      ok "the refused cut left $induce_box's checkpoint record as the --all pass wrote it"
+    else
+      fail "the refused cut left $induce_box's checkpoint record as the --all pass wrote it" \
+        "the record at $induce_rec ${induce_before:+changed}${induce_before:-was not there to compare}"
+    fi
+  fi
 elif [ "$cut_unanswered" -eq 0 ]; then
   ok "a reset --cut refusal is recorded with its COMPOSITION ($cut_refusals refusal(s), all composed)"
 else

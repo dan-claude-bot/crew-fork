@@ -1649,4 +1649,32 @@ t platform-no-jq-still-reports-the-box-half 1 \
 t platform-no-jq-does-not-refuse 1 \
   "$(grep -c 'rather than refusing' <<<"$nojq_out" || true)"
 
+# ── #794 — each box is staged the repositories the OTHER members work ──────
+# fleet_carried_seed and the registry resolver it reads, lifted out of
+# cli/crew and driven over a scratch fleet definition: the union of every
+# other member's resolved work registry, this box's own excluded, per-box
+# selections honoured, each repository once.
+W794="$TMP/w794"; mkdir -p "$W794/conf/repos.d"
+printf 'o/a\no/b\no/c\n' >"$W794/conf/repos.txt"
+printf 'alpha claude builder\nbeta claude reviewer  creds=gh:x\ngamma claude triage\n' >"$W794/conf/fleet.roster"
+printf 'o/a\n' >"$W794/conf/repos.d/alpha.txt"
+printf 'o/b\n' >"$W794/conf/repos.d/beta.txt"
+printf 'o/b\n' >"$W794/conf/repos.d/gamma.txt"
+W794_FNS="$(for f in registry_entries registry_fleet_file registry_override_file resolved_registry read_roster roster_names fleet_carried_seed; do
+  awk -v f="$f" '$0 ~ "^"f"\\(\\) \\{" {p=1} p {print} p && /^}/ {exit}' "$CLI"
+done)"
+w794_seed() { # BOX — the staged file's repositories, comma-joined
+  bash -c "die() { echo \"\$*\" >&2; exit 1; }; CONFIG_DIR='$W794/conf'; REPOS_SEED='$W794/conf/repos.txt'; NOTIFY_REPOS_SEED=/dev/null; ROSTER='$W794/conf/fleet.roster'
+$W794_FNS
+f=\$(fleet_carried_seed '$1'); grep -v '^#' \"\$f\" | paste -sd, -; rm -f \"\$f\""
+}
+t w794-the-seed-names-the-other-members-repos-once 'o/b' "$(w794_seed alpha)"
+t w794-the-seed-excludes-the-box-own-selection 'o/a,o/b' "$(w794_seed beta)"
+rm -f "$W794/conf/repos.d/gamma.txt"
+t w794-an-inheriting-member-carries-the-fleet-list 'o/b,o/a,o/c' "$(w794_seed alpha)"
+printf 'alpha claude builder\n' >"$W794/conf/fleet.roster"
+t w794-a-box-alone-on-its-roster-gets-only-the-header '' "$(w794_seed alpha)"
+t w794-the-staging-puts-the-seed-at-duty-fleet-repos 1 \
+  "$(grep -c "bxput \"\$box_name\" \"\$carried_seed\" 'duty/fleet-repos.txt'" "$CLI")"
+
 suite_finish

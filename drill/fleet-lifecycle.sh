@@ -132,6 +132,14 @@ fleet_cut_outcome() { # NAME
   printf '%s\n' "$outcome"
 }
 
+# fleet_cut_used_pct NAME — the root filesystem figure a `cut` line reports
+# (`<label> cut at crew@<ver>; root filesystem N% used`), on stdin; nothing
+# when the box has no such line. The round sets its own refusal's ceiling
+# under it (#795).
+fleet_cut_used_pct() { # NAME
+  sed -n "/^  $1: .* cut at crew@[^;]*; root filesystem [0-9][0-9]*% used/{s/.*; root filesystem \([0-9][0-9]*\)% used.*/\1/p;q;}"
+}
+
 # fleet_refusal_answer NAME — `crew reset --cut` output on stdin.
 #   composed · unanswered · no-refusal
 #

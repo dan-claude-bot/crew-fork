@@ -1553,6 +1553,8 @@ att_bx() {
         [ "$ATT_SLICE" = lost ] || [ -z "$ATT_LOG" ] || printf '%s\n' "$ATT_LOG"
       fi ;;
     *suppressed-attention-scope*) [ -z "$ATT_SCOPE" ] || printf '%s\n' "$ATT_SCOPE" ;;
+    *suppressed-attention-carried*) [ -z "${ATT_CARRIED:-}" ] || printf '%s\n' "$ATT_CARRIED" ;;
+    *alerted-attention-scope*) [ -z "${ATT_ALERTED:-}" ] || printf '%s\n' "$ATT_ALERTED" ;;
     *'/comments?per_page=100'*)
       # A comment search for a mark nothing writes finds nothing, and this box
       # says so by declining rather than by answering 0 — the delta's own
@@ -1713,10 +1715,48 @@ ATT_PICKUPS_AFTER="$(printf 'heavy-duty/incubator#470 1\nheavy-duty/incubator#46
 W783_OUT="$(REHEARSAL_SIBLING_ROLES='triage reviewer' att_drive both)"
 t w783-census-a-left-non-sibling-demand-that-drew-a-pickup-is-red 1 \
   "$(grep -c '^FAIL attention census: heavy-duty/incubator#470 drew no pickup$' <<<"$W783_OUT" || true)"
+# #794 — the round converged its siblings' sandboxes to this box's
+# fleet-repos.txt, so a STANDING sibling demand must read as carried by the
+# fleet: logged in .suppressed-attention-carried, never alerted. Recorded as
+# outside, or named by the alert, is the rc3 noise back — red.
+ATT_CENSUS="$(printf 'host/crew-drill-triage 1\nheavy-duty/incubator 468\n')"
+ATT_CENSUS_AFTER="$ATT_CENSUS"
+ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\n')"
+ATT_PICKUPS_BEFORE="$(printf 'host/crew-drill-triage#1 0\nheavy-duty/incubator#468 0\n')"
+ATT_PICKUPS_AFTER="$ATT_PICKUPS_BEFORE"
+W794_OK="$(REHEARSAL_SIBLING_ROLES='triage reviewer' REHEARSAL_FLEET_SIBLINGS_WRITTEN=1 \
+  ATT_CARRIED='host/crew-drill-triage#1 2026-09-10T21:00:02Z' att_drive both)"
+t w794-census-a-sibling-demand-carried-by-the-fleet-is-suppressed 1 \
+  "$(grep -c '^ok attention census: host/crew-drill-triage#1 seen and suppressed$' <<<"$W794_OK" || true)"
+t w794-census-carried-round-is-green 0 "$(att_fail "$W794_OK")"
+t w794-census-a-non-sibling-demand-still-reads-outside 1 \
+  "$(grep -c '^ok attention census: heavy-duty/incubator#468 seen and suppressed$' <<<"$W794_OK" || true)"
+W794_OUT="$(REHEARSAL_SIBLING_ROLES='triage reviewer' REHEARSAL_FLEET_SIBLINGS_WRITTEN=1 \
+  ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\nhost/crew-drill-triage#1 2026-09-10T21:00:02Z\n')" att_drive both)"
+t w794-census-a-sibling-demand-recorded-as-outside-is-red 1 \
+  "$(grep -c '^FAIL attention census: host/crew-drill-triage#1 seen and suppressed' <<<"$W794_OUT" || true)"
+W794_ALERT="$(REHEARSAL_SIBLING_ROLES='triage reviewer' REHEARSAL_FLEET_SIBLINGS_WRITTEN=1 \
+  ATT_CARRIED='host/crew-drill-triage#1 2026-09-10T21:00:02Z' ATT_ALERTED='host/crew-drill-triage#1' att_drive both)"
+t w794-census-an-alert-naming-a-sibling-demand-is-red 1 \
+  "$(grep -c '^FAIL attention census: host/crew-drill-triage#1 seen and suppressed' <<<"$W794_ALERT" || true)"
+# Not written (serial, or the write was refused): the sibling's repo is just
+# outside, read as before.
+W794_SEQ="$(REHEARSAL_SIBLING_ROLES='triage reviewer' REHEARSAL_FLEET_SIBLINGS_WRITTEN=0 \
+  ATT_SCOPE="$(printf 'heavy-duty/incubator#468 2026-09-10T21:00:00Z\nhost/crew-drill-triage#1 2026-09-10T21:00:02Z\n')" att_drive both)"
+t w794-census-without-the-fleet-file-a-sibling-demand-reads-outside 0 "$(att_fail "$W794_SEQ")"
 ATT_CENSUS="$ATT_CENSUS_SAVED" ATT_PICKUPS_BEFORE="$ATT_PICKUPS_BEFORE_SAVED" ATT_PICKUPS_AFTER="$ATT_PICKUPS_AFTER_SAVED"
 ATT_SCOPE="$ATT_SCOPE_SAVED" ATT_LOG="$ATT_LOG_SAVED"
 ATT_CENSUS_AFTER=same
 unset ATT_CENSUS_SAVED ATT_PICKUPS_BEFORE_SAVED ATT_PICKUPS_AFTER_SAVED
+
+# #793 — under --creds the box is logged out at the phase 1 tick, so the
+# repos.txt backup is taken after the push, before phase 2 and the notify leg.
+t w793-isolation-is-taken-after-the-creds-push 1 \
+  "$(awk '/^  GH_AUTHED=0$/ {g=NR} g && /REHEARSAL_BACKUP_TAKEN:-0}" -eq 0/ && !i {i=NR} /^if \[ "\$GH_AUTHED" -eq 0 \] \|\| ! bx/ {p=NR} END {print (g && i && p && g < i && i < p) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
+t w793-the-late-isolation-calls-the-same-backup 1 \
+  "$(awk '/REHEARSAL_BACKUP_TAKEN:-0}" -eq 0/ {f=1; next} f && /rehearsal_begin_isolation/ {print 1; exit} f && /^fi$/ {print 0; exit}' "$ROOT/drill/rehearsal.sh")"
+t w793-the-notify-leg-follows-the-late-isolation 1 \
+  "$(awk '/REHEARSAL_BACKUP_TAKEN:-0}" -eq 0/ && !i {i=NR} /^  rehearsal_notify_drill / {n=NR} END {print (i && n && i < n) ? 1 : 0}' "$ROOT/drill/rehearsal.sh")"
 
 # A demand that already carried pickup comments from an earlier life is not a
 # failure: the assertion is a DELTA across the tick, and #469 arrives with 3.
@@ -4336,7 +4376,7 @@ case "${1:-}" in
   exec)
     n="$2"; script="${*: -1}"
     case "$script" in
-      *"setsid flock"*)
+      *"exec flock"*)
         : >"$S/held-$n"
         exit "${FL_HOLD_RC:-0}" ;;
       *"echo free; else echo held"*)
@@ -4403,8 +4443,27 @@ case "${1:-} ${2:-}" in
     done
     echo; echo "down: $st stopped, $w waited, 0 absent, 0 failed" ;;
   "reset --cut")
+    if [ "${3:-}" != --all ]; then
+      # #795: the round's own refusal — one box, under a ceiling it set.
+      printf 'ceiling %s %s\n' "$3" "${CREW_RESET_CUT_MAX_USED_PCT:-unset}" >>"$S/calls"
+      [ -z "${FL_REFUSED_CUT_TOUCHES_RECORD:-}" ] || echo "touched" >>"$CREW_CONFIG_DIR/checkpoints/$3.conf"
+      case "${FL_REFUSAL:-composed}" in
+        composed)
+          echo "  $3: REFUSED — root filesystem 40% used after reclaiming, over the ${CREW_RESET_CUT_MAX_USED_PCT}% ceiling"
+          echo "      largest: 1.9G /usr;400M /home;" ;;
+        percentage)
+          echo "  $3: REFUSED — root filesystem 40% used after reclaiming, over the ${CREW_RESET_CUT_MAX_USED_PCT}% ceiling"
+          echo "      largest: unavailable (neither the host's box incus exec nor passwordless sudo in the box could read / as root)" ;;
+        none) echo "  $3: armed cut at crew@0.1.4; root filesystem 40% used" ;;
+      esac
+      exit 0
+    fi
     c=0
-    for n in $(names); do echo "  $n: armed cut at crew@0.1.4; root filesystem 40% used"; c=$((c + 1)); done
+    mkdir -p "$CREW_CONFIG_DIR/checkpoints"
+    for n in $(names); do
+      echo "  $n: armed cut at crew@0.1.4; root filesystem 40% used"; c=$((c + 1))
+      printf 'CHECKPOINT_VERSION=0.1.4\nCHECKPOINT_STALE=\n' >"$CREW_CONFIG_DIR/checkpoints/$n.conf"
+    done
     echo; echo "reset --cut: $c cut, 0 skipped-busy, 0 failed" ;;
   "reset "*)
     # #784: the cap the round's fleet definition gives the restore.
@@ -4488,6 +4547,23 @@ t fl771-the-canary-reads-current 1 \
 t fl771-no-other-row-is-red "" \
   "$(grep '^FAIL' <<<"$fl_out" | grep -v "boot gate passes on its first tick after the restore" || true)"
 t fl770-the-timed-release-is-armed-for-the-busy-box 1 "$(grep -cx 'timer crew-drill-builder' "$FL_STATE/calls")"
+# #795 — the round supplies its own refusal: one cut box, the ceiling at half
+# its reported figure, and the refusal's composition graded.
+t w795-the-round-refuses-one-box-under-half-its-figure "ceiling crew-drill-triage 20" "$(grep '^ceiling ' "$FL_STATE/calls")"
+t w795-the-composition-row-is-answered 1 \
+  "$(grep -cx "ok   a reset --cut refusal is recorded with its COMPOSITION (the round's own, on crew-drill-triage under a 20% ceiling)" <<<"$fl_out")"
+t w795-the-refused-cut-left-the-record 1 \
+  "$(grep -cx "ok   the refused cut left crew-drill-triage's checkpoint record as the --all pass wrote it" <<<"$fl_out")"
+t w795-the-fleet-leg-has-no-skip-left 0 "$(grep -c '^skip' <<<"$fl_out" || true)"
+fl795="$(fl_run FL_REFUSAL=percentage)"
+t w795-a-percentage-only-refusal-is-red 1 \
+  "$(grep -c "^FAIL a reset --cut refusal is recorded with its COMPOSITION  — crew-drill-triage's refusal reported a figure and no composition" <<<"$fl795")"
+fl795="$(fl_run FL_REFUSAL=none)"
+t w795-a-cut-that-was-not-refused-is-red 1 \
+  "$(grep -c '^FAIL a reset --cut refusal is recorded with its COMPOSITION  — crew-drill-triage was not refused under a 20% ceiling at 40% used' <<<"$fl795")"
+fl795="$(fl_run FL_REFUSED_CUT_TOUCHES_RECORD=1)"
+t w795-a-refusal-that-touched-the-record-is-red 1 \
+  "$(grep -c "^FAIL the refused cut left crew-drill-triage's checkpoint record" <<<"$fl795")"
 # #772 — the canary is upgraded asleep and must come back asleep; then the leg
 # starts it to read its integrity.
 t fl772-the-sleeping-canary-row-is-green 1 \

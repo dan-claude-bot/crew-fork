@@ -782,6 +782,16 @@ if [ -n "${REHEARSAL_CREDS:-}" ]; then
   done
   GH_AUTHED=0
   bx "gh auth status >/dev/null 2>&1" && GH_AUTHED=1
+  # The push logged the box in AFTER the phase 1 tick decided isolation (#793):
+  # that tick ran logged out, so no repos.txt backup was taken, and every leg
+  # that checks against the host's pre-drill registry — notify first — would
+  # refuse for want of one. Taken here, before any authenticated tick, exactly
+  # as the already-logged-in path takes it above.
+  if [ "$GH_AUTHED" -eq 1 ] && [ "${REHEARSAL_BACKUP_TAKEN:-0}" -eq 0 ]; then
+    rehearsal_begin_isolation \
+      || { echo "cannot isolate repos.txt after the creds push — refusing before any authenticated tick"; exit 1; }
+    ok "creds: repos.txt backed up and isolated before the first authenticated tick"
+  fi
 fi
 
 # Phase 1 produced a usable installation. A later red assertion must not hide
@@ -901,6 +911,11 @@ else
   # every module that consults REPOS_FILE — review, build, triage, hygiene —
   # and attention is not one of them (#52).
   ok "safety interlock: repos.txt narrows review/build/triage/hygiene to the sandbox"
+  # Under --parallel, the siblings' sandboxes are this box's fleet (#794).
+  if [ -n "${REHEARSAL_SIBLING_ROLES:-}" ]; then
+    check "fleet-repos.txt names the sibling roles' sandboxes ($REHEARSAL_SIBLING_ROLES), so their demands read as carried" \
+      rehearsal_fleet_siblings_write "$SANDBOX"
+  fi
 
   # -- the sandbox demand, minted BEFORE the census below (#714, round 4) --
   #
