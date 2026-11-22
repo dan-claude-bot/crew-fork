@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from floor import FLOOR_ENVELOPE
-from floor.ping import log, run
+from floor.ping import BoxEntryRefused, box_in, log, run
 from floor.registry import KINDS, clear_override, set_fleet, set_override
 from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
 from floor.credentials import credentials_set
@@ -406,8 +406,17 @@ def _do_command(fleet, body, actor=""):
         return row
 
     def in_box(name, script, stdin_data=None, step=None):
-        return one(name, ["box", "exec", name, "--", "bash", "-lc", script],
-                   stdin_data=stdin_data, step=step)
+        # Through the door (#792): as the roster row's agent on box 0.11.0+.
+        try:
+            argv = box_in(name, (roster.get(name) or {}).get("agent", ""),
+                          ["bash", "-lc", script])
+        except BoxEntryRefused as e:
+            log("%s %s -> refused: %s" % (action, name, e))
+            row = {"box": name, "ok": False, "out": str(e)}
+            if step:
+                row["step"] = step
+            return row
+        return one(name, argv, stdin_data=stdin_data, step=step)
 
     def operator_conf_for(name):
         unit = roster[name]
@@ -479,7 +488,13 @@ def _do_command(fleet, body, actor=""):
         INFLIGHT.step(name, "ready", action)
         deadline = time.time() + WAKE_READY_S
         while time.time() < deadline:
-            rc, out, _err = run(["box", "exec", name, "--", "bash", "-lc", READY_SH], 15)
+            try:
+                ready_argv = box_in(name, (roster.get(name) or {}).get("agent", ""),
+                                    ["bash", "-lc", READY_SH])
+            except BoxEntryRefused as e:
+                rc, out, _err = 2, "", str(e)
+            else:
+                rc, out, _err = run(ready_argv, 15)
             if rc == 0 and "floor-ready" in (out or ""):
                 break
             time.sleep(3)
@@ -520,9 +535,8 @@ def _do_command(fleet, body, actor=""):
         # rapid messages to the same box raced and a session could run the
         # OTHER request's prompt.
         token = uuid.uuid4().hex
-        w = one(box, ["box", "exec", box, "--", "bash", "-lc",
-                      'mkdir -p "$HOME/duty" && cat > "$HOME/duty/.floor-prompt.%s"' % token],
-                stdin_data=prompt)
+        w = in_box(box, 'mkdir -p "$HOME/duty" && cat > "$HOME/duty/.floor-prompt.%s"' % token,
+                   stdin_data=prompt)
         if not w["ok"]:
             results.append(w)
         else:

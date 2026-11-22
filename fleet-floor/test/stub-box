@@ -591,7 +591,17 @@ case "${1:-}" in
     ;;
 
   exec)
+    # `box exec [--user NAME] BOX -- …` (#792). The user is checked the way box
+    # 0.11.0 checks it: empty refuses (2), and a name the guest lacks refuses
+    # (2) — here the guest's one user is its roster row's agent.
     name="$2"
+    if [ "$name" = "--user" ]; then
+      exec_user="${3:-}"; name="${4:-}"
+      [ -n "$exec_user" ] || { echo "box: --user needs a value" >&2; exit 2; }
+      if [ "$exec_user" != "$(roster_agent_of "$name")" ]; then
+        echo "box: no user '$exec_user' in $name" >&2; exit 2
+      fi
+    fi
     # The real `box exec` forwards stdin; drain it the same way so a caller
     # writing a prompt or an agent profile never blocks on a full pipe.
     #

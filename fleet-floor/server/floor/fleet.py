@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from floor.alerts import ReachabilityAlerts
 from floor.ping import (PING_FAILS_TO_WEDGE, PING_INTERVAL_S,
                         PING_STALE_AFTER_S, PING_TIMEOUT_S, PROBE_TIMEOUT_S,
-                        log, ping_box)
+                        box_shell_command, log, ping_box)
 from floor import CREW_ROOT
 from floor import store as fleet_store
 from floor.roster import (CONFIG_DIR, FLOOR_VERSION, agent_conf_path, box_states,
@@ -217,6 +217,12 @@ class Fleet:
         for t in threads:
             t.join(PROBE_TIMEOUT_S + 15)
 
+        # The operator's way in, per unit, from the one door (#792): the page
+        # copies it as given and never spells a `box shell` of its own.
+        for u in units:
+            if u and u.get("box"):
+                u["shell"] = box_shell_command(u["box"], u.get("agent", ""))
+
         snap = {
             "live": True,
             "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -267,8 +273,10 @@ class Fleet:
         with self._ping_lock:
             prev_round = dict(self.pings)
 
+        agents = {u["box"]: u.get("agent", "") for u in roster}
+
         def work(name):
-            ok, ms, err, facts = ping_box(name)
+            ok, ms, err, facts = ping_box(name, agents.get(name, ""))
             prev = prev_round.get(name) or {}
             results[name] = {
                 "ok": ok, "ms": ms, "ts": now, "err": err,

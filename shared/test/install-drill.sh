@@ -26,6 +26,7 @@ STUB="$WORK/stub"; mkdir -p "$STUB"
 cat >"$STUB/box" <<'SHIM'
 #!/usr/bin/env bash
 case "${1:-}" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list)
     [ "${2:-}" = --json ] || exit 1
     printf '['

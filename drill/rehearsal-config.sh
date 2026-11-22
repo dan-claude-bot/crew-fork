@@ -43,15 +43,22 @@ esac
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CREW="$ROOT/cli/crew"
 command -v box >/dev/null || { echo "drill/rehearsal-config.sh runs on a box HOST — no 'box' on PATH"; exit 1; }
+# The one door into a box (#792): box 0.11.0 and later enter as root unless
+# --user names the agent, so every exec here goes through box_in, and the
+# entry mode is read once — an unreadable box version stops the leg.
+# shellcheck source=shared/lib/box-entry.sh
+. "$ROOT/shared/lib/box-entry.sh"
+box_entry_mode_load || exit 2
+box_entry_bind "$BOX_NAME" "$AGENT"
 
 PASS=0
 declare -a FAILS=()
 ok()   { echo "ok   $1"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL $1${2:+  — $2}"; FAILS+=("$1"); }
-bx()   { box exec "$BOX_NAME" -- bash -lc "$1" </dev/null; }
+bx()   { box_in "$BOX_NAME" -- bash -lc "$1" </dev/null; }
 put_registry() {
   # shellcheck disable=SC2016  # expanded by bash inside the box
-  box exec "$BOX_NAME" -- bash -lc '
+  box_in "$BOX_NAME" -- bash -lc '
     set -euo pipefail
     destination="$HOME/duty/repos.txt"
     tmp="$(mktemp "$HOME/duty/.repos.XXXXXX")"

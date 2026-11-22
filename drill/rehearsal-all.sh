@@ -325,6 +325,17 @@ fi
 . "$HERE/fleet-lifecycle.sh"
 # shellcheck source=drill/rehearsal-armed-self.sh
 . "$HERE/rehearsal-armed-self.sh"
+# The one door into a box (#792), sourced by armed-self.sh above. The round
+# records the entry mode it read; each role's own rehearsal.sh refuses an
+# unreadable box version before it touches its box, and every box_in here
+# refuses one call by call, so nothing enters a box without knowing how.
+BOX_ENTRY_RECORD="unread"
+if declare -F box_entry_mode_load >/dev/null && box_entry_mode_load 2>/dev/null; then
+  BOX_ENTRY_RECORD="$BOX_ENTRY_MODE_CACHE (box $BOX_ENTRY_BOX_VERSION)"
+fi
+if declare -F box_entry_bind >/dev/null; then
+  for role_box in triage builder reviewer; do box_entry_bind "crew-drill-$role_box" "$AGENT"; done
+fi
 NOTIFY_STATUS="$(mktemp)"
 RESUME_STATUS="$(mktemp)"
 ATTENTION_STATUS="$(mktemp)"
@@ -802,7 +813,7 @@ if [ "$INSTALL_DRILL" -eq 1 ]; then
     SUMMARY+=("SKIPPED    installer  (blocked by role install: no installed drill box)")
     [ "$overall" -eq 1 ] || overall=2
   else
-    INSTALL_ARGS=(--box "$CONFIG_BOX")
+    INSTALL_ARGS=(--box "$CONFIG_BOX" --agent "$AGENT")
     if [ -n "$INSTALL_TREE" ]; then
       INSTALL_ARGS+=(--tree "$INSTALL_TREE")
     else
@@ -811,7 +822,7 @@ if [ "$INSTALL_DRILL" -eq 1 ]; then
     "$HERE/install-drill.sh" "${INSTALL_ARGS[@]}"
     rc=$?
     # shellcheck disable=SC2016  # expanded by bash inside the box
-    return_state="$(box exec "$CONFIG_BOX" -- bash -lc \
+    return_state="$(box_in "$CONFIG_BOX" -- bash -lc \
       'command -v crontab >/dev/null 2>&1 || exit 2
        tmp=$(mktemp) || exit 2
        error=$(mktemp) || { rm -f -- "$tmp"; exit 2; }
@@ -1124,7 +1135,7 @@ done
 # overall=2 is INCOMPLETE, not a pass: phase 2 never ran, and that is exactly
 # the round whose boxes an operator needs standing to find out why. So it
 # keeps them, like a failure does.
-TEARDOWN_HINT="drill/teardown.sh --roles \"$ROLES\""
+TEARDOWN_HINT="drill/teardown.sh --roles \"$ROLES\" --agent $AGENT"
 if [ "$KEEP" -eq 1 ] && [ -n "$LEGS" ]; then
   SUMMARY+=("keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)")
 elif [ "$KEEP" -eq 1 ]; then
@@ -1140,7 +1151,7 @@ else
   # asked for the round, and a prompt at the end of a two-hour rehearsal is a
   # prompt nobody is sitting in front of. --keep is how they say no.
   section_start=$SECONDS
-  "$HERE/teardown.sh" --roles "$ROLES" --yes
+  "$HERE/teardown.sh" --roles "$ROLES" --agent "$AGENT" --yes
   rc=$?
   TIMINGS+=("teardown $((SECONDS - section_start))")
   # 2 is teardown's INCOMPLETE: a class it was asked to clear could not be
@@ -1166,6 +1177,7 @@ echo "## fleet rehearsal summary ($AGENT)"
 if [ -n "$RESOLVED_REF" ]; then
   echo "## drilled source: $RESOLVED_REF ($SOURCE_RECORD)"
 fi
+echo "## box entry: $BOX_ENTRY_RECORD"
 
 # The inventory is the round's declaration-to-result agreement block. It is
 # generated from SUMMARY rather than maintained beside it, so the detailed

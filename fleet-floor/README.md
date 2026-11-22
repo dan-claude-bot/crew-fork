@@ -103,7 +103,7 @@ of them over the network. They are now separated by what they cost:
 
 | tier | how | network | cadence |
 |---|---|---|---|
-| **ping** | `box exec <box> -- true` | none | 10s |
+| **ping** | `box exec <box> -- true` (`--user <agent>` on box 0.11.0+) | none | 10s |
 | **evidence** | `probe.sh` — duty.log, cron, uptime, repos, lock age | none | 60s |
 | **credentials** | markers the duty engine writes | **none** | read with evidence |
 

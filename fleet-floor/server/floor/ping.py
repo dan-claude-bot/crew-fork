@@ -151,6 +151,86 @@ def run(argv, timeout, stdin_data=None):
         return 1, "", str(e)
 
 
+# --- the one door into a box (#792) -----------------------------------------
+#
+# The floor's half of shared/lib/box-entry.sh, and the same rule: box 0.11.0
+# and later (their -rc/-dev forms included) enter a box as ROOT unless
+# `--user NAME` names someone, so every floor call into a box names the
+# roster row's agent there; older boxes keep today's argv byte for byte. The
+# version is read from `box --version` once per process, and an unreadable
+# answer refuses rather than guessing either way: one guess runs the agent's
+# work as root, the other passes a flag the host's box never had.
+BOX_ENTRY_USER_SINCE = (0, 11)
+_BOX_ENTRY_LOCK = threading.Lock()
+_BOX_ENTRY_MODE = []          # [mode] once read; a refusal is not cached
+
+
+class BoxEntryRefused(Exception):
+    """The door will not enter: unreadable box version, or no agent to name."""
+
+
+def box_entry_mode_of(version):
+    """'user' or 'stamp' for a bare version string; None when it is not one."""
+    m = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)(-[A-Za-z0-9][A-Za-z0-9.-]*)?",
+                     version or "")
+    if not m:
+        return None
+    return "user" if (int(m.group(1)), int(m.group(2))) >= BOX_ENTRY_USER_SINCE else "stamp"
+
+
+def box_entry_mode():
+    """This host's entry mode, read once. Raises BoxEntryRefused if unreadable."""
+    with _BOX_ENTRY_LOCK:
+        if _BOX_ENTRY_MODE:
+            return _BOX_ENTRY_MODE[0]
+        _rc, out, _err = run(["box", "--version"], 10)
+        line = ((out or "").splitlines() or [""])[0].strip()
+        parts = line.split()
+        version = parts[1] if len(parts) >= 2 and parts[0] == "box" else ""
+        mode = box_entry_mode_of(version)
+        if mode is None:
+            raise BoxEntryRefused(
+                "cannot read this host's box version — 'box --version' answered %r; "
+                "box %d.%d.0 and later enter a box as root unless --user names the "
+                "agent, so the floor will not guess" % ((line or "nothing",) + BOX_ENTRY_USER_SINCE))
+        _BOX_ENTRY_MODE.append(mode)
+        return mode
+
+
+def box_in(box, agent, cmd):
+    """The argv that runs `cmd` inside `box` as its agent.
+
+    `agent` is the roster row's. Raises BoxEntryRefused in user mode when it is
+    empty, rather than handing back an argv that would enter as root.
+    """
+    if box_entry_mode() == "stamp":
+        return ["box", "exec", box, "--"] + list(cmd)
+    if not agent:
+        raise BoxEntryRefused(
+            "%s has no roster row naming its agent — box enters as root unless "
+            "--user names one, so the floor will not enter it" % box)
+    return ["box", "exec", "--user", agent, box, "--"] + list(cmd)
+
+
+def box_shell_command(box, agent):
+    """The `box shell` line an operator types to reach `box` as its agent."""
+    try:
+        if box_entry_mode() == "stamp":
+            return "box shell %s" % box
+    except BoxEntryRefused:
+        pass
+    return "box shell --user %s %s" % (agent or "<agent>", box)
+
+
+def run_in(box, agent, cmd, timeout, stdin_data=None):
+    """run() through the door: a refusal is an rc-2 result, never a raise."""
+    try:
+        argv = box_in(box, agent, cmd)
+    except BoxEntryRefused as e:
+        return 2, "", str(e)
+    return run(argv, timeout, stdin_data=stdin_data)
+
+
 # The ping already pays for a host-side process start (~47ms of the ~97ms);
 # what runs INSIDE the guest is nearly free by comparison. So it reads two
 # files on the way past, and STUCK detection moves from the 60s evidence tier
@@ -215,16 +295,15 @@ def parse_ping(out):
     return facts
 
 
-def ping_box(name):
+def ping_box(name, agent=""):
     """Is this box answering? Returns (ok, milliseconds, error, facts).
 
     The cheapest `box exec` that still proves a fork: no stdin, no script piped
     in, one tiny shell in the guest. Never raises — an unreachable box is a
-    datum, like everywhere else in this file.
+    datum, like everywhere else in this file. Entered as `agent` (#792).
     """
     t0 = time.time()
-    rc, out, err = run(["box", "exec", name, "--", "sh", "-c", PING_SH],
-                       PING_TIMEOUT_S)
+    rc, out, err = run_in(name, agent, ["sh", "-c", PING_SH], PING_TIMEOUT_S)
     ms = int((time.time() - t0) * 1000)
     if rc == 0:
         return True, ms, "", parse_ping(out)
@@ -250,8 +329,8 @@ def probe_box(unit, agent_conf, env=None):
                            and re.fullmatch(r"[A-Za-z0-9._:/-]*", str(v)))
         if exports:
             script = "export %s\n%s" % (exports, script)
-    rc, out, err = run(["box", "exec", unit["box"], "--", "bash", "-lc", script],
-                       PROBE_TIMEOUT_S, stdin_data=agent_conf)
+    rc, out, err = run_in(unit["box"], unit.get("agent"), ["bash", "-lc", script],
+                          PROBE_TIMEOUT_S, stdin_data=agent_conf)
     if rc != 0:
         return None, (err.strip().splitlines() or ["box exec failed (rc %d)" % rc])[-1]
     return out, None

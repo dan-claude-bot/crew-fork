@@ -127,6 +127,12 @@ fi
 # shellcheck source=/dev/null
 . "$AGENT_CONF"
 LOGIN_HINT="$AGENT_LOGIN_HINT"
+# The one door into a box (#792): box 0.11.0 and later enter as root unless
+# --user names the agent, so every exec below goes through box_in. The entry
+# mode is read once, right before phase 0 first touches a box.
+# shellcheck source=shared/lib/box-entry.sh
+. "$ROOT/shared/lib/box-entry.sh"
+box_entry_bind "$BOX_NAME" "$AGENT"
 
 PASS=0
 SKIP=0
@@ -270,7 +276,7 @@ rehearsal_fast_restore_cli() {
   bx "sed -i '/^# rehearsal-fast-stub begin$/,/^# rehearsal-fast-stub end$/d' ~/duty/conf/roles/$ROLE.conf" \
     && REHEARSAL_FAST_STUB_SET=0
 }
-bx() { box exec "$BOX_NAME" -- bash -lc "$1"; }
+bx() { box_in "$BOX_NAME" -- bash -lc "$1"; }
 # shellcheck disable=SC2034  # read and updated by rehearsal-safety.sh
 REPOS_BACKUP=""
 ACQUIRE_TMP=""
@@ -457,6 +463,9 @@ if [ -z "$BOX_CPU" ] || [ -z "$BOX_MEMORY" ] || [ -z "$BOX_DISK" ]; then
   echo "         guess a size the fleet does not use" >&2
   exit 1
 fi
+# Recorded, and an unreadable box version stops the drill here (#792).
+box_entry_mode_load || exit 2
+echo "== box entry: $BOX_ENTRY_MODE_CACHE (box $BOX_ENTRY_BOX_VERSION)"
 if ! box list --json 2>/dev/null | jq -e --arg n "$BOX_NAME" '.[] | select(.name == $n)' >/dev/null; then
   # THE MINT IS NOT SPELLED HERE (#679 D9). It used to carry its own copy of
   # `box new --template "$AGENT-box"`, which box 0.10.0 refuses — so on a host
@@ -542,7 +551,7 @@ BOX_TOUCHED=1
 check "box reachable" bx "true"
 
 # shellcheck disable=SC2016  # expanded by bash inside the box
-box exec "$BOX_NAME" -- bash -lc '
+box_in "$BOX_NAME" -- bash -lc '
   set -euo pipefail
   archive="$HOME/.crew-engine.tgz"
   tmp="$(mktemp "$HOME/.crew-engine.XXXXXX")"
@@ -626,7 +635,7 @@ CREW_CONFIG_DIR="$DRILL_CONFIG" "$CREW_BIN" hire "$BOX_NAME" --ref "$SOURCE_SHA"
 # also what gives the raw installer coverage layered ON TOP of the deployed
 # path, rather than instead of it.
 # shellcheck disable=SC2016  # expanded by bash inside the box
-box exec "$BOX_NAME" -- bash -lc '
+box_in "$BOX_NAME" -- bash -lc '
   set -euo pipefail
   archive="$HOME/.crew-engine.tgz"
   tmp="$(mktemp "$HOME/.crew-engine.XXXXXX")"
@@ -804,7 +813,7 @@ if [ "$GH_AUTHED" -eq 0 ] || ! bx "set -a; . ~/.crew-engine-stage/shared/conf/ag
   echo "== phase 2 SKIPPED: box not fully authenticated."
   echo "   The $ROLE loop is therefore UNPROVEN — phase 1 says the engine"
   echo "   installs, not that it works. Log the box in and re-run:"
-  echo "     box shell $BOX_NAME"
+  echo "     $(box_shell_hint "$BOX_NAME" "$AGENT")"
   echo "     gh auth login"
   echo "     $LOGIN_HINT"
   echo "   Another box may share this identity, but only while its repos.txt"

@@ -57,6 +57,10 @@
 CREW_PLATFORM_BOX_MIN="0.10.0"
 CREW_PLATFORM_RIG_MIN="0.4.0"
 
+# The one door into a box (#792).
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/box-entry.sh"
+
 # platform_version_of LINE — the bare version out of a `<tool> <ver> (<root>)`
 # answer, which is the shape both box and rig print for --version:
 #
@@ -141,6 +145,13 @@ platform_box_version() {
 # already gives a host with no boxes: there is nothing crew was asked about, so
 # there is nothing to say about rig.
 platform_roster_names() { # [ROSTER_FILE]
+  platform_roster_rows "${1:-}" | awk '{print $1}'
+}
+
+# platform_roster_rows [ROSTER_FILE] — `<box> <agent>` per roster line, from the
+# same file platform_roster_names reads; the agent is who the guest read enters
+# as on box 0.11.0 and later (#792).
+platform_roster_rows() { # [ROSTER_FILE]
   local roster="${1:-}"
   if [ -z "$roster" ]; then
     if [ -n "${CREW_ROSTER:-}" ]; then
@@ -154,7 +165,7 @@ platform_roster_names() { # [ROSTER_FILE]
   [ -r "$roster" ] || return 0
   # `|| true` because a roster of nothing but comments is a real file and an
   # empty match, and grep's rc 1 there would kill a caller under `set -e`.
-  { grep -vE '^[[:space:]]*(#|$)' "$roster" || true; } | awk '{print $1}'
+  { grep -vE '^[[:space:]]*(#|$)' "$roster" || true; } | awk '{print $1, $2}'
 }
 
 # platform_guest_rig_versions — one `<box>\t<version>` row per box that answers,
@@ -202,14 +213,20 @@ platform_roster_names() { # [ROSTER_FILE]
 platform_guest_rig_versions() { # [ROSTER_FILE]
   command -v box >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  local name answer version roster_names
-  roster_names="$(platform_roster_names "${1:-}")"
-  [ -n "$roster_names" ] || return 0
+  local name answer version roster_names roster_rows BOX_IN_ARGV
+  roster_rows="$(platform_roster_rows "${1:-}")"
+  roster_names="$(awk '{print $1}' <<<"$roster_rows")"
+  [ -n "${roster_names//[$'\n'[:space:]]/}" ] || return 0
+  # The box half of the report already names a box it cannot read; the guests
+  # are not entered without knowing how (#792).
+  box_entry_mode_load 2>/dev/null || return 0
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     grep -qxF -- "$name" <<<"$roster_names" || continue
-    answer="$(timeout 10 box exec "$name" -- bash -lc \
-      'echo probe=ok; [ -r /etc/rig/manifest ] && cat /etc/rig/manifest' \
+    box_entry_bind "$name" "$(awk -v n="$name" '$1 == n { print $2; exit }' <<<"$roster_rows")"
+    box_in_argv "$name" -- bash -lc \
+      'echo probe=ok; [ -r /etc/rig/manifest ] && cat /etc/rig/manifest' 2>/dev/null || continue
+    answer="$(timeout 10 "${BOX_IN_ARGV[@]}" \
       </dev/null 2>/dev/null | tr -d '\r' || true)"
     case "$answer" in *probe=ok*) : ;; *) continue ;; esac
     version="$(sed -n 's/^converged_by=//p' <<<"$answer" | head -1)"

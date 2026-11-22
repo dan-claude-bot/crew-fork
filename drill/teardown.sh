@@ -60,6 +60,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KNOWN_ROLES="triage builder reviewer"
 
 ROLES=""
+# Who the drill boxes enter as on box 0.11.0+ (#792): the round's --agent.
+ENTRY_AGENT="claude"
 declare -a BOXES=()
 declare -a REPOS=()
 declare -a BUILDER_FORKS=()
@@ -68,7 +70,7 @@ YES=0
 [ -n "${CREW_YES:-}" ] && YES=1
 
 usage() {
-  echo "usage: drill/teardown.sh [--roles \"triage builder reviewer\"] [--role <role>]"
+  echo "usage: drill/teardown.sh [--roles \"triage builder reviewer\"] [--role <role>] [--agent <name>]"
   echo "         [--box <name>] [--sandbox <owner/repo>] [--dry-run] [--yes]"
 }
 
@@ -85,6 +87,7 @@ while [ $# -gt 0 ]; do
     --roles)   need $# --roles;   ROLES="$ROLES $2"; shift 2 ;;
     --role)    need $# --role;    ROLES="$ROLES $2"; shift 2 ;;
     --box)     need $# --box;     BOXES+=("$2"); shift 2 ;;
+    --agent)   need $# --agent;   ENTRY_AGENT="$2"; shift 2 ;;
     --sandbox) need $# --sandbox; REPOS+=("$2"); shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --yes|-y)  YES=1; shift ;;
@@ -92,6 +95,13 @@ while [ $# -gt 0 ]; do
     *) usage >&2; exit 1 ;;
   esac
 done
+
+# The one door into a box (#792). Not loaded here: a host whose box version
+# cannot be read fails each box_in below, and every one of those is already a
+# read that holds its fork back rather than deleting past it.
+# shellcheck source=shared/lib/box-entry.sh
+. "$ROOT/shared/lib/box-entry.sh"
+for role in $KNOWN_ROLES; do box_entry_bind "crew-drill-$role" "$ENTRY_AGENT"; done
 
 for role in $ROLES; do
   case " $KNOWN_ROLES " in
@@ -366,7 +376,7 @@ if case " $ROLES " in *" builder "*) true ;; *) false ;; esac \
       # The box's exit status is kept: a failed read is no identity at all,
       # whatever it printed, and the fork is held back below (#769).
       builder_box_owner="$(gh_login_from \
-        "$(box exec crew-drill-builder -- bash -lc 'gh api user --jq .login' 2>/dev/null)")" \
+        "$(box_in crew-drill-builder -- bash -lc 'gh api user --jq .login' 2>/dev/null)")" \
         || builder_box_owner=""
     fi
     if [ -z "$builder_box_owner" ]; then
@@ -584,7 +594,7 @@ BUILDER_FORK_DELETE_FAILED=0
 for fork_record in ${DOOMED_BUILDER_FORKS[@]+"${DOOMED_BUILDER_FORKS[@]}"}; do
   fork_box="${fork_record%%|*}"
   fork_repo="${fork_record##*|}"
-  if box exec "$fork_box" -- bash -lc "gh repo delete '$fork_repo' --yes"; then
+  if box_in "$fork_box" -- bash -lc "gh repo delete '$fork_repo' --yes"; then
     echo "ok   deleted builder fork $fork_repo"
   else
     echo "FAIL could not delete builder fork $fork_repo through $fork_box" >&2

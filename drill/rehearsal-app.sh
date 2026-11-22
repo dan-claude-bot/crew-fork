@@ -120,6 +120,12 @@ fi
 roster_rows() { grep -vE '^[[:space:]]*(#|$)' "$ROSTER"; }
 export CREW_FLOOR_ROSTER="$ROSTER"
 export CREW_ROSTER="$ROSTER"
+# The one door into a box (#792): box 0.11.0 and later enter as root unless
+# --user names the agent, so every exec here goes through box_in, which reads
+# each box's agent from $ROSTER above; the entry mode is read once.
+# shellcheck source=shared/lib/box-entry.sh
+. "$ROOT/shared/lib/box-entry.sh"
+box_entry_mode_load || exit 2
 
 PASS=0 SKIP=0
 declare -a FAILS=()
@@ -163,7 +169,7 @@ ARMED_BY_DRILL=""
 # the shell inside it; and the function is called from the control block and
 # from cleanup(), neither of which shellcheck treats as a call site.
 drill_arm_cron() {
-  box exec "$1" -- bash -lc '
+  box_in "$1" -- bash -lc '
     tmp=$(mktemp)
     { crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh"
       echo "*/5 * * * * $HOME/duty/bin/tick.sh"; } > "$tmp"
@@ -172,20 +178,20 @@ drill_arm_cron() {
 }
 # shellcheck disable=SC2016,SC2317
 drill_disarm_cron() {
-  box exec "$1" -- bash -lc '
+  box_in "$1" -- bash -lc '
     tmp=$(mktemp)
     crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh" > "$tmp" || true
     crontab "$tmp"; rc=$?
     rm -f "$tmp"; exit "$rc"' >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
-drill_cron_armed()  { box exec "$1" -- bash -lc "crontab -l 2>/dev/null | grep -qE '^[^#].*tick\.sh'" >/dev/null 2>&1; }
+drill_cron_armed()  { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -qE '^[^#].*tick\.sh'" >/dev/null 2>&1; }
 # shellcheck disable=SC2317
-drill_cron_paused() { box exec "$1" -- bash -lc "crontab -l 2>/dev/null | grep -q '^#CREW-FLOOR-PAUSED'" >/dev/null 2>&1; }
+drill_cron_paused() { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -q '^#CREW-FLOOR-PAUSED'" >/dev/null 2>&1; }
 # Any tick.sh line at all, commented or live — the same fact rehearsal.sh's own
 # teardown check asserts, and the one that says "disarmed" without ambiguity.
 # shellcheck disable=SC2016,SC2317
-drill_cron_present() { box exec "$1" -- bash -lc 'crontab -l 2>/dev/null | grep -qF "$HOME/duty/bin/tick.sh"' >/dev/null 2>&1; }
+drill_cron_present() { box_in "$1" -- bash -lc 'crontab -l 2>/dev/null | grep -qF "$HOME/duty/bin/tick.sh"' >/dev/null 2>&1; }
 
 # shellcheck disable=SC2317  # invoked by the traps below, which shellcheck
 # does not treat as a call site.
@@ -201,7 +207,7 @@ cleanup() {
     if drill_disarm_cron "$b"; then
       echo "teardown: disarmed $b"
     else
-      echo "teardown: WARNING — could not disarm $b; run: box exec $b -- bash -lc 'crontab -l | grep -vF \"\$HOME/duty/bin/tick.sh\" | crontab -'" >&2
+      echo "teardown: WARNING — could not disarm $b; run: $(box_exec_hint "$b" -- bash -lc "'crontab -l | grep -vF \"\$HOME/duty/bin/tick.sh\" | crontab -'")" >&2
     fi
   done
   if [ -n "$SRV" ]; then
@@ -547,7 +553,11 @@ BOX_READ_TIMEOUT="${CREW_FLOOR_PROBE_TIMEOUT:-45}"
 # collection read one duty.log. That is the same defect codex-bot named in the
 # dry-run verdict — a claim wider than the read behind it — one layer further
 # down, and it makes "every roster box's crontab" true rather than aspirational.
-box_read() { timeout "$BOX_READ_TIMEOUT" box exec "$@" </dev/null; }
+box_read() {
+  local -a BOX_IN_ARGV
+  box_in_argv "$@" || return 2
+  timeout "$BOX_READ_TIMEOUT" "${BOX_IN_ARGV[@]}" </dev/null
+}
 
 # The box's own answer to the integrity question, asked over its own transport.
 # `--state` prints ONE bare word — absent, unverified, current or modified
@@ -624,8 +634,11 @@ t "ping and probe agree about the duty lock" "" "$DISAGREE"
 # `gh auth status` would cost ~450ms per box per poll and pass every stub test.
 echo
 echo "== credentials come from the flow"
-PROBE_MS="$( { TIMEFORMAT=%R; time box exec "$(body GET /api/fleet | jqf "d['units'][0]['box']")" -- \
-  bash -lc "$(cat "$ROOT/fleet-floor/server/probe.sh")" >/dev/null 2>&1 </dev/null; } 2>&1 )"
+PROBE_MS=""
+if box_in_argv "$(body GET /api/fleet | jqf "d['units'][0]['box']")" -- \
+     bash -lc "$(cat "$ROOT/fleet-floor/server/probe.sh")"; then
+  PROBE_MS="$( { TIMEFORMAT=%R; time "${BOX_IN_ARGV[@]}" >/dev/null 2>&1 </dev/null; } 2>&1 )"
+fi
 PROBE_MS="${PROBE_MS%.*}"
 if [ -n "$PROBE_MS" ] && [ "$PROBE_MS" -le 3 ]; then
   ok "a real probe costs ${PROBE_MS}s — no network auth call in it"

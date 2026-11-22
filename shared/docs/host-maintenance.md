@@ -187,7 +187,8 @@ this deferral costs you: it says a box crossed 80% and names what is holding
 it. To look at one box directly, without cutting anything:
 
 ```
-box exec <box> -- bash -lc 'df -Pk /'
+box exec <box> -- bash -lc 'df -Pk /'                     # box before 0.11.0
+box exec --user <agent> <box> -- bash -lc 'df -Pk /'      # box 0.11.0 and later
 ```
 
 If a box really has filled, the repair is a **hand** `crew reset <box>`. The

@@ -2030,7 +2030,7 @@ function apiFetch(path,opts){return fetch(apiURL(path),opts||{}).then(function(r
    has to know which mode it is in. */
 function liveData(u){
   var d=emptyData(u.room);
-  d.box=u.box;d.queue=u.queue||[];d.sessions=u.sessions||[];d.up=u.up||{h:0,m:0};
+  d.box=u.box;d.shell=u.shell||"";d.queue=u.queue||[];d.sessions=u.sessions||[];d.up=u.up||{h:0,m:0};
   d.repo=queueRepo(d.queue,u.repo||"");d.spark=(u.spark&&u.spark.length?u.spark:[]);d.longest=u.longest||0;
   d.avg=u.avg||0;d.success=u.success||0;d.today=u.today||0;d.cur=u.cur||null;
   d.gh=u.gh;d.vendor=u.vendor;d.engine=u.engine||"";d.cron=u.cron||d.cron;
@@ -7070,7 +7070,9 @@ if(_railL)_railL.addEventListener("click",function(e){
   else if(b.id==="ac-term"){
     /* A browser cannot open a shell into a box. Hand over the command the
        operator would type instead of pretending otherwise. */
-    var c="box shell "+box;
+    /* The collector's own line (#792): on box 0.11.0+ it names the agent
+       with --user, since a bare `box shell` there is a root shell. */
+    var c=d.shell||("box shell "+box);
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(c).then(function(){setStatus("copied: "+c,false);},function(){setStatus(c,false);});
     else setStatus(c,false);
   }

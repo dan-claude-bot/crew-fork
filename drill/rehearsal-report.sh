@@ -87,7 +87,9 @@ rehearsal_report_footer() {
       fi
       # shellcheck disable=SC2088  # the tilde is prose: the operator types
       # these paths in the BOX's login shell, which is where they resolve
-      printf '~/duty/duty.log and ~/duty/logs/* excerpts from: box shell %s\n' "$box"
+      # The door's own hint (#792): `--user <agent>` on box 0.11.0+.
+      printf '~/duty/duty.log and ~/duty/logs/* excerpts from: %s\n' \
+        "$(box_shell_hint "$box" 2>/dev/null || printf 'box shell %s' "$box")"
       ;;
     incomplete)
       printf 'INCOMPLETE — phase 2 never ran, so the %s loop is UNPROVEN.\n' "$role"

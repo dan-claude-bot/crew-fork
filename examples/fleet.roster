@@ -4,7 +4,7 @@
 # The lifecycle per box: `crew new <name>` / `crew create-all` CREATE
 # the infrastructure (from the 4th column's gold snapshot if given, else a
 # role-sized blank mint rig converges as <agent>-box); you log it in ONCE BY
-# HAND (`box shell <name>` → `gh auth login` → the agent's login hint —
+# HAND (`box shell --user <agent> <name>`, or `box shell <name>` before box 0.11.0 → `gh auth login` → the agent's login hint —
 # `crew auth` was removed until the fleet is proven); `crew hire <name>` /
 # `crew hire-all` put it on duty (engine + cron, idempotent upsert —
 # skips boxes already hired at the current pin). `crew up` converges:

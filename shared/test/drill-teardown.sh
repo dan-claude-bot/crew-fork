@@ -34,6 +34,7 @@ cat >"$STUB/box" <<'SHIM'
 # recorded and never does anything.
 printf 'box %s\n' "$*" >>"$STUB_CALLS"
 case "${1:-}" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list)
     # STUB_BOX_LIST_RC is an inventory that cannot be answered at all;
     # STUB_BOX_LIST_JUNK is one that answers with something that is not JSON.

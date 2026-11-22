@@ -4,15 +4,26 @@
 # The host CLI and the engines copied into hired boxes are independent axes.
 # A host-version flip must therefore report skew, never refuse the flip.
 
+# The one door into a box (#792).
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/box-entry.sh"
+
 hired_engine_versions() {
   command -v box >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
 
-  local name stamp version
+  # A report, never a refusal: on a host whose box version cannot be read it
+  # reports nothing rather than guess how to enter the boxes, and the verbs
+  # that need a box refuse there themselves.
+  box_entry_mode_load 2>/dev/null || return 0
+
+  local name stamp version BOX_IN_ARGV
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    stamp="$(timeout 10 box exec "$name" -- bash -lc \
-      'head -1 ~/duty/VERSION 2>/dev/null' </dev/null 2>/dev/null \
+    # Through the door (#792): on box 0.11.0 a box with no roster row has no
+    # agent to enter as, so it is skipped — it is not crew's.
+    box_in_argv "$name" -- bash -lc 'head -1 ~/duty/VERSION 2>/dev/null' 2>/dev/null || continue
+    stamp="$(timeout 10 "${BOX_IN_ARGV[@]}" </dev/null 2>/dev/null \
       | tr -d '\r\n' || true)"
     [ -n "$stamp" ] || continue
     case "$stamp" in

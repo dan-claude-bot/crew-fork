@@ -131,9 +131,25 @@ EOF
 # the operator's to inspect or remove — and crew reports the state rather than
 # unwinding it, because a half-converged box that crew silently deleted is a
 # diagnosis nobody gets to make.
+#
+# BOX 0.11.0 CREATES NO USERS (#792, heavy-duty/box#291). On that box `box new
+# --user` is refused, and the agent's user is created by `rig bootstrap
+# <agent>-box` (rig-templates' USER=), so the mint names no --user and D10's
+# tenant name is kept by the role instead of by box. Between the two steps the
+# box holds root alone, and box_in refuses it as "not converged yet" rather
+# than entering a box whose agent does not exist; the mark is cleared only when
+# the converge succeeds. On older boxes the --user "$agent" above is kept,
+# byte for byte. The converge itself is `box root` in both modes: it MEANS root.
 box_mint_fresh() { # NAME AGENT CPU MEMORY DISK
   local name="$1" agent="$2" cpu="$3" memory="$4" disk="$5"
-  box new --name "$name" --user "$agent" \
+  local -a user_args=(--user "$agent")
+  box_entry_mode_load || return 2
+  if [ "$BOX_ENTRY_MODE_CACHE" = user ]; then
+    user_args=()
+    box_entry_bind "$name" "$agent"
+    box_entry_mark_unconverged "$name"
+  fi
+  box new --name "$name" "${user_args[@]}" \
     --cpu "$cpu" --memory "$memory" --disk "$disk" </dev/null || return 1
   box_mint_converge_script "$agent" | box root "$name" || {
     echo "crew: $name was minted but rig did not converge it as $agent-box." >&2
@@ -141,4 +157,5 @@ box_mint_fresh() { # NAME AGENT CPU MEMORY DISK
     echo "crew:   box root $name    # then: rig bootstrap $agent-box" >&2
     return 1
   }
+  box_entry_mark_converged "$name"
 }

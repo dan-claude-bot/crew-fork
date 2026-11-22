@@ -219,9 +219,12 @@ OUT="$(cd "$TMP" && env -u CREW_CONFIG_DIR CS_STATE="$STATE" CS_RECORD="$RECORD"
 t cli-store-drain-refuses-under-the-examples-fallback 1 "$(grep -c 'refuses' <<<"$OUT")"
 t cli-store-drain-refuses-under-the-examples-fallback-rc 1 "$RC"
 
-# --- the exec budget: the CLI's exec sites are still the four the floor's guard names -----
-# (bxn, bxput, vendor_probe, and bxpipe — the credentials pipe, #765)
-t cli-store-no-new-box-exec-site 4 \
+# --- the exec budget: the CLI's exec sites are the four the floor's guard names -----
+# (bxn, bxput, vendor_probe, and bxpipe — the credentials pipe, #765), and since
+# #792 every one goes through the one door, box_in: the CLI spells no `box exec`.
+t cli-store-no-new-box-exec-site 0 \
   "$(grep -vE '^[[:space:]]*#' "$CLI" | sed -e :a -e '/\\$/N; s/\\\n//; ta' | grep -cE 'box exec "')"
+t cli-store-exec-sites-go-through-the-door 4 \
+  "$(grep -vE '^[[:space:]]*#' "$CLI" | sed -e :a -e '/\\$/N; s/\\\n//; ta' | grep -cE 'box_in "\$')"
 
 suite_finish

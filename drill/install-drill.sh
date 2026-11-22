@@ -22,17 +22,21 @@ REMOTE="https://github.com/heavy-duty/crew.git"
 REF="main"
 ACQUIRE=0
 BOX_NAME=""
+# Who the drill box enters as on box 0.11.0+ (#792); rehearsal-all.sh passes
+# the round's own --agent.
+ENTRY_AGENT="claude"
 REGISTRY=""
 DRY_RUN=0
 
 usage() {
-  echo "usage: drill/install-drill.sh --box crew-drill-<name> [--tree <path>]"
+  echo "usage: drill/install-drill.sh --box crew-drill-<name> [--agent <name>] [--tree <path>]"
   echo "       [--remote <url> --ref <git-ref>] [--registry <narrow-repos.txt>] [--dry-run]"
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --box)      [ $# -ge 2 ] || { usage; exit 2; }; BOX_NAME="$2"; shift 2 ;;
+    --agent)    [ $# -ge 2 ] || { usage; exit 2; }; ENTRY_AGENT="$2"; shift 2 ;;
     --tree)     [ $# -ge 2 ] || { usage; exit 2; }; TREE="$2"; ACQUIRE=0; shift 2 ;;
     --remote)   [ $# -ge 2 ] || { usage; exit 2; }; REMOTE="$2"; ACQUIRE=1; shift 2 ;;
     --ref)      [ $# -ge 2 ] || { usage; exit 2; }; REF="$2"; ACQUIRE=1; shift 2 ;;
@@ -115,7 +119,16 @@ echo "- Drill box: \`$BOX_NAME\`"
 echo "- Narrow registry: \`$SANDBOX\`"
 echo
 
-bx() { box exec "$BOX_NAME" -- bash -lc "$1" </dev/null; }
+# The one door into a box (#792): box 0.11.0 and later enter as root unless
+# --user names the agent, so every exec here goes through box_in, and the
+# entry mode is read once — an unreadable box version stops the leg.
+# shellcheck source=shared/lib/box-entry.sh
+. "$ROOT/shared/lib/box-entry.sh"
+box_entry_mode_load || exit 2
+box_entry_bind "$BOX_NAME" "$ENTRY_AGENT"
+echo "- Box entry: \`$BOX_ENTRY_MODE_CACHE\` (box $BOX_ENTRY_BOX_VERSION)"
+echo
+bx() { box_in "$BOX_NAME" -- bash -lc "$1" </dev/null; }
 # shellcheck source=drill/install-survival.sh
 . "$ROOT/drill/install-survival.sh"
 # shellcheck source=drill/install-payload.sh

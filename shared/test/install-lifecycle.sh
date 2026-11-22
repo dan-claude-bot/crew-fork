@@ -245,6 +245,7 @@ FALLBACK_HOME="$WORK/fallback-home" FALLBACK_BIN="$WORK/fallback-bin"
 mkdir -p "$FALLBACK_HOME" "$FALLBACK_BIN"
 cat >"$FALLBACK_BIN/box" <<'SHIM'
 #!/usr/bin/env bash
+[ "${1:-}" != --version ] || { printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n'; exit 0; }
 [ "${1:-}" = list ] && printf '[]\n'
 exit 0
 SHIM
@@ -453,6 +454,7 @@ fi
 floorbox="$WORK/floorbox"; mkdir -p "$floorbox"
 cat >"$floorbox/box" <<'SHIM'
 #!/usr/bin/env bash
+[ "${1:-}" != --version ] || { printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n'; exit 0; }
 [ "${1:-}" = list ] && printf '[]\n'
 exit 0
 SHIM
@@ -591,6 +593,7 @@ BOX_ENGINES="$WORK/box-engines"; export BOX_ENGINES
 cat >"$vshim/box" <<'SHIM'
 #!/usr/bin/env bash
 case "${1:-}" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list)
     if [ "${2:-}" = --json ]; then
       awk '{printf "%s{\"name\":\"%s\"}", sep, $1; sep=","} BEGIN{printf "["} END{print "]"}' "$BOX_ENGINES"

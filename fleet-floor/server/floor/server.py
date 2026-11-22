@@ -15,7 +15,7 @@ from floor import INDEX
 from floor.actions import do_command
 from floor.alerts import alert_command_from_config
 from floor.fleet import Fleet
-from floor.ping import PING_INTERVAL_S, log, run
+from floor.ping import PING_INTERVAL_S, BoxEntryRefused, box_entry_mode, log, run_in
 from floor.registry import snapshot as registry_snapshot
 from floor.roster import CONFIG_DIR, read_roster, require_operator_config, roster_snapshot
 from floor.credentials import credentials_snapshot
@@ -151,15 +151,16 @@ class Handler(BaseHTTPRequestHandler):
     def serve_log(self, qs):
         box = (qs.get("box") or [""])[0]
         name = (qs.get("file") or [""])[0]
-        if box not in {u["box"] for u in read_roster()}:
+        agents = {u["box"]: u.get("agent", "") for u in read_roster()}
+        if box not in agents:
             return self.send_bytes(400, "text/plain; charset=utf-8", b"unknown box\n")
         # The filename comes from the browser: allow only the shape run_session
         # generates, so no traversal or shell metacharacter can reach the box.
         if name and not re.fullmatch(r"[A-Za-z0-9._@#-]{1,120}", name):
             return self.send_bytes(400, "text/plain; charset=utf-8", b"bad log name\n")
         target = ('"$HOME/duty/logs/%s"' % name) if name else '"$HOME/duty/duty.log"'
-        rc, out, err = run(["box", "exec", box, "--", "bash", "-lc",
-                            "tail -n 500 %s 2>/dev/null" % target], 30)
+        rc, out, err = run_in(box, agents[box], ["bash", "-lc",
+                              "tail -n 500 %s 2>/dev/null" % target], 30)
         payload = out if rc == 0 else "unreadable: %s" % (err.strip() or "rc %d" % rc)
         return self.send_bytes(200, "text/plain; charset=utf-8",
                                payload.encode("utf-8", "replace"))
@@ -239,6 +240,13 @@ def main():
     # unconfigured host must get the config answer, not a missing-password or
     # missing-build one — the same order cmd_floor uses.
     require_operator_config()
+    # How this host's box is entered, read before anything is served (#792):
+    # a floor that cannot tell would enter every box as root or not at all.
+    try:
+        box_entry_mode()
+    except BoxEntryRefused as e:
+        sys.stderr.write("crew floor: %s\n" % e)
+        sys.exit(2)
     ap_port = int(os.environ.get("CREW_FLOOR_PORT", "8420"))
     ap_bind = os.environ.get("CREW_FLOOR_BIND", "0.0.0.0")
     ap_user = os.environ.get("CREW_FLOOR_USER", "operator")

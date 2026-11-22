@@ -56,6 +56,7 @@ cat >"$STUB/box" <<'EOF'
 # list / info / exec / start against $BOXES/<name>; exec runs the script with
 # HOME pointed into the box, stdin passed through (bxpipe's channel).
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) printf '['; sep=''; for d in "$BOXES"/*/; do n="${d%/}"; n="${n##*/}"; printf '%s{"name":"%s"}' "$sep" "$n"; sep=','; done; printf ']\n' ;;
   info) printf '[{"name":"%s","status":"%s"}]\n' "$2" "$(cat "$BOXES/$2/.state" 2>/dev/null || echo Stopped)" ;;
   exec)

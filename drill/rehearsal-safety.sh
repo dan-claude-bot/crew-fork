@@ -938,7 +938,7 @@ rehearsal_cleanup() {
   fi
   if ! rehearsal_fleet_siblings_restore; then
     rc=1
-    echo "WARNING: could not restore the pre-drill fleet-repos.txt; inspect: box shell $BOX_NAME" >&2
+    echo "WARNING: could not restore the pre-drill fleet-repos.txt; inspect: $(box_shell_hint "$BOX_NAME" 2>/dev/null || printf 'box shell %s' "$BOX_NAME")" >&2
   fi
   rehearsal_disarm_cron \
     || echo "WARNING: could not disarm the drill cron; stop the box: box down $BOX_NAME" >&2

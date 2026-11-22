@@ -79,7 +79,14 @@ fail() { echo "FAIL $1${2:+  — $2}"; FAILS+=("$1"); VERDICTS="$VERDICTS
 FAIL $1${2:+ — $2}"; }
 skip() { echo "skip $1${2:+  — $2}"; VERDICTS="$VERDICTS
 skip $1${2:+ — $2}"; }
-bx()   { box exec "$1" -- bash -lc "$2" </dev/null; }
+# The one door into a box (#792): box 0.11.0 and later enter as root unless
+# --user names the agent, so every exec here goes through box_in, and the
+# entry mode is read once — an unreadable box version stops the leg.
+# shellcheck source=shared/lib/box-entry.sh
+. "$ROOT/shared/lib/box-entry.sh"
+box_entry_mode_load || exit 2
+for box_name in $BOXES; do box_entry_bind "$box_name" "$AGENT"; done
+bx()   { box_in "$1" -- bash -lc "$2" </dev/null; }
 # box_state_of NAME — running · stopped · unknown, read the way cli/crew's own
 # box_state reads it (`box info --json`, either shape).
 box_state_of() {
@@ -142,7 +149,7 @@ cleanup() {
     " >/dev/null 2>&1; then
       echo "teardown: released the drill-held duty lock on $HOLD_BOX"
     else
-      echo "teardown: WARNING — could not release the drill-held duty lock on $HOLD_BOX; inspect with: box shell $HOLD_BOX" >&2
+      echo "teardown: WARNING — could not release the drill-held duty lock on $HOLD_BOX; inspect with: $(box_shell_hint "$HOLD_BOX")" >&2
       [ "$rc" -ne 0 ] || rc=1
     fi
   fi

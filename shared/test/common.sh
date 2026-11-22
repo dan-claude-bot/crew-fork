@@ -6363,7 +6363,7 @@ P0HOME="$TMP/phase0-home"
 P0LOG="$TMP/phase0-box.log"
 mkdir -p "$P0SHIM" "$P0HOME"
 # shellcheck disable=SC2016  # fixture expands state at execution time
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$P0LOG"\ncase "$1" in\n  list) printf "[]\\n" ;;\n  new|exec) exit 0 ;;\n  *) exit 2 ;;\nesac\n' >"$P0SHIM/box"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$P0LOG"\ncase "$1" in\n  --version) printf "box 0.10.1 (/opt/box/versions/0.10.1)\\n" ;;\n  list) printf "[]\\n" ;;\n  new|exec) exit 0 ;;\n  *) exit 2 ;;\nesac\n' >"$P0SHIM/box"
 printf '#!/usr/bin/env bash\nexit 1\n' >"$P0SHIM/gh"
 chmod +x "$P0SHIM/box" "$P0SHIM/gh"
 : >"$P0LOG"
@@ -6626,6 +6626,7 @@ git -C "$P0VERIFYTREE" -c user.name=fixture -c user.email=fixture@example.invali
 # shellcheck disable=SC2016  # the shim receives and executes rehearsal's script argument
 printf '%s\n' '#!/usr/bin/env bash
 case "$1" in
+  --version) printf "box 0.10.1 (/opt/box/versions/0.10.1)\n" ;;
   list) printf "[]\n" ;;
   new) exit 0 ;;
   root) cat >/dev/null ;;
@@ -9144,6 +9145,7 @@ printf 'FLEET_BENCH="local-reviewer"\nFLEET_TRIAGE="local-triage"\nFLEET_HUMAN="
 cat >"$OFSHIM/box" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) printf '[]\n' ;;
   *) exit 2 ;;
 esac
@@ -9504,6 +9506,7 @@ for cv_c in bash cat chmod; do ln -sf "$(command -v "$cv_c")" "$CVFOLLOW/bin/$cv
 cat >"$CVFOLLOW/bin/box" <<'CVEOF'
 #!/usr/bin/env bash
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   root)     printf 'root-door-opened %s\n' "$2" ;;
   snapshot) printf 'snapshot %s %s\n' "$2" "$3" ;;
   shell)    echo "box shell: the tenant is unprivileged — there is no sudo here" >&2; exit 1 ;;
@@ -9564,6 +9567,7 @@ printf 'owner/repo\n' >"$CVXCONF/repos.txt"
 cat >"$CVXSHIM/box" <<'CVEOF'
 #!/usr/bin/env bash
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) printf '[{"name":"crew-unconverged"}]\n' ;;
   info) printf '[{"status":"running"}]\n' ;;
   exec)
@@ -9766,6 +9770,7 @@ mkdir -p "$CLISHIM"
 cat >"$CLISHIM/box" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) printf '[]\n' ;;
   *) exit 2 ;;
 esac
@@ -9881,6 +9886,7 @@ json_state() {
   awk 'BEGIN { printf "[" } { printf "%s{\"name\":\"%s\",\"status\":\"%s\"}", sep, $1, $2; sep="," } END { print "]" }' "$UPSTATE"
 }
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) json_state ;;
   info)
     state="$(awk -v name="$2" '$1 == name { print $2; exit }' "$UPSTATE")"
@@ -9987,6 +9993,7 @@ EOF
 cat >"$CASHIM/box" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) printf '%s\n' "${BOX_LIST:-[]}" ;;
   new)
     name=""
@@ -10885,6 +10892,7 @@ cat >"$MSSHIM/box" <<'EOF'
 #!/usr/bin/env bash
 # box list/info/exec against $MSROOT/<name>, one directory per box.
 case "$1" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list) printf '[{"name":"fixture-box"}]\n' ;;
   info) printf '[{"status":"running"}]\n' ;;
   exec)

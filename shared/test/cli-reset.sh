@@ -73,6 +73,7 @@ calls="$state_dir/calls"
 snaps_of() { cat "$state_dir/snaps-$1" 2>/dev/null; }
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   list)
     if [ "${1:-}" = --json ]; then
       printf '[{"name":"alpha"},{"name":"beta"},{"name":"offroster"}]\n'

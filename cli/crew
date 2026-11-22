@@ -397,7 +397,13 @@ EXIT_NOTHING_TO_DO=4
 # profile is defined anywhere).
 die() { echo "crew: $*" >&2; exit 1; }         # 1 = it went wrong
 usage_error() { echo "crew: $*" >&2; echo "try 'crew help'." >&2; exit 2; }  # 2 = you asked wrong
-need_box() { command -v box >/dev/null || die "the 'box' CLI is not on PATH — crew runs on a box host"; }
+# need_box also reads how this host's box is entered (#792), ONCE and in the
+# verb's own shell, so every bxn after it — most run in $(…) subshells — finds
+# the reading cached. Unreadable is exit 2: crew will not guess.
+need_box() {
+  command -v box >/dev/null || die "the 'box' CLI is not on PATH — crew runs on a box host"
+  box_entry_mode_load || exit 2
+}
 
 # The examples fallback is a definition NOBODY WROTE, and it must not be able
 # to create infrastructure or arm cron (#216). Resolution ends at
@@ -610,8 +616,9 @@ THE LIFECYCLE — two verbs around one human step in the middle
               crew login <box> gh                 # a PAT — one identity per box
               crew login <box> agent [<kind>]     # once hired: its profile's kinds
           or the floor's Credentials overlay, which runs the same shell.
-          The interactive way still works: box shell <box>, then
-          gh auth login and <the agent profile's login hint>.
+          The interactive way still works: box shell <box> (on box 0.11.0
+          and later: box shell --user <agent> <box>), then gh auth login
+          and <the agent profile's login hint>.
           'crew status' and 'crew up' report who still owes this.
   hire    crew hire / crew hire-all — the box joins the crew: engine
           installed at this tree's version, cron armed, on duty at the next
@@ -648,7 +655,8 @@ EXAMPLES
 
   # one new member, end to end
   crew new claude-builder
-  box shell claude-builder          # gh auth login, then the agent login
+  box shell --user claude claude-builder   # gh auth login, then the agent login
+                                           # (before box 0.11.0: box shell claude-builder)
   crew hire claude-builder
 
   # a god-view of the fleet, reachable from the LAN
@@ -1141,12 +1149,15 @@ cmd_uninstall() {
 # it has its own `<"$(agent_conf "$2")"` redirect — which is exactly why it
 # never broke.
 #
-# Those two are the ONLY places `box exec` appears in this file, and the test
-# suite asserts that count. Routing every caller through a helper is what makes
-# "stdin is always pinned" checkable at all: before, the redirect was a thing
-# each call site had to remember, and the two that forgot were the two in
-# roster loops.
-bxn() { box exec "$1" -- bash -lc "$2" </dev/null; }
+# Routing every caller through a helper is what makes "stdin is always pinned"
+# checkable at all: before, the redirect was a thing each call site had to
+# remember, and the two that forgot were the two in roster loops.
+#
+# AND EVERY ONE GOES THROUGH box_in (#792, shared/lib/box-entry.sh). On box
+# 0.11.0 a `box exec` naming no user runs as ROOT; box_in adds `--user <agent>`
+# from the roster row there and keeps today's argv on older boxes. This file
+# spells no `box exec` of its own, and the suite asserts that count is zero.
+bxn() { box_in "$1" -- bash -lc "$2" </dev/null; }
 
 # credentials_line BOX — the export's one answer off a running box (#765):
 # the LAST `CREDS1 …` or `CREDS-FAIL …` line, so a login banner before it is
@@ -1160,7 +1171,7 @@ credentials_line() {
 # this shell (#765): a credential to set, the credentials a reset carries.
 # Never the caller's stdin — inside a roster loop that would drain the roster
 # — and never a file: DATA crosses the host in memory only.
-bxpipe() { printf '%s' "$3" | box exec "$1" -- bash -lc "$2"; }
+bxpipe() { printf '%s' "$3" | box_in "$1" -- bash -lc "$2"; }
 
 # bxput is the one other stdin-bearing box channel: atomically stage one host
 # file without requiring it to be tracked by git in the box's checkout.
@@ -1174,7 +1185,7 @@ bxput() { # BOX SOURCE DESTINATION
     cat >\"\$tmp\"
     mv \"\$tmp\" \"\$destination\"
   "
-  box exec "$box_name" -- bash -lc "$remote_script" <"$source_file"
+  box_in "$box_name" -- bash -lc "$remote_script" <"$source_file"
 }
 
 # resolve_engine REF — select one host-side engine source and set the
@@ -2037,7 +2048,7 @@ stamp_version() {
 # vendor_probe NAME AGENT — run the agent profile's bot_cli_probe inside the
 # box, shipping the profile over stdin (works on unhired boxes too).
 vendor_probe() {
-  box exec "$1" -- bash -lc \
+  box_in "$1" -- bash -lc \
     'cat >/tmp/.crew-agent-probe.conf; source /tmp/.crew-agent-probe.conf; bot_cli_probe' \
     <"$(agent_conf "$2")" >/dev/null 2>&1
 }
@@ -2569,6 +2580,8 @@ cmd_new() {
     while box_exists "$name"; do name="$agent-${role//,/-}-$i"; i=$((i + 1)); done
   fi
   box_exists "$name" && die "'$name' already exists (crew hire $name to put it on duty)"
+  # The hints below name its agent, roster row or not (#792).
+  box_entry_bind "$name" "$agent"
 
   create_box "$name" "$agent" "$role" "$from"
   # WHAT THIS SENTENCE MAY CLAIM IS DECIDED BY WHICH PATH JUST RAN (#679 D2,
@@ -2599,7 +2612,7 @@ No engine, no cron: it does nothing until hired. Next:
   crew login $name gh      # a token on stdin, never read back (or the floor's Credentials)
   crew hire $name          # joins the crew; on duty at the next 5-min boundary
   crew login $name agent   # its agent's login, once hired
-                           #   (or by hand: box shell $name, then $(login_hint "$agent"))
+                           #   (or by hand: $(box_shell_hint "$name" "$agent"), then $(login_hint "$agent"))
 
 (a NEW GitHub identity per box; for a reviewer decide the panel= changes first)
 EOF
@@ -2672,6 +2685,8 @@ cmd_hire() {
   if [ -z "$role" ] || [ -z "$agent" ]; then usage_error "--role and --agent go together"; fi
   validate_profiles "$agent" "$role"
   foreign_actor_check
+  # An ad-hoc box has no roster row to name its agent; this verb was told (#792).
+  box_entry_bind "$name" "$agent"
   # 3 is hire_box's SKIP status, which only the fleet verbs need to tell apart
   # from a failure: for a single named box the operator asked for one hire and
   # did not get it, so it collapses to crew's ordinary "the world is not ready"
@@ -2992,7 +3007,7 @@ cycle_box() {
     return 1
   fi
   after="$(wait_box_free_kb "$name")" || {
-    echo "  restart FAILED on $name — box started but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name"
+    echo "  restart FAILED on $name — box started but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: $(box_shell_hint "$name")"
     return 1
   }
   if [ "$initial_state" = stopped ]; then
@@ -3628,7 +3643,7 @@ cut_box() { # NAME
   # hired, is worse than none: the restore that uses it comes back looking
   # like it worked and the box cannot do a minute's work.
   if ! bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then
-    echo "  $name: REFUSED — not logged in to GitHub (an $RESET_LABEL checkpoint of a box without credentials restores to a box that cannot work); log it in with: crew login $name gh (or box shell $name)"
+    echo "  $name: REFUSED — not logged in to GitHub (an $RESET_LABEL checkpoint of a box without credentials restores to a box that cannot work); log it in with: crew login $name gh (or $(box_shell_hint "$name"))"
     return 1
   fi
   stamp="$(hired_at "$name")"
@@ -3659,7 +3674,7 @@ cut_box() { # NAME
     return 1
   fi
   if ! vendor_probe "$name" "$agent"; then
-    echo "  $name: REFUSED — its $agent CLI is not logged in (an $RESET_LABEL checkpoint of a box that cannot reach its model restores to a box that cannot work); log it in with: crew login $name agent (or box shell $name)"
+    echo "  $name: REFUSED — its $agent CLI is not logged in (an $RESET_LABEL checkpoint of a box that cannot reach its model restores to a box that cannot work); log it in with: crew login $name agent (or $(box_shell_hint "$name" "$agent"))"
     return 1
   fi
   # AN UNPARSEABLE STAMP IS NOT A VERSION TO RECORD. This coerced to the
@@ -3757,7 +3772,7 @@ cut_box() { # NAME
     return 1
   fi
   bxn "$name" 'rm -f ~/duty/.memory-pending' >/dev/null 2>&1 \
-    || echo "  $name: NOTE — .memory-pending is still set on the live box; remove it with: box exec $name -- rm -f duty/.memory-pending"
+    || echo "  $name: NOTE — .memory-pending is still set on the live box; remove it with: $(box_exec_hint "$name" -- rm -f duty/.memory-pending)"
   if ! checkpoint_record "$name" "$ver"; then
     echo "  $name: FAILED — $RESET_LABEL was cut but its version could not be recorded at $(checkpoint_file "$name"); re-cut once the path is writable"
     return 1
@@ -3904,7 +3919,7 @@ restore_box() { # NAME
     return 1
   fi
   if ! wait_box_free_kb "$name" >/dev/null; then
-    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name${creds_lost} — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
+    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: $(box_shell_hint "$name")${creds_lost} — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   if [ "$creds_read" -eq 1 ] && [ -n "$creds" ]; then
@@ -4802,7 +4817,7 @@ cmd_login() {
     case "$(bxn "$b" 'if test -r ~/duty/conf/instance.conf; then echo hired; else echo unhired; fi' 2>/dev/null | tr -d '\r' | tail -1)" in
       hired) ;;
       unhired) die "$b is not hired yet — its agent credential is set against the profile hire installs: crew hire $b, then crew login $b agent" ;;
-      *) die "$b did not answer — nothing set (is its guest up? box shell $b)" ;;
+      *) die "$b did not answer — nothing set (is its guest up? $(box_shell_hint "$b"))" ;;
     esac
   fi
   verdict="$(bxpipe "$b" "$(host_credentials_set_sh)" "$(printf '%s %s\n%s\n' "$svc" "$kind" "$secret")" 2>&1 \
@@ -4889,7 +4904,8 @@ cmd_creds() {
     rm) creds_rm "$@" ;;
     assign) creds_assign "$@" ;;
     unassign) creds_unassign "$@" ;;
-    push) creds_push "$@" ;;
+    # push enters boxes (bxpipe); read how, once, in this shell (#792).
+    push) box_entry_mode_load || exit 2; creds_push "$@" ;;
     *) usage_error "usage: $(synopsis_of creds)" ;;
   esac
 }

@@ -56,6 +56,10 @@ cp "$ROOT/drill/rehearsal-report.sh" "$HARNESS/"
 # box's cron and clock offset in files. Exported once: every round in this
 # suite that reaches the app phase without --app-roster drives it.
 cp "$ROOT/drill/rehearsal-armed-self.sh" "$HARNESS/"
+# The one door (#792): the drill scripts source ../shared/lib/box-entry.sh, so
+# the harness mirrors that one file of the tree beside itself.
+mkdir -p "$TMP/shared/lib"
+cp "$ROOT/shared/lib/box-entry.sh" "$TMP/shared/lib/"
 ARMED_STATE="$TMP/armed-state"; mkdir -p "$ARMED_STATE"
 cat >"$TMP/armed-box" <<'ABOX'
 #!/usr/bin/env bash
@@ -150,6 +154,8 @@ INSTALL
 chmod +x "$HARNESS/install-drill.sh"
 cat >"$HARNESS/box" <<'BOX'
 #!/usr/bin/env bash
+# A pre-0.11.0 box, so the round reads the stamp entry mode (#792).
+[ "${1:-}" != --version ] || { printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n'; exit 0; }
 [ "${1:-}" = exec ] || exit 1
 [ "${DRILL_SECTION_A_UNREADABLE:-0}" -eq 0 ] || exit 2
 if [ "${DRILL_SECTION_A_ARMED:-0}" -eq 1 ]; then
@@ -1362,6 +1368,7 @@ cat >"$MINT_SHIM/box" <<'EOF'
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   new) shift; printf 'new %s\n' "$*" >>"$MINT_STATE/calls" ;;
   root) printf 'root %s\n' "$2" >>"$MINT_STATE/calls"; cat >"$MINT_STATE/script-$2" ;;
   *) exit 2 ;;
@@ -4373,6 +4380,7 @@ cat >"$FL_BIN/box" <<'BOX'
 S="$FL_STATE"
 printf 'box %s\n' "$*" >>"$S/calls"
 case "${1:-}" in
+  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
   exec)
     n="$2"; script="${*: -1}"
     case "$script" in
@@ -4514,6 +4522,9 @@ cp "$ROOT/drill/fleet-lifecycle.sh" "$FL_DIR/"
 mkdir -p "$FL_DIR/drill"
 cp "$FL_MUT" "$FL_DIR/drill/rehearsal-fleet.sh"
 cp "$ROOT/drill/fleet-lifecycle.sh" "$FL_DIR/drill/"
+# …and the one door it sources from its own tree (#792).
+mkdir -p "$FL_DIR/shared/lib"
+cp "$ROOT/shared/lib/box-entry.sh" "$FL_DIR/shared/lib/"
 # shellcheck disable=SC2031  # the stub PATH is this substitution's alone
 fl_mut_out="$(rm -f "$FL_STATE"/held-* "$FL_STATE"/stopped-*; : >"$FL_STATE/calls"
   FL_STATE="$FL_STATE" PATH="$FL_BIN:$PATH" REHEARSAL_FLEET_CREW="$FL_BIN/crew" \

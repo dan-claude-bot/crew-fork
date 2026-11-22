@@ -34,8 +34,16 @@ ARMED_SELF_STAGE=0   # 0 untouched · 1 cron armed · 2 clock moved
 # shellcheck disable=SC2034  # the caller's to read: what prepare did, or why not
 ARMED_SELF_WHY=""
 
+# shellcheck source=shared/lib/box-entry.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/shared/lib/box-entry.sh"
 armed_self_box() { "${ARMED_SELF_BOX_CMD:-box}" "$@"; }
-armed_self_bx() { armed_self_box exec "$1" -- bash -lc "$2" </dev/null; }
+# Through the one door (#792): box_in_argv names --user <agent> on box 0.11.0+,
+# and the transport above replaces its leading `box`.
+armed_self_bx() {
+  local -a BOX_IN_ARGV
+  box_in_argv "$1" -- bash -lc "$2" || return 2
+  armed_self_box "${BOX_IN_ARGV[@]:1}" </dev/null
+}
 armed_self_root() { armed_self_box incus "$1" -- exec "{}" -- bash -c "$2" </dev/null 2>/dev/null; }
 
 # armed_self_clock_delta BOX — host minus box, in whole seconds; nothing when
@@ -106,7 +114,7 @@ armed_self_restore() {
     fi
   fi
   if [ -n "$bad" ]; then
-    echo "$box was NOT fully restored: $bad — repair: box incus $box -- exec {} -- bash -c 'systemctl start chrony; chronyc -a makestep', and remove the tick.sh line from its crontab (box exec $box -- crontab -e)"
+    echo "$box was NOT fully restored: $bad — repair: box incus $box -- exec {} -- bash -c 'systemctl start chrony; chronyc -a makestep', and remove the tick.sh line from its crontab ($(box_exec_hint "$box" -- crontab -e))"
     return 1
   fi
   ARMED_SELF_STAGE=0
