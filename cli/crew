@@ -1655,9 +1655,23 @@ create_box() {
 # pipefail` this pipeline takes bxn's status, so an unreachable box made
 # `actual="$(box_agent …)"` fail and `set -e` killed the whole status loop —
 # after four of six rows, which is the same silent-truncation shape as #48.
+#
+# ON BOX 0.11.0 A DRIFTED BOX REFUSES THE DOOR ITSELF (#792): bxn enters as the
+# ROSTER's agent, and a box installed as another agent has no such user, so the
+# read answers nothing — exactly when this helper is asked. The installed agent
+# is then read as root through `box incus … exec`, the door box_large_paths
+# already uses for a root read: read-only, one file, and only in that case.
 box_agent() {
-  bxn "$1" 'sed -n "s/^BOT_AGENT=//p" ~/duty/conf/instance.conf 2>/dev/null | head -1' 2>/dev/null \
-    | tr -d '"'\''\r\n' || true
+  local actual
+  actual="$(bxn "$1" 'sed -n "s/^BOT_AGENT=//p" ~/duty/conf/instance.conf 2>/dev/null | head -1' 2>/dev/null \
+    | tr -d '"'\''\r\n' || true)"
+  if [ -z "$actual" ] && [ "${BOX_ENTRY_MODE_CACHE:-}" = user ]; then
+    # shellcheck disable=SC2016  # the glob and the sed run inside the guest
+    actual="$(box incus "$1" -- exec "{}" -- sh -c \
+      'sed -n "s/^BOT_AGENT=//p" /home/*/duty/conf/instance.conf 2>/dev/null | head -1' \
+      </dev/null 2>/dev/null | tr -d '"'\''\r\n' || true)"
+  fi
+  printf '%s' "$actual"
 }
 
 # engine_report NAME [--paths] — ONE exec: which engine this box carries, and

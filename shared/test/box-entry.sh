@@ -253,6 +253,7 @@ verb_case() { # NAME ARGS... (stdin /dev/null)
 verb_case status status
 verb_case restart restart alpha
 verb_case reset-cut reset --cut alpha
+verb_case reset-restore reset alpha
 verb_case drain drain alpha
 verb_case pause pause alpha
 verb_case resume resume beta
@@ -311,12 +312,15 @@ t cli-spells-no-box-exec 0 "$(grep -cE '(^|[;&|({[:space:]])box exec ' <<<"$cli_
 
 # Nor does any host-side library or drill script, outside the door itself.
 # (Guest-side modules run INSIDE a box and never call `box`.)
+# Any spelling: quoted or not, through a variable holding the transport, or
+# armed-self's own transport function.
 host_sources=("$ROOT/shared/lib/platform.sh" "$ROOT/shared/lib/version-skew.sh" \
-  "$ROOT/shared/lib/box-mint.sh" "$ROOT/shared/lib/host/"*.sh "$ROOT"/drill/*.sh "$ROOT/install.sh")
+  "$ROOT/shared/lib/box-mint.sh" "$ROOT/shared/lib/host/"*.sh "$ROOT"/drill/*.sh "$ROOT/install.sh" \
+  "$ROOT"/shared/bin/* "$ROOT"/dist/*.sh)
 stray=""
 for f in "${host_sources[@]}"; do
   code="$(grep -vE '^[[:space:]]*#' "$f")"
-  if grep -qE '(^|[;&|({"[:space:]])box exec "|armed_self_box exec' <<<"$code"; then
+  if grep -qE '(^|[^[:alnum:]_-])box[[:space:]]+exec([[:space:]]|$)|"\$\{?[A-Za-z_]*BOX[A-Za-z_]*\}?" exec |armed_self_box exec' <<<"$code"; then
     stray="$stray ${f#"$ROOT"/}"
   fi
 done
@@ -334,6 +338,9 @@ from floor.fleet import Fleet
 from floor.actions import do_command
 f = Fleet(60)
 f.ping_once()
+snap = f.poll_once()
+for u in snap["units"]:
+    print("unit-shell %s=%s" % (u.get("box"), u.get("shell")))
 do_command(f, {"action": "pause", "box": "alpha"})
 do_command(f, {"action": "resume", "box": "beta"})
 from floor.ping import box_shell_command
@@ -345,8 +352,14 @@ for mode in stamp user; do
   t "floor-ping-and-actions-$mode-pinged-both" 2 "$(grep -cE '^exec (--user [a-z]+ )?(alpha|beta)$' <<<"$(execs | sort -u)")"
   check_execs "$mode" floor
   case "$mode" in
-    stamp) t floor-shell-command-stamp "shell=box shell beta" "$(grep '^shell=' <<<"$out")" ;;
-    user)  t floor-shell-command-user "shell=box shell --user codex beta" "$(grep '^shell=' <<<"$out")" ;;
+    stamp) t floor-shell-command-stamp "shell=box shell beta" "$(grep '^shell=' <<<"$out")"
+           t floor-snapshot-carries-the-shell-stamp "unit-shell alpha=box shell alpha
+unit-shell beta=box shell beta
+unit-shell gamma=box shell gamma" "$(grep '^unit-shell ' <<<"$out" | sort)" ;;
+    user)  t floor-shell-command-user "shell=box shell --user codex beta" "$(grep '^shell=' <<<"$out")"
+           t floor-snapshot-carries-the-shell-user "unit-shell alpha=box shell --user claude alpha
+unit-shell beta=box shell --user codex beta
+unit-shell gamma=box shell --user claude gamma" "$(grep '^unit-shell ' <<<"$out" | sort)" ;;
   esac
 done
 out="$(floor_py 0.11.0 '

@@ -23,8 +23,8 @@ REF="main"
 ACQUIRE=0
 BOX_NAME=""
 # Who the drill box enters as on box 0.11.0+ (#792); rehearsal-all.sh passes
-# the round's own --agent.
-ENTRY_AGENT="claude"
+# the round's own --agent. No default: box_in refuses without one on 0.11.0.
+ENTRY_AGENT=""
 REGISTRY=""
 DRY_RUN=0
 

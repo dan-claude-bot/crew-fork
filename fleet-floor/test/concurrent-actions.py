@@ -16,6 +16,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "server"))
 # regression would drive a real `box` (#508).
 from floor import actions as floor            # noqa: E402  (sys.path first)
 from floor import ping                        # noqa: E402  (log lives here)
+# The entry mode (#792) is read once from `box --version`. Every box call here
+# is stubbed through floor.run, so the pre-0.11.0 reading is seeded instead of
+# asking whatever `box` is on PATH; user mode is driven end to end in
+# shared/test/box-entry.sh.
+ping._BOX_ENTRY_MODE[:] = ["stamp"]
 REAL_LOG = ping.log
 floor.log = lambda _message: None
 

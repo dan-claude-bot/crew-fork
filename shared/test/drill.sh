@@ -4380,9 +4380,11 @@ cat >"$FL_BIN/box" <<'BOX'
 S="$FL_STATE"
 printf 'box %s\n' "$*" >>"$S/calls"
 case "${1:-}" in
-  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
+  --version|-V) printf 'box %s (/opt/box/versions/%s)\n' "${FL_BOX_VERSION:-0.10.1}" "${FL_BOX_VERSION:-0.10.1}" ;;  # the entry mode (#792)
   exec)
     n="$2"; script="${*: -1}"
+    # box 0.11.0's `exec --user NAME BOX -- …` (#792).
+    [ "$n" != --user ] || n="$4"
     case "$script" in
       *"exec flock"*)
         : >"$S/held-$n"
@@ -4534,6 +4536,15 @@ fl_mut_out="$(rm -f "$FL_STATE"/held-* "$FL_STATE"/stopped-*; : >"$FL_STATE/call
 t fl770-the-mutant-reds-the-hold 1 "$(grep -c '^FAIL a box is held busy' <<<"$fl_mut_out")"
 # ...and even graded failed, the holder it started is killed on the way out.
 t fl770-a-misgraded-hold-is-still-killed-in-cleanup 1 "$(grep -cx 'killed crew-drill-builder' "$FL_STATE/calls")"
+
+# #792: the same leg on box 0.11.0 — every exec it makes into a drill box
+# names the round's agent with --user, and the hold is still read.
+fl_out="$(fl_run FL_BOX_VERSION=0.11.0)"
+t fl792-user-mode-the-hold-is-read 1 "$(grep -c '^ok   a box is held busy by a live duty lock' <<<"$fl_out")"
+fl_execs="$(grep -c '^box exec ' "$FL_STATE/calls" || true)"
+t fl792-user-mode-execs-were-made yes "$([ "${fl_execs:-0}" -gt 0 ] && echo yes || echo no)"
+t fl792-user-mode-every-exec-names-the-agent "" \
+  "$(grep '^box exec ' "$FL_STATE/calls" | grep -vE '^box exec --user claude crew-drill-(triage|builder|reviewer) ' || true)"
 
 # A probe that answers nothing is `unreadable`, named on the FAIL row.
 fl_out="$(fl_run FL_PROBE_SILENT=1)"

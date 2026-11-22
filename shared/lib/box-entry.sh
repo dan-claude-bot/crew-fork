@@ -37,9 +37,9 @@ BOX_ENTRY_USER_SINCE="0.11.0"
 # environment is a value nobody read from this host's box.
 # platform.sh, version-skew.sh and box-mint.sh each source this file, so the
 # state is initialised once: a second source must not forget the reading, the
-# bindings or a mint in progress.
-if [ -z "${BOX_ENTRY_LOADED:-}" ]; then
-  BOX_ENTRY_LOADED=1
+# bindings or a mint in progress. The sentinel is the associative array itself,
+# which no environment can hand in.
+if [[ "$(declare -p BOX_ENTRY_AGENTS 2>/dev/null)" != "declare -A"* ]]; then
   BOX_ENTRY_MODE_CACHE=""
   BOX_ENTRY_BOX_VERSION=""
   # Boxes minted in this process whose convergence has not completed yet
@@ -109,6 +109,7 @@ box_entry_roster_file() {
 # box_entry_agent BOX — the agent BOX enters as in user mode; empty when
 # nothing names one.
 box_entry_agent() { # BOX
+  [ -n "${1:-}" ] || return 0
   if [ -n "${BOX_ENTRY_AGENTS[$1]+set}" ]; then
     printf '%s\n' "${BOX_ENTRY_AGENTS[$1]}"
     return 0

@@ -1298,7 +1298,12 @@ cl_code() {
 # not a bare `box exec`: cmd_floor's banner says "polling … over 'box exec'" in
 # prose, and a detector that trips on its own documentation is the trap this
 # suite has already been caught by twice.
-cl_box_execs() { cl_code | grep -E 'box exec "'; }
+# Since #792 every call site enters through the one door, `box_in "` — which
+# adds `--user <agent>` on box 0.11.0 — and the file spells no `box exec` at
+# all; the door's own stdin is its caller's, so the pin is still checked here.
+cl_box_execs() { cl_code | grep -E 'box_in "'; }
+CL_RAW_EXECS="$(cl_code | grep -cE 'box exec "' || true)"
+t "crew: no box exec outside the one door (#792)" 0 "${CL_RAW_EXECS:-0}"
 
 # `box exec` forwards stdin like ssh, so ONE unredirected call inside a
 # `while read … done < <(read_roster)` drains the roster: the loop ends after a
@@ -1313,12 +1318,12 @@ if [ "${CL_EXECS:-0}" -ne 4 ]; then
   echo "  call sites:"; cl_box_execs | sed 's/^/    /'
 fi
 # shellcheck disable=SC2016  # matching the literal redirect text in the source
-CL_BARE="$(cl_box_execs | grep -vcE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box exec' || true)"
+CL_BARE="$(cl_box_execs | grep -vcE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box_in' || true)"
 t "crew: every box exec call site pins stdin" 0 "${CL_BARE:-0}"
 if [ "${CL_BARE:-0}" -ne 0 ]; then
   echo "  unpinned:"
   # shellcheck disable=SC2016  # matching the literal redirect text in the source
-  cl_box_execs | grep -vE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box exec' | sed 's/^/    /'
+  cl_box_execs | grep -vE '</dev/null|<"\$\(agent_conf|<"\$source_file|^bxpipe\(\) \{ printf .%s. "\$3" \| box_in' | sed 's/^/    /'
 fi
 
 # `box info --json` returns an array; the filter that read it as an object

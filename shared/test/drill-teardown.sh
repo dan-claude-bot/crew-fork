@@ -34,7 +34,7 @@ cat >"$STUB/box" <<'SHIM'
 # recorded and never does anything.
 printf 'box %s\n' "$*" >>"$STUB_CALLS"
 case "${1:-}" in
-  --version|-V) printf 'box 0.10.1 (/opt/box/versions/0.10.1)\n' ;;  # stamp entry (#792)
+  --version|-V) printf 'box %s (/opt/box/versions/%s)\n' "${STUB_BOX_VERSION:-0.10.1}" "${STUB_BOX_VERSION:-0.10.1}" ;;  # the entry mode (#792)
   list)
     # STUB_BOX_LIST_RC is an inventory that cannot be answered at all;
     # STUB_BOX_LIST_JUNK is one that answers with something that is not JSON.
@@ -367,6 +367,40 @@ if [ "$RC" -eq 0 ] && called "box exec crew-drill-builder -- bash -lc gh repo de
 else
   bad "deletes-renamed-builder-fork-through-box-identity (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
 fi
+# The same fork on box 0.11.0 (#792): every exec into the builder box names
+# the round's agent with --user, and none enters as root.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-builder" "STUB_BOX_VERSION=0.11.0" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=builder-bot" \
+    "STUB_FORKS=builder-bot/crew-drill-builder-1" \
+    "STUB_REPOS=danmt/crew-drill-builder builder-bot/crew-drill-builder-1" \
+  -- --role builder --agent codex --yes
+user_execs="$(grep -c '^box exec ' "$CALLS" || true)"
+rootish_execs="$(grep '^box exec ' "$CALLS" | grep -vc '^box exec --user codex crew-drill-builder -- ' || true)"
+if [ "$RC" -eq 0 ] && [ "$user_execs" -ge 2 ] && [ "$rootish_execs" -eq 0 ] \
+   && called "box exec --user codex crew-drill-builder -- bash -lc gh repo delete 'builder-bot/crew-drill-builder-1' --yes"; then
+  ok "user-mode-deletes-builder-fork-as-the-round-agent"
+else
+  bad "user-mode-deletes-builder-fork-as-the-round-agent (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+# …and with no --agent there is no one to enter as: nothing is exec'd, the
+# fork is held back (INCOMPLETE, never deleted past), and the run says why.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-builder" "STUB_BOX_VERSION=0.11.0" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=builder-bot" \
+    "STUB_FORKS=builder-bot/crew-drill-builder-1" \
+    "STUB_REPOS=danmt/crew-drill-builder builder-bot/crew-drill-builder-1" \
+  -- --role builder --yes
+if [ "$RC" -eq 2 ] && ! grep -q '^box exec ' "$CALLS" && says "pass --agent <name>" \
+   && ! called "box rm --force crew-drill-builder"; then
+  ok "user-mode-without-agent-enters-nothing-and-holds-the-fork"
+else
+  bad "user-mode-without-agent-enters-nothing-and-holds-the-fork (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+# Back to the stamp-mode run for the ordering checks below.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-builder" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=builder-bot" \
+    "STUB_FORKS=builder-bot/crew-drill-builder-1" \
+    "STUB_REPOS=danmt/crew-drill-builder builder-bot/crew-drill-builder-1" \
+  -- --role builder --yes
 fork_delete_line="$(grep -nF "gh repo delete 'builder-bot/crew-drill-builder-1'" "$CALLS" | cut -d: -f1)"
 box_delete_line="$(grep -nF 'box rm --force crew-drill-builder' "$CALLS" | cut -d: -f1)"
 if [ -n "$fork_delete_line" ] && [ -n "$box_delete_line" ] \

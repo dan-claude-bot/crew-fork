@@ -61,7 +61,9 @@ KNOWN_ROLES="triage builder reviewer"
 
 ROLES=""
 # Who the drill boxes enter as on box 0.11.0+ (#792): the round's --agent.
-ENTRY_AGENT="claude"
+# No default: on 0.11.0 a guess enters as a user the box may not have, and
+# without one every box_in below refuses, which holds the fork back.
+ENTRY_AGENT=""
 declare -a BOXES=()
 declare -a REPOS=()
 declare -a BUILDER_FORKS=()
@@ -102,6 +104,9 @@ done
 # shellcheck source=shared/lib/box-entry.sh
 . "$ROOT/shared/lib/box-entry.sh"
 for role in $KNOWN_ROLES; do box_entry_bind "crew-drill-$role" "$ENTRY_AGENT"; done
+if [ -z "$ENTRY_AGENT" ] && box_entry_mode_load 2>/dev/null && [ "$BOX_ENTRY_MODE_CACHE" = user ]; then
+  echo "teardown: box $BOX_ENTRY_BOX_VERSION enters a box as root unless --user names the agent; pass --agent <name> (the round's own) so the builder fork can be read and deleted" >&2
+fi
 
 for role in $ROLES; do
   case " $KNOWN_ROLES " in
