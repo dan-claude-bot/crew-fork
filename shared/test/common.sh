@@ -11169,8 +11169,9 @@ t install-a-new-pool-replaces-the-old 1 "$(grep -c '^SESSION_CREDENTIAL_POOL="cl
 W794_DIR="$TMP/w794"
 w794_tick() { # ROWS — one tick; prints the alerts it sent, one per line
   (
+    BOT_ROLES="${BOT_ROLES:-}"; DUTY_DIR="$W794_DIR"
     # shellcheck source=shared/lib/common.sh
-    BOT_ROLES="${BOT_ROLES:-}"; DUTY_DIR="$W794_DIR"; source "$SHARED/lib/common.sh"
+    source "$SHARED/lib/common.sh"
     # shellcheck source=shared/lib/duty-attention.sh
     source "$SHARED/lib/duty-attention.sh"
     DUTY_DIR="$W794_DIR" REPOS_FILE="$W794_DIR/repos.txt" FLEET_REPOS_FILE="$W794_DIR/fleet-repos.txt"
