@@ -133,6 +133,12 @@ case "$cmd" in
     [ "${1:-}" != -- ] || shift
     printf 'incus %s %s\n' "$name" "$*" >>"$calls"
     case "${1:-} ${2:-}" in
+      # The composition read as root from the host (#795): RST_LARGE_ROOT
+      # answers it; unset, the exec fails and crew falls back to in-box sudo.
+      "exec {}")
+        [ -n "${RST_LARGE_ROOT:-}" ] || exit 1
+        printf '%s\n' "$RST_LARGE_ROOT"
+        ;;
       "snapshot delete")
         label="${4:-}"
         if [ "$name" = "${RST_SNAPDEL_FAIL:-}" ]; then exit 1; fi
@@ -511,6 +517,14 @@ reset_case
 RST_PCT_BEFORE=95 RST_PCT_AFTER=95 RST_LARGE="" capture reset --cut alpha
 case "$OUT" in *'largest: unavailable'*) r1=honest ;; *) r1="$OUT" ;; esac
 t reset-cut-unreadable-composition-is-honest honest "$r1"
+
+# #795: the box tenant has no sudo, so the composition is read as root from
+# the host — and it is the host's reading that wins when both could answer.
+reset_case
+RST_PCT_BEFORE=95 RST_PCT_AFTER=95 RST_LARGE="" RST_LARGE_ROOT="21G /var;4.0G /home;" capture reset --cut alpha
+case "$OUT" in *'largest: 21G /var;4.0G /home'*) r1=composed ;; *) r1="$OUT" ;; esac
+t w795-composition-read-as-root-from-the-host composed "$r1"
+t w795-composition-goes-through-box-incus-exec 1 "$(grep -c '^incus alpha exec {} -- sh -c du -shx' "$STATE/calls")"
 
 reset_case
 RST_REAP_FAIL=alpha capture reset --cut alpha
@@ -1835,5 +1849,30 @@ case "$OUT" in *credential*) r1="$OUT" ;; *) r1=silent ;; esac
 t pool-hire-without-an-assignment-is-silent silent "$r1"
 t pool-hire-without-an-assignment-records-nothing absent "$([ -e "$RST_POOL/delivered/beta" ] && echo present || echo absent)"
 cp "$TMP/roster.saved" "$CONF/fleet.roster"
+
+# ── #797 — an upgrade that does not move the engine leaves the checkpoint ──
+# The gate itself, lifted out of cli/crew and driven over a scratch record:
+# the suite's own upgrades always cross a version (the box stamp fixture), so
+# the same-release case needs the function on its own.
+W797="$TMP/w797"; mkdir -p "$W797"
+GATE797="$(awk '/^is_engine_version\(\) \{/,/^}/' "$CLI")
+$(awk '/^checkpoint_field\(\) \{/,/^}/' "$CLI")
+$(awk '/^checkpoint_mark_stale\(\) \{/,/^}/' "$CLI")
+$(awk '/^checkpoint_stale_gate\(\) \{/,/^}/' "$CLI")"
+w797() { # CUT_VERSION WANT — prints the gate's output, then the stale line
+  printf 'CHECKPOINT_VERSION=%s\nCHECKPOINT_STALE=\n' "$1" >"$W797/alpha.conf"
+  bash -c "checkpoint_file() { printf '%s\n' '$W797/alpha.conf'; }; RESET_LABEL=armed; $GATE797
+checkpoint_stale_gate alpha '$2'"
+  grep '^CHECKPOINT_STALE=' "$W797/alpha.conf"
+}
+t w797-same-release-leaves-the-checkpoint-current 'CHECKPOINT_STALE=' "$(w797 0.1.4-rc3 0.1.4-rc3)"
+case "$(w797 0.1.4-rc3 0.1.4-rc4)" in *'is now STALE (cut at crew@0.1.4-rc3, engine moving to crew@0.1.4-rc4)'*'CHECKPOINT_STALE=0.1.4-rc4') r1=marked ;; *) r1="$(w797 0.1.4-rc3 0.1.4-rc4)" ;; esac
+t w797-a-new-release-still-marks-stale marked "$r1"
+case "$(w797 0.1.4-rc4-dev 0.1.4-rc4-dev)" in *'is now STALE'*'CHECKPOINT_STALE=0.1.4-rc4-dev') r1=marked ;; *) r1="$(w797 0.1.4-rc4-dev 0.1.4-rc4-dev)" ;; esac
+t w797-a-development-tree-at-the-same-version-still-marks-stale marked "$r1"
+printf 'CHECKPOINT_VERSION=0.1.4-rc3\nCHECKPOINT_STALE=0.1.4-rc2\n' >"$W797/alpha.conf"
+bash -c "checkpoint_file() { printf '%s\n' '$W797/alpha.conf'; }; RESET_LABEL=armed; $GATE797
+checkpoint_stale_gate alpha 0.1.4-rc3" >/dev/null
+t w797-a-standing-mark-is-not-cleared 'CHECKPOINT_STALE=0.1.4-rc2' "$(grep '^CHECKPOINT_STALE=' "$W797/alpha.conf")"
 
 suite_finish

@@ -47,6 +47,23 @@ _attention_partition() {
   done
 }
 
+# _attention_carried CARRIED_SET IN|OUT — stdin: "<repo>#<num> <updated_at>"
+# rows; prints those whose repository the carried set names (IN) or does not
+# (OUT). The carried set is the other fleet members' work registries (#794).
+_attention_carried() {
+  local set="$1" want="$2" id upd repo
+  while read -r id upd; do
+    [ -n "${id:-}" ] || continue
+    repo="${id%#*}"
+    if grep -qxF -- "$repo" <<<"$set"; then
+      [ "$want" = IN ] && printf '%s %s\n' "$id" "$upd"
+    else
+      [ "$want" = OUT ] && printf '%s %s\n' "$id" "$upd"
+    fi
+  done
+  return 0
+}
+
 # _attention_audit_classify — classify every object carrying `attention` in a
 # registry repo. stdin: "<repo> <num> <kind> <assignee-count>"; stdout: the
 # same rows prefixed OK, PR or UNASSIGNED. Pull requests are malformed even
@@ -126,25 +143,55 @@ duty_attention() {
   inside="$(printf '%s\n' "$partitioned" | awk '$1 == "IN" { print $2 "#" $3, $4 }')"
   outside="$(printf '%s\n' "$partitioned" | awk '$1 == "OUT" { print $2 "#" $3, $4 }')"
 
+  # Outside demands split in two (#794). Under the pool's per-repository rule
+  # several boxes answer as one login, so `filter=assigned` hands every box the
+  # whole fleet's demands. A demand in a repository ANOTHER member carries is
+  # not lost — that member works it — and alerting the operator about it is
+  # noise, once per demand per box. The host converges the union of the other
+  # members' work registries to fleet-repos.txt (crew upgrade/hire); a demand
+  # there is logged, never alerted. A standalone box has no such file: every
+  # outside demand stays uncarried, exactly as before.
+  local carried_set="" carried="" uncarried=""
+  carried_set="$(read_repo_list "$FLEET_REPOS_FILE")"
+  if [ -n "$outside" ]; then
+    carried="$(printf '%s\n' "$outside" | _attention_carried "$carried_set" IN)"
+    uncarried="$(printf '%s\n' "$outside" | _attention_carried "$carried_set" OUT)"
+  fi
+  printf '%s\n' "$carried" \
+    | report_suppressed "$DUTY_DIR/.suppressed-attention-carried" "attention: carried by the fleet" \
+        "in repos another fleet member carries, left to it and not alerted"
+
   # Reported on every tick's worth of state CHANGE, not every tick: a standing
   # out-of-scope demand would otherwise write 288 identical lines a day and
   # bury the log it exists to inform (#59's rule).
-  local sc_state="$DUTY_DIR/.suppressed-attention-scope" sc_prev sc_now
-  sc_prev="$(cat "$sc_state" 2>/dev/null || true)"
-  printf '%s\n' "$outside" \
-    | report_suppressed "$sc_state" "attention: outside repos.txt" \
+  printf '%s\n' "$uncarried" \
+    | report_suppressed "$DUTY_DIR/.suppressed-attention-scope" "attention: outside repos.txt" \
         "in repos this box does not carry, never picked up"
-  sc_now="$(cat "$sc_state" 2>/dev/null || true)"
   # ...and it reaches the OPERATOR, not just duty.log. An attention demand is
   # the human's channel to this box; bounding it without telling anyone would
   # turn "the box ignored me" into something only a log tail can explain. Same
   # channel the boot gate and the auth watchdog already use, and best-effort by
   # contract — a box with no Telegram token simply logs.
-  # An `if`, not `[ … ] && alert`: as a trailing statement that form returns
-  # non-zero whenever the condition is false, and set -e would end the tick
-  # (#25/#30).
-  if [ -n "$sc_now" ] && [ "$sc_now" != "$sc_prev" ]; then
-    alert "📥 $(hostname): attention demand(s) outside this box's repos.txt, NOT picked up — $(printf '%s\n' "$outside" | awk 'NF{printf "%s ", $1}')— add the repo to ~/duty/repos.txt, or move the issue to one this box carries"
+  #
+  # Keyed on the demand's IDENTITY, not its updated_at (#794): the log line
+  # above re-reads a re-parked demand as new, which is right for a log, but a
+  # comment on the issue moves updated_at too, and the operator was alerted
+  # again for every one. The alert fires when a demand appears that the last
+  # alert did not name; the set emptying clears it, so a later one speaks up.
+  local al_state="$DUTY_DIR/.alerted-attention-scope" al_prev al_now al_new
+  al_prev="$(cat "$al_state" 2>/dev/null || true)"
+  al_now="$(printf '%s\n' "$uncarried" | awk 'NF{print $1}' | sort -u)"
+  if [ -z "$al_now" ]; then
+    rm -f "$al_state"
+  else
+    al_new="$(comm -13 <(printf '%s\n' "$al_prev" | sed '/^$/d') <(printf '%s\n' "$al_now"))"
+    printf '%s\n' "$al_now" >"$al_state"
+    # An `if`, not `[ … ] && alert`: as a trailing statement that form returns
+    # non-zero whenever the condition is false, and set -e would end the tick
+    # (#25/#30).
+    if [ -n "$al_new" ]; then
+      alert "📥 $(hostname): attention demand(s) outside this box's repos.txt, NOT picked up — $(printf '%s\n' "$al_now" | awk 'NF{printf "%s ", $1}')— add the repo to ~/duty/repos.txt, or move the issue to one this box carries"
+    fi
   fi
 
   if [ -z "${inside//[[:space:]]/}" ]; then

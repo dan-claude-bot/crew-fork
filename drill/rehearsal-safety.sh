@@ -97,6 +97,44 @@ rehearsal_narrow_to_sandbox() {
     bx "[ \"\$(wc -l < ~/duty/repos.txt)\" -eq 1 ] && grep -qxF '$sandbox' ~/duty/repos.txt"
 }
 
+# rehearsal_fleet_siblings_write SANDBOX — under --parallel, converge the
+# sibling roles' sandboxes to this box's fleet-repos.txt, as crew does for a
+# real fleet's members (#794): the round's boxes share one login, so each sees
+# the others' demands, and a box that knows its siblings carry them must log
+# them as carried rather than page the operator. Backed up first and put back
+# by rehearsal_fleet_siblings_restore (cleanup), absent-before ⇒ absent-after.
+# Nothing to write when the round is serial: the box then has no sibling.
+: "${REHEARSAL_FLEET_SIBLINGS_WRITTEN:=0}"
+REHEARSAL_FLEET_SIBLINGS_BACKUP=""
+REHEARSAL_FLEET_SIBLINGS_ABSENT=0
+rehearsal_fleet_siblings_write() {
+  local owner="${1%%/*}" r lines="" snap
+  [ -n "${REHEARSAL_SIBLING_ROLES:-}" ] || return 0
+  for r in $REHEARSAL_SIBLING_ROLES; do lines="${lines}$owner/crew-drill-$r"$'\n'; done
+  snap="$(rehearsal_registry_snapshot "~/duty/fleet-repos.txt")" || return 1
+  REHEARSAL_FLEET_SIBLINGS_BACKUP="~/duty/fleet-repos.txt.pre-drill-$$"
+  if rehearsal_snapshot_present "$snap"; then
+    REHEARSAL_FLEET_SIBLINGS_ABSENT=0
+    bx "cp ~/duty/fleet-repos.txt $REHEARSAL_FLEET_SIBLINGS_BACKUP" || return 1
+  else
+    REHEARSAL_FLEET_SIBLINGS_ABSENT=1
+  fi
+  REHEARSAL_FLEET_SIBLINGS_WRITTEN=1
+  bx "printf '%s' '$lines' > ~/duty/fleet-repos.txt" || return 1
+  for r in $REHEARSAL_SIBLING_ROLES; do
+    bx "grep -qxF '$owner/crew-drill-$r' ~/duty/fleet-repos.txt" || return 1
+  done
+}
+rehearsal_fleet_siblings_restore() {
+  [ "$REHEARSAL_FLEET_SIBLINGS_WRITTEN" -eq 1 ] || return 0
+  if [ "$REHEARSAL_FLEET_SIBLINGS_ABSENT" -eq 1 ]; then
+    bx "rm -f ~/duty/fleet-repos.txt" || return 1
+  else
+    bx "mv $REHEARSAL_FLEET_SIBLINGS_BACKUP ~/duty/fleet-repos.txt" || return 1
+  fi
+  REHEARSAL_FLEET_SIBLINGS_WRITTEN=0
+}
+
 # rehearsal_attention_census SANDBOX LABEL — print "<repo> <number>" for every
 # parked attention demand this box's identity carries OUTSIDE the sandbox.
 # Empty output means the identity carries none. Returns non-zero when the box
@@ -198,7 +236,30 @@ rehearsal_attention_census() {
 # fetched, partitioned, and found the sandbox demand INSIDE — the same call,
 # above the same partition, that wrote this file.
 rehearsal_attention_demand_suppressed() {
-  local id="$1" scope="$2" log="$3" line
+  local id="$1" scope="$2" log="$3" carried="${4:-}" alerted="${5:-}" sibling="${6:-0}" line
+  # A SIBLING'S demand (#794): the round converged its siblings' sandboxes to
+  # this box's fleet-repos.txt, so the engine must log it as CARRIED BY THE
+  # FLEET and must not alert it. Recorded as outside instead is the noise #794
+  # removed coming back, and an alert naming it is the operator paged for work
+  # another box is doing — both graded red, not merely unconfirmed.
+  if [ "$sibling" -eq 1 ]; then
+    if [ -n "$alerted" ] && grep -qxF -- "$id" <<<"$alerted"; then
+      printf 'the outside-repos alert names %s, a demand a sibling box carries (#794)\n' "$id"
+      return 1
+    fi
+    if [ -n "$carried" ] \
+      && awk -v id="$id" '$1 == id { found = 1 } END { exit !found }' <<<"$carried"; then
+      printf 'suppressed-attention-carried names %s (carried by the fleet, not alerted)\n' "$id"
+      return 0
+    fi
+    line="$(grep -F 'attention: carried by the fleet' <<<"$log" | grep -F "$id(" | tail -1)"
+    if [ -n "$line" ]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+    printf 'neither ~/duty/.suppressed-attention-carried nor an "attention: carried by the fleet" line names %s, a sibling sandbox demand\n' "$id"
+    return 1
+  fi
   if [ -n "$scope" ] \
     && awk -v id="$id" '$1 == id { found = 1 } END { exit !found }' <<<"$scope"; then
     printf 'suppressed-attention-scope names %s\n' "$id"
@@ -650,9 +711,11 @@ rehearsal_attention_sibling_sandbox() {
 }
 
 rehearsal_attention_census_assert() {
-  local sandbox="$1" scope raw log pickups_after rc=0 repo num id before after
+  local sandbox="$1" scope carried alerted sibling raw log pickups_after rc=0 repo num id before after
   [ "$REHEARSAL_ATTENTION_OUTSIDE_N" -gt 0 ] || return 0
   scope="$(bx 'cat ~/duty/.suppressed-attention-scope 2>/dev/null || true' | tr -d '\r')"
+  carried="$(bx 'cat ~/duty/.suppressed-attention-carried 2>/dev/null || true' | tr -d '\r')"
+  alerted="$(bx 'cat ~/duty/.alerted-attention-scope 2>/dev/null || true' | tr -d '\r')"
   raw="$(bx "$(rehearsal_attention_log_slice_cmd \
     "$REHEARSAL_ATTENTION_LOG_BASE" "$REHEARSAL_ATTENTION_LOG_GEN")" | tr -d '\r')"
   # GRADED, AND THE ONLY ROW THAT RETURNS EARLY. Every row below reads either
@@ -686,11 +749,16 @@ rehearsal_attention_census_assert() {
   while read -r repo num <&3; do
     [ -n "${num:-}" ] || continue
     id="$repo#$num"
+    sibling=0
+    if [ "${REHEARSAL_FLEET_SIBLINGS_WRITTEN:-0}" -eq 1 ] \
+       && rehearsal_attention_sibling_sandbox "$sandbox" "$repo"; then
+      sibling=1
+    fi
     if [ "$standing_ok" -eq 1 ] && ! grep -qxF -- "$repo $num" <<<"$standing"; then
       skip "attention census: $id seen and suppressed (not graded: it left the identity's demands during the tick)"
     else
       rehearsal_attention_graded "attention census: $id seen and suppressed" \
-        rehearsal_attention_demand_suppressed "$id" "$scope" "$log" || rc=1
+        rehearsal_attention_demand_suppressed "$id" "$scope" "$log" "$carried" "$alerted" "$sibling" || rc=1
     fi
     before="$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$REHEARSAL_ATTENTION_PICKUPS_BEFORE")"
     after="$(awk -v id="$id" '$1 == id { print $2; exit }' <<<"$pickups_after")"
@@ -867,6 +935,10 @@ rehearsal_cleanup() {
       && ! rehearsal_notify_registry_matches_pre_drill "$notify_restore_failed"; then
     rc=1
     rehearsal_notify_verdict fail "${REHEARSAL_TEARDOWN_REASON:-teardown left notify-repos.txt unlike its pre-drill contents}"
+  fi
+  if ! rehearsal_fleet_siblings_restore; then
+    rc=1
+    echo "WARNING: could not restore the pre-drill fleet-repos.txt; inspect: box shell $BOX_NAME" >&2
   fi
   rehearsal_disarm_cron \
     || echo "WARNING: could not disarm the drill cron; stop the box: box down $BOX_NAME" >&2

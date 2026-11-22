@@ -18,6 +18,8 @@ CONF_DIR="$DUTY_DIR/conf"
 PROMPTS_DIR="$DUTY_DIR/prompts"
 BIN_DIR="$DUTY_DIR/bin"
 REPOS_FILE="$DUTY_DIR/repos.txt"
+# The other fleet members' work registries, converged by the host (#794).
+FLEET_REPOS_FILE="$DUTY_DIR/fleet-repos.txt"
 
 # The functions live in one module per subject, under common/. Every caller
 # still sources THIS file and still gets all of them: the split is a source
