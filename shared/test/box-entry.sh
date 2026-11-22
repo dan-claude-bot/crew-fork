@@ -23,7 +23,8 @@ source "$HERE/lib.sh"
 CLI="$ROOT/cli/crew"
 TMP="$(mktemp -d)"
 trap '[ -n "${BE_KEEP:-}" ] || rm -rf "$TMP"' EXIT
-unset CREW_CONFIG_DIR CREW_EXPECT_OPERATOR_CONFIG CREW_ROSTER
+unset CREW_CONFIG_DIR CREW_EXPECT_OPERATOR_CONFIG
+unset CREW_ROSTER
 unset CREW_FLOOR_STORE CREW_MODEL_PRICES
 export XDG_CONFIG_HOME="$TMP/xdg-empty"
 mkdir -p "$XDG_CONFIG_HOME"
