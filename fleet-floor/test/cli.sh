@@ -2477,6 +2477,46 @@ else
     fail "drill: --drill-roles parses and reaches the host check" "$(head -3 "$CL_TMP/app.out")"
   fi
 fi
+# #800 — the generated pass serves its OWN fleet definition: the drilled
+# tree's `crew init`, the generated roster, and a repos.txt naming the round's
+# sandboxes, exported as CREW_CONFIG_DIR. The block is lifted out of the drill
+# and run with a stub gh, so what it writes is read, not grepped.
+CL_W800="$CL_TMP/w800"; mkdir -p "$CL_W800"
+printf 'crew-drill-triage claude triage\ncrew-drill-builder claude builder\n' >"$CL_W800/roster"
+# shellcheck disable=SC2016  # the drill's source text, $ included
+CL_W800_BLOCK="$(sed -n '/^trap cleanup EXIT$/,/^fi$/p' "$CL_APP" | sed '1d')"
+CL_W800_OUT="$(
+  cd "$CL_W800" || exit 1
+  # shellcheck disable=SC2317  # called by the eval'd drill block
+  gh() { echo danmt; }
+  ROOT="$CL_ROOT" ROSTER="$CL_W800/roster" DRILL_ROLES="triage builder" GENERATED_CONFIG=""
+  unset CREW_CONFIG_DIR
+  eval "$CL_W800_BLOCK"
+  printf 'dir=%s\n' "$CREW_CONFIG_DIR"
+  printf 'repos=%s\n' "$(grep -v '^#' "$CREW_CONFIG_DIR/repos.txt" | paste -sd, -)"
+  printf 'roster=%s\n' "$(cmp -s "$CL_W800/roster" "$CREW_CONFIG_DIR/fleet.roster" && echo same || echo DIFFERENT)"
+  printf 'owned=%s\n' "$([ "${CREW_CONFIG_DIR#"$GENERATED_CONFIG"}" != "$CREW_CONFIG_DIR" ] && echo yes || echo no)"
+  rm -rf -- "$GENERATED_CONFIG"
+)"
+t "drill: the generated pass names the round's sandboxes in its own repos.txt (#800)" \
+  "repos=danmt/crew-drill-triage,danmt/crew-drill-builder" "$(grep '^repos=' <<<"$CL_W800_OUT")"
+t "drill: the generated definition carries the generated roster (#800)" "roster=same" "$(grep '^roster=' <<<"$CL_W800_OUT")"
+t "drill: CREW_CONFIG_DIR is the generated definition, never the operator's (#800)" "owned=yes" "$(grep '^owned=' <<<"$CL_W800_OUT")"
+CL_W800_OUT="$(
+  # shellcheck disable=SC2317  # called by the eval'd drill block
+  gh() { return 1; }
+  # shellcheck disable=SC2034  # read by the eval'd drill block
+  ROOT="$CL_ROOT" ROSTER="$CL_W800/roster" DRILL_ROLES="triage" GENERATED_CONFIG=""
+  ( eval "$CL_W800_BLOCK" ) 2>&1; echo "rc=$?"
+)"
+t "drill: an unreadable host login refuses the generated pass (#800)" 1 \
+  "$(grep -c "the host's GitHub login could not be read" <<<"$CL_W800_OUT" || true)"
+# shellcheck disable=SC2016  # the drill's source text, $ included
+if grep -qF '[ -n "$GENERATED_CONFIG" ] && rm -rf -- "$GENERATED_CONFIG"' "$CL_APP"; then
+  ok "drill: cleanup removes the generated fleet definition (#800)"
+else
+  fail "drill: cleanup removes the generated fleet definition (#800)"
+fi
 CL_RC=0; "$CL_APP" --drill-roles triage --roster /tmp/x >"$CL_TMP/app.out" 2>&1 || CL_RC=$?
 if [ "$CL_RC" -ne 0 ] && grep -q 'alternatives, not both' "$CL_TMP/app.out"; then
   ok "drill: --roster and --drill-roles are mutually exclusive"

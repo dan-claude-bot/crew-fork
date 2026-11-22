@@ -75,7 +75,11 @@ is gitignored so such a file has a home. Both feed the SAME path to all three
 readers — the collector (`CREW_FLOOR_ROSTER`), the `crew status` it compares
 against (`CREW_ROSTER`), and its own counts. `rehearsal-all.sh` passes
 `--drill-roles` for the roles whose drill actually reached a box, and announces
-any narrowing rather than quietly covering less.
+any narrowing rather than quietly covering less. With `--drill-roles` the pass
+also serves its own fleet definition (#800): the drilled tree's `crew init`,
+the generated roster, and a `repos.txt` naming the round's sandboxes, exported
+as `CREW_CONFIG_DIR`. The operator's own definition is never read, so the
+browser walk's registry rows do not depend on what the drill host holds.
 
 A round is real infrastructure — boxes and public sandbox repositories on the
 operator's own host and account. What it creates, when reuse is legitimate and
@@ -614,7 +618,10 @@ the engine outlives its console across a real cron boundary
 
 - **Needs** a box the role rehearsal already installed — it borrows one and
   gives it back unchanged, so its hires are version events and never identity
-  events. The payload measurement needs the real installs and the real unpack
+  events. Unchanged includes both registries and their provenance records
+  (#801): its `crew hire` converges all four, and all four are put back
+  present or absent, byte for byte, or the box reads diverged on every later
+  upgrade. The payload measurement needs the real installs and the real unpack
   this driver performs; it reads both the excluded roots and the size bound out
   of the tree under drill rather than carrying its own copy of either.
 - **Produces** the `installer` row: `ok (Section A record emitted)`, `FAIL`,

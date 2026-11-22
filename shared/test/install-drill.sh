@@ -267,6 +267,61 @@ else
 fi
 install_borrowed_box_discard_snapshot || bad "borrowed-box-snapshot-discard"
 
+# #801 — Section A's hire rewrites both registries AND their provenance
+# records. Each is put back exactly: present bytes byte-identical, absent ones
+# absent. Restoring repos.txt alone left the hire's hash over the old bytes,
+# and every later `crew upgrade` read the box as diverged.
+printf 'hash-before\n' >"$BORROWED_HOME/duty/.repos.txt.crew-provenance"
+rm -f "$BORROWED_HOME/duty/notify-repos.txt" "$BORROWED_HOME/duty/.notify-repos.txt.crew-provenance"
+cp "$BORROWED_HOME/duty/.repos.txt.crew-provenance" "$WORK/prov.before"
+if install_borrowed_box_snapshot; then
+  printf 'drill/installer-rehearsal\n' >"$BORROWED_HOME/duty/repos.txt"
+  printf 'hash-of-the-hire\n' >"$BORROWED_HOME/duty/.repos.txt.crew-provenance"
+  printf 'drill/notify\n' >"$BORROWED_HOME/duty/notify-repos.txt"
+  printf 'hash-notify\n' >"$BORROWED_HOME/duty/.notify-repos.txt.crew-provenance"
+  if install_borrowed_box_restore && install_borrowed_box_verify; then
+    ok "w801-borrowed-box-return-restores-every-registry-file"
+  else
+    bad "w801-borrowed-box-return-restores-every-registry-file ($INSTALL_BORROWED_DETAIL)"
+  fi
+else
+  bad "w801-borrowed-box-snapshots-every-registry-file ($INSTALL_BORROWED_DETAIL)"
+fi
+if cmp -s "$WORK/prov.before" "$BORROWED_HOME/duty/.repos.txt.crew-provenance"; then
+  ok "w801-the-provenance-record-is-restored-byte-identically"
+else
+  bad "w801-the-provenance-record-is-restored-byte-identically"
+fi
+if cmp -s "$WORK/repos.before" "$BORROWED_HOME/duty/repos.txt"; then
+  ok "w801-repos-txt-still-restored-byte-identically"
+else
+  bad "w801-repos-txt-still-restored-byte-identically"
+fi
+if [ ! -e "$BORROWED_HOME/duty/notify-repos.txt" ] && [ ! -e "$BORROWED_HOME/duty/.notify-repos.txt.crew-provenance" ]; then
+  ok "w801-a-registry-absent-before-is-absent-after"
+else
+  bad "w801-a-registry-absent-before-is-absent-after"
+fi
+# The verify half catches a provenance record left as the hire wrote it.
+if install_borrowed_box_snapshot; then
+  printf 'hash-of-the-hire\n' >"$BORROWED_HOME/duty/.repos.txt.crew-provenance"
+  if install_borrowed_box_verify; then
+    bad "w801-verify-reds-a-provenance-left-by-the-hire"
+  else
+    case "$INSTALL_BORROWED_DETAIL" in
+      *".repos.txt.crew-provenance differs"*) ok "w801-verify-reds-a-provenance-left-by-the-hire" ;;
+      *) bad "w801-verify-reds-a-provenance-left-by-the-hire ($INSTALL_BORROWED_DETAIL)" ;;
+    esac
+  fi
+  install_borrowed_box_restore >/dev/null 2>&1 || true
+fi
+install_borrowed_box_discard_snapshot || bad "w801-borrowed-box-snapshot-discard"
+if [ -n "$(find "$BORROWED_HOME/duty" -name '*.install-drill.*')" ]; then
+  bad "w801-discard-leaves-no-backup-behind"
+else
+  ok "w801-discard-leaves-no-backup-behind"
+fi
+
 # A failed box transport is not evidence that repos.txt was absent. In
 # particular, restore must remain a no-op rather than deleting real state.
 INSTALL_BORROWED_SNAPSHOT_TAKEN=0
