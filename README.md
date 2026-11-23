@@ -43,14 +43,30 @@ vendor it did not invent.
 
 ## Install
 
-Every channel runs the same `install.sh`, which lays `crew` out under
-`~/.local/share/crew/versions/<version>/`, points `current` at one, and links
-`~/.local/bin/crew` through it, so releases coexist and `crew use` switches
-between them.
+crew is **one service per machine** (#822). Every channel runs the same
+`install.sh` as root, which lays `crew` out under `/opt/crew/versions/<version>/`,
+points `current` at one, and links `/usr/local/bin/crew` through it, so releases
+coexist and `crew use` switches between them. Then, once per machine:
 
-- **From a checkout** — clone the repo and run `cli/crew` (put it on `PATH`, or
-  call it directly). This is the mode a second operator adopts today: clone,
-  `crew init`, edit the fleet definition, `crew up`.
+```sh
+sudo crew service setup               # the crew account and group, its box grant
+                                      # (box 0.11.0), /var/lib/crew, the floor and
+                                      # the schedule as systemd units, a first fleet
+sudo usermod -aG crew <you>           # then log in again
+sudo -u crew -H gh auth login         # the host's own gh login, for the tick
+```
+
+Everything a fleet owns belongs to the `crew` account: the definitions, stores
+and credentials under `/var/lib/crew`, the boxes in its own box project, the
+floor (`crew-floor.service`) and the schedule (`crew-tick`, `crew-restart` and
+`crew-reset` timers). A member of the `crew` group runs `crew <verb>` as usual;
+it re-runs itself as the account. `sudo crew service check` reads it all back
+and `sudo crew service teardown` removes it (keeping the data). There is no
+per-user mode.
+
+- **From a checkout** — for development: run `cli/crew` against fixtures
+  (`CREW_CONFIG_DIR`, `CREW_FLEETS_DIR`), as the suites and the drill do. A fleet
+  that runs is installed and served by the service.
 
 - **From the scp-able artifact** — *primary; offline, no `gh`, no `curl`, no
   network.* Each release publishes `crew-<version>.sh`: a stub with the whole
@@ -101,10 +117,10 @@ between them.
 <!-- END github-hosted channel (#171) -->
 
 
-`install.sh` installs per user for a non-root caller and into `/opt/crew` plus
-`/usr/local/bin` for root, so a shared host can carry one system tree. The tree
-does not choose an operator: crew runs as its caller, box resolves that caller's
-tier, and fleet configuration remains in that caller's home. Re-running the same
+`install.sh` installs into `/opt/crew` plus `/usr/local/bin` and refuses a
+non-root caller unless both `CREW_HOME` and `CREW_BIN` name a scratch prefix
+(CI, the suites, the drill). The fleet is the service's, not the installer's or
+any caller's. Re-running the same
 version changes nothing; a new version becomes the default and names the hired
 boxes to converge onto it with `crew upgrade --all` (it names them; it does not
 inspect each box's engine version). `CREW_HOME` / `CREW_BIN` override either

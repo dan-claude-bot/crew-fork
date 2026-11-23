@@ -50,11 +50,11 @@ def fleet_config_dir():
                      "(fleet.roster is required)" % explicit)
         chosen, operator = os.path.abspath(explicit), True
     else:
-        xdg = os.environ.get("XDG_CONFIG_HOME")
-        xdg_dir = (os.path.join(xdg, "crew") if xdg
-                   else os.path.join(os.path.expanduser("~"), ".config", "crew"))
+        # #822: no per-user location and no $PWD — the service's index (the
+        # entry point has already chosen its fleet into CREW_CONFIG_DIR when
+        # it has one), else the shipped examples, which the console refuses.
         chosen, operator = None, False
-        for candidate in (xdg_dir, os.getcwd(), examples):
+        for candidate in (examples,):
             if os.path.isdir(candidate) and is_fleet(candidate):
                 chosen = os.path.abspath(candidate)
                 operator = chosen != os.path.abspath(examples)

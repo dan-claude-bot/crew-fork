@@ -1,4 +1,4 @@
-# Host maintenance — the three scheduled jobs, the host's own login, and the ordering rule
+# Host maintenance — the three scheduled jobs (systemd timers), the host's own login, and the ordering rule
 
 Every box carries a five-minute cron line for its own duty tick
 (`shared/crontab.example`). Until now nothing on the **host** side had an
@@ -8,9 +8,11 @@ verbs somebody had to remember to run, and the consequence was measured — the
 `grok-reviewer` with no session in nine days. Neither is a fault anything
 reports, and both were found because a host crash prompted somebody to look.
 
-`shared/host-crontab.example` is the schedule. This is what it does, how to
-read it afterwards, what is deliberately **not** in it, and the one rule that
-keeps the reset useful.
+The schedule is three **systemd timers** that `crew service setup` installs
+(#822), each running its verb as the `crew` account. `shared/host-crontab.example`
+remains as the reference for the same three lines. This is what they do, how to
+read them afterwards, what is deliberately **not** scheduled, and the one rule
+that keeps the reset useful.
 
 ## What is scheduled
 
@@ -20,13 +22,20 @@ keeps the reset useful.
 | daily, 04:10 | `crew restart --all` | drains and cycles every roster box that is running; a stopped or paused box is left as it is |
 | Sunday, 05:10 | `crew reset --all` | every box back to its `armed` checkpoint, its memory drained first and written back under the duty lock (#761) |
 
-Install it on the box **host** with `crontab -e`, copying
-`shared/host-crontab.example`. There is no installer for this; the real-host
-drill is operator-attended by construction and is not scheduled.
+`sudo crew service setup` writes and starts them: `crew-tick.timer`,
+`crew-restart.timer` and `crew-reset.timer`, each firing a oneshot
+`crew-<job>.service` as the `crew` account. `Persistent=true` means a run the
+host missed while it was down runs at the next boot (a missed Sunday reset is
+not skipped for a week), `systemctl list-timers 'crew-*'` shows each one's last
+and next run, and every run's output is in the journal (`journalctl -u
+crew-tick`) as well as the host job log below. Exit 3 (a box skipped busy) and 4
+(nothing to do) are reported outcomes, not unit failures. The real-host drill is
+operator-attended by construction and is not scheduled.
 
 **The host needs its own `gh` login.** The tick reads every registered board
-with the host's `gh`, never a box's. Log in once on the host (`gh auth login`,
-as the operator or a read-only identity) before the first tick. A host whose
+with the host's `gh`, never a box's — the `crew` account's: log it in once
+(`sudo -u crew -H gh auth login`, as the operator or a read-only identity)
+before the first tick. A host whose
 `gh` is dead or rate-limited says so on every tick and neither wakes nor
 stops a box: the tick refuses to read blindness as a quiet fleet, so a dead
 credential costs wakes, never a mid-session stop.

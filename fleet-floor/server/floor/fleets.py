@@ -1,11 +1,10 @@
 """The host's fleets (#814): every fleet definition this host carries.
 
-Mirrors cli/crew's `fleet_dirs`, line for line in intent, because the two must
-name the same fleets: the operator's own location (~/.config/crew, id
-`default`) when it holds a fleet.roster, then each directory of the index
-($CREW_FLEETS_DIR, by default ~/.config/crew/fleets/<id>/) that does. Never the
-working directory and never examples/: these are the definitions an operator
-wrote, which is what a one-fleet-per-box check and a fleet switcher may read.
+Mirrors cli/crew's `fleet_dirs`, because the two must name the same fleets:
+each directory of the service's index ($CREW_FLEETS_DIR, by default
+/var/lib/crew/fleets/<id>/, #822) that holds a fleet.roster. Never the working
+directory and never examples/: these are the definitions the service owns,
+which is what a one-fleet-per-box check and a fleet switcher may read.
 
 No import-time side effects: the floor's entry point reads this module BEFORE
 the package resolves its own fleet, to choose which fleet the process serves.
@@ -17,15 +16,28 @@ import re
 RE_FLEET_ID = re.compile(r"^[a-z][a-z0-9-]{0,29}$")
 
 
-def config_home():
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    return os.path.join(xdg, "crew") if xdg else os.path.join(
-        os.path.expanduser("~"), ".config", "crew")
+def service_conf_value(key):
+    """A value from /etc/crew/service.conf (#822), read, never executed."""
+    path = os.path.join(os.environ.get("CREW_ETC_DIR") or "/etc/crew", "service.conf")
+    val = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(key + "="):
+                    val = line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        return None
+    return val
+
+
+def data_dir():
+    return (os.environ.get("CREW_DATA_DIR") or service_conf_value("CREW_DATA_DIR")
+            or "/var/lib/crew")
 
 
 def fleets_dir():
     explicit = os.environ.get("CREW_FLEETS_DIR")
-    return explicit if explicit else os.path.join(config_home(), "fleets")
+    return explicit if explicit else os.path.join(data_dir(), "fleets")
 
 
 def is_fleet(d):
@@ -37,12 +49,9 @@ def valid_id(fid):
 
 
 def list_fleets():
-    """[(id, absolute dir)] — `default` first when it exists, then the index
-    in name order."""
+    """[(id, absolute dir)] — the service's index, in name order (#822: there
+    is no per-user definition beside it)."""
     out = []
-    legacy = config_home()
-    if is_fleet(legacy):
-        out.append(("default", os.path.abspath(legacy)))
     idx = fleets_dir()
     try:
         names = sorted(os.listdir(idx))
@@ -50,7 +59,7 @@ def list_fleets():
         names = []
     for name in names:
         d = os.path.join(idx, name)
-        if valid_id(name) and name != "default" and os.path.isdir(d) and is_fleet(d):
+        if valid_id(name) and os.path.isdir(d) and is_fleet(d):
             out.append((name, os.path.abspath(d)))
     return out
 

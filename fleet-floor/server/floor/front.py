@@ -37,6 +37,8 @@ PROXY_TIMEOUT_S = 960   # a fleet action's longest path is 15 minutes (round 11)
 
 
 def home_id(config_dir):
+    """The served fleet's index id; a fixture CREW_CONFIG_DIR outside the
+    index answers `default`."""
     return fleet_id_of(config_dir) or "default"
 
 

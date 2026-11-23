@@ -21,7 +21,7 @@ ROOT="$(dirname "$SHARED")"
 # shellcheck disable=SC2034  # consumed by run.sh and suite-level roster guards
 SUITES=(common common/logging common/operating-limits common/conf common/checkout common/session
         common/detached-run common/breaker common/ledger common/identity common/tick-health
-        triage builder review hygiene reaper release model-prices conf cli-lifecycle cli-reset cli-store cli-fleets box-entry drill vitals boot-gate host-tick
+        triage builder review hygiene reaper release model-prices conf cli-lifecycle cli-reset cli-store cli-fleets box-entry service drill vitals boot-gate host-tick
         credentials pool)
 PASS=0 FAIL=0
 
