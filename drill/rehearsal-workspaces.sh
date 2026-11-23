@@ -44,6 +44,16 @@ for b in $BOXES; do
 done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$ROOT/shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+fi
 CREW="$ROOT/cli/crew"
 PROV_BOX="crew-drill-floor"
 command -v box >/dev/null || { echo "drill/rehearsal-workspaces.sh runs on a box HOST — no 'box' on PATH"; exit 1; }
@@ -145,12 +155,12 @@ if want workspaces; then
   t "workspaces: an unknown fleet is 404 on the API" 404 "$(api GET /f/nope/api/fleet | codeof)"
   t "workspaces: an unknown fleet is 404 on the page" 404 "$(api GET /f/nope/ | codeof)"
   first_box="${BOXES%% *}"
-  before_cron="$(box exec "$first_box" -- bash -lc 'crontab -l 2>/dev/null | md5sum' </dev/null 2>/dev/null)"
+  before_cron="$(box_in "$first_box" -- bash -lc 'crontab -l 2>/dev/null | md5sum' </dev/null 2>/dev/null)"
   R="$(post POST /f/second/api/command "{\"action\":\"pause\",\"box\":\"$first_box\"}")"
   case "$(codeof <<<"$R")" in 4*) ok "workspaces: a pause posted to the second fleet naming a round box is refused" ;;
     *) fail "workspaces: a pause posted to the second fleet naming a round box is refused" "HTTP $(codeof <<<"$R")" ;; esac
   t "workspaces: ...and the box's crontab is untouched" "$before_cron" \
-    "$(box exec "$first_box" -- bash -lc 'crontab -l 2>/dev/null | md5sum' </dev/null 2>/dev/null)"
+    "$(box_in "$first_box" -- bash -lc 'crontab -l 2>/dev/null | md5sum' </dev/null 2>/dev/null)"
   t "workspaces: ...and no pause marker was written for it" 0 "$(find "$DEF/store/paused" "$FLEETS/second/store/paused" -name "$first_box" 2>/dev/null | grep -c .)"
   etag="$(api GET /f/second/api/roster | bodyof | jf "d['etag']")"
   R="$(post POST /f/second/api/command "{\"action\":\"roster-set\",\"etag\":\"$etag\",\"members\":[{\"box\":\"$first_box\",\"agent\":\"$AGENT\",\"roles\":[\"triage\"]}]}")"

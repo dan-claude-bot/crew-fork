@@ -81,6 +81,8 @@
 
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/platform.sh"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/box-entry.sh"
 
 # box_mint_converge_script AGENT — the guest-side half, as text.
 #
@@ -102,8 +104,15 @@ source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/platform.
 # `set -eu` and no pipefail: the one pipeline here is curl into bash, whose
 # failure is the bash half's to report, and rig's installer is the thing that
 # would be silenced.
-box_mint_converge_script() { # AGENT
-  local agent="$1"
+# BOX 0.11.0 (#792) creates no user at all: `box new --user` is gone, and the
+# tenant is rig's to create (rig#230, rig 0.4.1). So in user mode the bootstrap
+# names the tenant — `--user <agent>`, keeping D10's name — and the script
+# refuses unless that user exists afterwards: every door crew opens later is
+# `box exec --user <agent>`, and a box without one would be entered as nobody.
+# In stamp mode box made the user at the mint, and the line is as it was.
+box_mint_converge_script() { # AGENT [MODE]
+  local agent="$1" mode="${2:-stamp}" tenant_arg=""
+  [ "$mode" != user ] || tenant_arg=" --user $agent"
   cat <<EOF
 set -eu
 export DEBIAN_FRONTEND=noninteractive
@@ -114,7 +123,8 @@ if ! command -v rig >/dev/null 2>&1; then
     RIG_REF=$CREW_PLATFORM_RIG_MIN bash
   hash -r 2>/dev/null || true
 fi
-rig bootstrap $agent-box
+rig bootstrap $agent-box$tenant_arg
+id -u $agent >/dev/null 2>&1 || { echo "crew: rig converged but no '$agent' user exists — box 0.11.0 needs rig $CREW_PLATFORM_RIG_MIN or later to create it" >&2; exit 1; }
 EOF
 }
 
@@ -132,13 +142,20 @@ EOF
 # unwinding it, because a half-converged box that crew silently deleted is a
 # diagnosis nobody gets to make.
 box_mint_fresh() { # NAME AGENT CPU MEMORY DISK
-  local name="$1" agent="$2" cpu="$3" memory="$4" disk="$5"
-  box new --name "$name" --user "$agent" \
-    --cpu "$cpu" --memory "$memory" --disk "$disk" </dev/null || return 1
-  box_mint_converge_script "$agent" | box root "$name" || {
+  local name="$1" agent="$2" cpu="$3" memory="$4" disk="$5" tenant_hint=""
+  box_entry_resolve_mode || return 2
+  if [ "$BOX_ENTRY_MODE_CACHED" = user ]; then
+    tenant_hint=" --user $agent"
+    box new --name "$name" \
+      --cpu "$cpu" --memory "$memory" --disk "$disk" </dev/null || return 1
+  else
+    box new --name "$name" --user "$agent" \
+      --cpu "$cpu" --memory "$memory" --disk "$disk" </dev/null || return 1
+  fi
+  box_mint_converge_script "$agent" "$BOX_ENTRY_MODE_CACHED" | box root "$name" || {
     echo "crew: $name was minted but rig did not converge it as $agent-box." >&2
     echo "crew: the box is left standing; converge it by hand and re-run:" >&2
-    echo "crew:   box root $name    # then: rig bootstrap $agent-box" >&2
+    echo "crew:   box root $name    # then: rig bootstrap $agent-box$tenant_hint" >&2
     return 1
   }
 }

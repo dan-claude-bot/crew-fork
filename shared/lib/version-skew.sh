@@ -4,14 +4,24 @@
 # The host CLI and the engines copied into hired boxes are independent axes.
 # A host-version flip must therefore report skew, never refuse the flip.
 
+# The engine stamp lives in the agent's home, so each box is read as its agent
+# (#792): box-entry.sh's door, wrapped in timeout(1) through box_in_flags.
+if ! declare -F box_in_flags >/dev/null; then
+  # shellcheck disable=SC1091
+  source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/box-entry.sh"
+fi
+
 hired_engine_versions() {
   command -v box >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
 
   local name stamp version
+  # A report, never a refusal: a box version nobody can read reports nothing.
+  box_entry_resolve_mode 2>/dev/null || return 0
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    stamp="$(timeout 10 box exec "$name" -- bash -lc \
+    box_in_flags "$name" 2>/dev/null || continue
+    stamp="$(timeout 10 box exec ${BOX_IN_FLAGS[@]+"${BOX_IN_FLAGS[@]}"} "$name" -- bash -lc \
       'head -1 ~/duty/VERSION 2>/dev/null' </dev/null 2>/dev/null \
       | tr -d '\r\n' || true)"
     [ -n "$stamp" ] || continue

@@ -350,6 +350,16 @@ else
 fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$HERE/../shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HERE/../shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+fi
 # shellcheck source=drill/rehearsal-report.sh
 . "$HERE/rehearsal-report.sh"
 # --tree drills a local checkout, so a --ref passed beside it is not what was
@@ -866,7 +876,7 @@ if [ "$INSTALL_DRILL" -eq 1 ]; then
     "$HERE/install-drill.sh" "${INSTALL_ARGS[@]}"
     rc=$?
     # shellcheck disable=SC2016  # expanded by bash inside the box
-    return_state="$(box exec "$CONFIG_BOX" -- bash -lc \
+    return_state="$(box_in "$CONFIG_BOX" -- bash -lc \
       'command -v crontab >/dev/null 2>&1 || exit 2
        tmp=$(mktemp) || exit 2
        error=$(mktemp) || { rm -f -- "$tmp"; exit 2; }
@@ -1279,6 +1289,14 @@ echo "## fleet rehearsal summary ($AGENT)"
 [ "$FAST" -eq 0 ] || echo "## TIER: fast — plumbing only; NOT a promotion reading (drills/README.md: cite the full round, never this one)"
 if [ -n "$RESOLVED_REF" ]; then
   echo "## drilled source: $RESOLVED_REF ($SOURCE_RECORD)"
+fi
+# The door this round used into every box (#792): the record says which box
+# the host ran and whether crew entered as the agent with `--user` (box 0.11.0
+# and later) or as the box's stamped user (before it).
+if declare -F box_entry_mode >/dev/null; then
+  round_box="$(box --version 2>/dev/null | head -1)" || round_box="" # Decision-path empty fallback: named unknown below
+  round_entry="$(box_entry_mode 2>/dev/null)" || round_entry="" # Decision-path empty fallback: named unknown below
+  echo "## box: ${round_box:-unknown} — entry mode ${round_entry:-unknown} (#792)"
 fi
 
 # The inventory is the round's declaration-to-result agreement block. It is

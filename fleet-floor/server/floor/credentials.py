@@ -19,6 +19,7 @@ import time
 
 from floor.ping import log, run
 from floor.roster import CONFIG_DIR, CONFIG_IS_OPERATOR, CREW_ROOT, agent_conf_path, read_roster
+from floor.boxentry import box_exec
 
 CREDENTIALS_JOURNAL = os.path.join(CONFIG_DIR, ".credentials-journal.log")
 SET_TIMEOUT_S = 60
@@ -104,7 +105,7 @@ def credentials_set(body, actor=""):
         return 400, {"ok": False, "action": action, "refused": True, "error": "an empty secret — nothing set"}
     if len(secret) > SECRET_MAX:
         return 400, {"ok": False, "action": action, "refused": True, "error": "that is too long to be a credential — nothing set"}
-    rc, out, err = run(["box", "exec", box, "--", "bash", "-lc", CREDENTIALS_SH], SET_TIMEOUT_S,
+    rc, out, err = run(box_exec(box, "bash", "-lc", CREDENTIALS_SH), SET_TIMEOUT_S,
                        "%s %s\n%s\n" % (service, kind, secret))
     secret = None
     lines = [x for x in (out or err or "").replace("\r", "").splitlines() if x.strip()]

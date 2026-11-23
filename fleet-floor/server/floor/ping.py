@@ -215,6 +215,12 @@ def parse_ping(out):
     return facts
 
 
+def box_exec(box, *cmd):
+    """boxentry.box_exec, imported late: boxentry imports run from here (#792)."""
+    from floor.boxentry import box_exec as _box_exec
+    return _box_exec(box, *cmd)
+
+
 def ping_box(name):
     """Is this box answering? Returns (ok, milliseconds, error, facts).
 
@@ -223,7 +229,7 @@ def ping_box(name):
     datum, like everywhere else in this file.
     """
     t0 = time.time()
-    rc, out, err = run(["box", "exec", name, "--", "sh", "-c", PING_SH],
+    rc, out, err = run(box_exec(name, "sh", "-c", PING_SH),
                        PING_TIMEOUT_S)
     ms = int((time.time() - t0) * 1000)
     if rc == 0:
@@ -250,7 +256,7 @@ def probe_box(unit, agent_conf, env=None):
                            and re.fullmatch(r"[A-Za-z0-9._:/-]*", str(v)))
         if exports:
             script = "export %s\n%s" % (exports, script)
-    rc, out, err = run(["box", "exec", unit["box"], "--", "bash", "-lc", script],
+    rc, out, err = run(box_exec(unit["box"], "bash", "-lc", script),
                        PROBE_TIMEOUT_S, stdin_data=agent_conf)
     if rc != 0:
         return None, (err.strip().splitlines() or ["box exec failed (rc %d)" % rc])[-1]

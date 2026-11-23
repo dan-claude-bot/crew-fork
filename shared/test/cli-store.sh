@@ -221,7 +221,10 @@ t cli-store-drain-refuses-under-the-examples-fallback-rc 1 "$RC"
 
 # --- the exec budget: the CLI's exec sites are still the four the floor's guard names -----
 # (bxn, bxput, vendor_probe, and bxpipe — the credentials pipe, #765)
+# (#792: the four go through box_in, the one door; no direct `box exec` is left)
 t cli-store-no-new-box-exec-site 4 \
-  "$(grep -vE '^[[:space:]]*#' "$CLI" | sed -e :a -e '/\\$/N; s/\\\n//; ta' | grep -cE 'box exec "')"
+  "$(grep -vE '^[[:space:]]*#' "$CLI" | sed -e :a -e '/\\$/N; s/\\\n//; ta' | grep -cE 'box_in "')"
+t cli-store-no-direct-box-exec-site 0 \
+  "$(grep -vE '^[[:space:]]*#' "$CLI" | grep -E 'box exec ' | grep -cvE "echo|printf|'box exec'|over 'box exec'" || true)"
 
 suite_finish

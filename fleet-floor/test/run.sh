@@ -322,6 +322,10 @@ source "$HERE/floor/registry.sh"
 # sits after registry.sh so that file's PATH and definition are restored first.
 # shellcheck source=floor/workspaces.sh
 source "$HERE/floor/workspaces.sh"
+# boxentry.sh reads the shared collector's snapshot and drives the module
+# in-process; it writes nothing the rest reads.
+# shellcheck source=floor/boxentry.sh
+source "$HERE/floor/boxentry.sh"
 # The two scripts that normally only run inside a box, executed for real —
 # without this the collector assertions above are circular (they validate the
 # parser against stub-box's imitation of probe.sh, not against probe.sh).
