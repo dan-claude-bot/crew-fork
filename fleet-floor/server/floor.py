@@ -52,6 +52,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # inert, which is measured rather than assumed — deleting it changes none of
 # the three refusal-order rows in fleet-floor/test/cli.sh, and reversing
 # __init__.py's block reds them. The carrier is asserted where it lives.
+# Which fleet this process serves (#814), decided BEFORE the package resolves
+# one — the package resolves at import. Nothing changes on a host that has the
+# operator's own definition, or when CREW_CONFIG_DIR names one: resolution runs
+# exactly as it always has. Only a host whose sole definitions live in the
+# fleets index (made with the CLI's `init --fleet`, or the floor's New fleet)
+# would otherwise refuse with "no fleet definition found" — there the first
+# fleet of the index is served, and the others behind it as /f/<id>/.
+# floor/fleets.py is loaded by path: importing it through the package would
+# run the package's resolution first, which is what is being decided here.
+if "CREW_CONFIG_DIR" not in os.environ and not os.environ.get("CREW_FLOOR_CHILD"):
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "_crew_floor_fleets", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           "floor", "fleets.py"))
+    _fleets = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_fleets)
+    if not _fleets.is_fleet(_fleets.config_home()) and not _fleets.is_fleet(os.getcwd()):
+        _index = [d for fid, d in _fleets.list_fleets() if fid != "default"]
+        if _index:
+            os.environ["CREW_CONFIG_DIR"] = _index[0]
+
 from floor.server import main  # noqa: E402  (the sys.path line must precede it)
 
 if __name__ == "__main__":

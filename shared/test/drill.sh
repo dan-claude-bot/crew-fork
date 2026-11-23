@@ -200,6 +200,20 @@ esac
 exit "${DRILL_APP_RC:-0}"
 APP
 chmod +x "$HARNESS/rehearsal-config.sh" "$HARNESS/rehearsal-app.sh"
+# The workspaces / floor-provision legs (#814, #815): one script, two status
+# channels. Each channel gets the verdict its env names (ok by default, empty
+# with `-`), so a round can read every partition of either row.
+cat >"$HARNESS/rehearsal-workspaces.sh" <<'WORKSPACES'
+#!/usr/bin/env bash
+printf 'workspaces\n' >>"${DRILL_SECTION_LOG:-/dev/null}"
+[ -z "${DRILL_WS_LOG:-}" ] || printf '%s|keep=%s|creds=%s\n' "$*" "${REHEARSAL_KEEP:-}" "${REHEARSAL_CREDS:-}" >>"$DRILL_WS_LOG"
+v="${DRILL_WS_VERDICT:-ok two fleets}"; [ "$v" = - ] && v=""
+[ -z "${REHEARSAL_WORKSPACES_STATUS:-}" ] || [ -z "$v" ] || printf '%s\n' "$v" >>"$REHEARSAL_WORKSPACES_STATUS"
+v="${DRILL_PV_VERDICT:-ok a floor-built fleet}"; [ "$v" = - ] && v=""
+[ -z "${REHEARSAL_PROVISION_STATUS:-}" ] || [ -z "$v" ] || printf '%s\n' "$v" >>"$REHEARSAL_PROVISION_STATUS"
+exit "${DRILL_WS_RC:-0}"
+WORKSPACES
+chmod +x "$HARNESS/rehearsal-workspaces.sh"
 
 round_run() {  # <script> <roles> <ref>
   local script="$1" roles="$2" ref="$3"
@@ -283,7 +297,7 @@ t drill-tree-record-names-head 1 \
   "$(grep -cF "## drilled source: $SECOND (tree $SOURCE)" <<<"$tree_out")"
 t drill-tree-phase-zero-names-head 1 \
   "$(grep -cF "phase 0: crew at $SECOND (tree $SOURCE), static checks" <<<"$tree_out")"
-t drill-record-enumerates-all-declared-legs 14 \
+t drill-record-enumerates-all-declared-legs 16 \
   "$(grep -c '^## leg \(executed\|not-executed\) ' <<<"$tree_out")"
 t drill-record-names-browser-exclusion 1 \
   "$(grep -c '^## leg not-executed browser  (skip; --no-app)' <<<"$tree_out")"
@@ -367,7 +381,7 @@ t w776-parallel-says-so 1 "$(grep -c '^== --parallel: running triage builder rev
 t w776-parallel-heartbeat-names-who-is-still-running 1 \
   "$(grep -c '^== --parallel: still running: triage' <<<"$w776_out" | awk '{print ($1 >= 1)}')"
 t w776-parallel-wall-time-line 1 \
-  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
 t w776-parallel-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
 # #783: each role is told which roles tick alongside it.
 t w783-parallel-each-role-hears-its-siblings "builder:triage reviewer|reviewer:triage builder|triage:builder reviewer" \
@@ -381,7 +395,7 @@ w776_out="$(DRILL_SIBLINGS_LOG="$W783_SIBS" DRILL_SLEEP_triage=0.6 w776_round --
 t w776-sequential-keeps-role-order "triage builder" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
 t w783-sequential-roles-have-no-siblings "builder:|triage:" "$(sort "$W783_SIBS" | paste -sd'|' -)"
 t w776-sequential-wall-time-line 1 \
-  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
 
 # --legs: only the named legs run; every other leg says it was not selected.
 : >"$ROLE_LOG"
@@ -601,9 +615,9 @@ t drill-phase2-records-browser-executed 1 \
 t drill-phase2-records-app-armed-on-its-own-box 1 \
   "$(grep -c "^## leg executed app-armed  (ok; agreement compared; the round's own box" \
     <<<"$phase2_out")"
-t drill-phase2-failure-invokes-config-and-app $'config\napp\napp' "$(cat "$SECTION_LOG")"
-t drill-phase2-summary-counts-five-passed 1 \
-  "$(grep -cE '^## section states: 5 passed, 1 failed, [0-9]+ skipped/not-run$' <<<"$phase2_out")"
+t drill-phase2-failure-invokes-config-and-app $'config\napp\napp\nworkspaces' "$(cat "$SECTION_LOG")"
+t drill-phase2-summary-counts-seven-passed 1 \
+  "$(grep -cE '^## section states: 7 passed, 1 failed, [0-9]+ skipped/not-run$' <<<"$phase2_out")"
 
 if armed_out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
     DRILL_SECTION_LOG="$SECTION_LOG" DRILL_REMOTE="$REMOTE" \
@@ -1256,7 +1270,7 @@ runbook_prose_legs() {  # the enumerating sentence, read to its blank line
     | grep -oE '`[a-z][a-z-]*`' | tr -d '`' | sort -u
 }
 
-t drill-runbook-harness-declares-legs 14 "$(runbook_harness_legs | n)"
+t drill-runbook-harness-declares-legs 16 "$(runbook_harness_legs | n)"
 t drill-runbook-documents-every-declared-leg '' \
   "$(comm -23 <(runbook_harness_legs) <(runbook_documented_legs) | paste -sd, -)"
 t drill-runbook-documents-no-undeclared-leg '' \
@@ -1271,7 +1285,7 @@ t drill-runbook-prose-list-matches-declaration '' \
 # this issue's own finding. Both the census and the runbook go stale silently,
 # so the assertion above has to red on a declaration it has never seen.
 MUTATED_ALL="$TMP/rehearsal-all-extra-leg.sh"
-sed 's/^  installer config app browser app-armed fleet teardown$/  installer config app browser app-armed fleet teardown newleg/' \
+sed 's/^  installer config app browser app-armed fleet workspaces floor-provision teardown$/  installer config app browser app-armed fleet workspaces floor-provision teardown newleg/' \
   "$ROOT/drill/rehearsal-all.sh" >"$MUTATED_ALL"
 t drill-runbook-extra-leg-mutation-applied 1 \
   "$(sed -n '/^declare -a DECLARED_LEGS=(/,/^)/p' "$MUTATED_ALL" \
@@ -5194,5 +5208,87 @@ t release-leg-is-documented-in-the-runbook 1 "$(runbook_documented_legs | grep -
 t release-leg-is-in-the-runbook-prose 1 "$(runbook_prose_legs | grep -cx release)"
 t release-leg-names-no-agent-or-box 0 \
   "$(grep -ciE 'claude|codex|grok|kimi|crew-drill' "$ROOT/drill/rehearsal-release.sh" | tr -d ' ')"
+
+# --- #814 / #815: the workspaces and floor-provision legs' rows ---------------
+# One script, two rows, each folded from its own status channel the way the
+# fleet row is. The harness stub writes whatever verdict a case names.
+ws_round() {  # extra env is the caller's; extra args are passed through
+  DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
+    DRILL_SECTION_LOG="$SECTION_LOG" DRILL_REMOTE="$REMOTE" \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles reviewer --keep \
+      --no-app --no-config-drill --no-install-drill --no-resume-drill --no-attention-drill \
+      --no-attention-audit-drill --no-release-drill --no-hygiene-drill --no-breaker-drill \
+      --no-notify-drill --no-fleet-drill "$@" 2>&1
+  echo "rc=$?"
+}
+: >"$ROLE_LOG"; : >"$SECTION_LOG"
+WS_LOG_F="$TMP/ws-args.log"; : >"$WS_LOG_F"
+ws_out="$(DRILL_WS_LOG="$WS_LOG_F" ws_round)"
+t w814-green-round-rc 1 "$(grep -cx 'rc=0' <<<"$ws_out")"
+t w814-workspaces-row-is-executed 1 \
+  "$(grep -c '^## leg executed workspaces  (ok; two fleets on one floor: pages, actions and roster saves stay in their fleet; the host cap counts both)$' <<<"$ws_out")"
+t w815-floor-provision-row-is-executed 1 \
+  "$(grep -c '^## leg executed floor-provision  (ok; a fleet made, a member created, hired and logged in from the floor, one job at a time)$' <<<"$ws_out")"
+t w814-one-script-runs-both-legs-once 1 "$(grep -cx workspaces "$SECTION_LOG")"
+t w814-the-leg-is-driven-from-the-drilled-roster 1 \
+  "$(grep -cFx -- '--boxes crew-drill-reviewer --agent claude --legs workspaces floor-provision|keep=1|creds=' "$WS_LOG_F")"
+t w814-each-row-once 2 "$(grep -cE '^##   .*  (workspaces|floor-provision)  ' <<<"$ws_out")"
+t w814-the-wall-time-names-the-section 1 "$(grep -cE '^## wall time: .*· workspaces [0-9]+m[0-9]{2}s · total' <<<"$ws_out")"
+ws_out="$(DRILL_WS_VERDICT='FAIL a pause reached crew-drill-reviewer' DRILL_WS_RC=0 ws_round)"
+t w814-a-fail-verdict-reds-the-round 1 "$(grep -cx 'rc=1' <<<"$ws_out")"
+t w814-the-fail-names-why 1 "$(grep -c '^## leg executed workspaces  (FAIL; a pause reached crew-drill-reviewer)$' <<<"$ws_out")"
+t w815-the-other-row-keeps-its-own-verdict 1 "$(grep -c '^## leg executed floor-provision  (ok; ' <<<"$ws_out")"
+ws_out="$(DRILL_PV_VERDICT='skip floor-provision: Credentials sets the gh token from the floor — no --creds gh:<name> pool entry handed to this round' ws_round)"
+t w815-a-skipped-reading-is-incomplete 1 "$(grep -cx 'rc=2' <<<"$ws_out")"
+t w815-the-incomplete-names-the-reading 1 \
+  "$(grep -c '^## leg not-executed floor-provision  (INCOMPLETE; leg skipped a reading: floor-provision: Credentials sets the gh token' <<<"$ws_out")"
+ws_out="$(DRILL_WS_VERDICT=- DRILL_PV_VERDICT=- ws_round)"
+t w814-no-verdict-is-incomplete 1 "$(grep -c '^## leg not-executed workspaces  (INCOMPLETE; the leg reached no case)$' <<<"$ws_out")"
+ws_out="$(DRILL_WS_VERDICT=- DRILL_PV_VERDICT=- DRILL_WS_RC=1 ws_round)"
+t w814-a-crash-is-a-fail 1 "$(grep -c '^## leg executed workspaces  (FAIL; the leg exited 1)$' <<<"$ws_out")"
+t w815-a-crash-fails-both-rows 1 "$(grep -c '^## leg executed floor-provision  (FAIL; the leg exited 1)$' <<<"$ws_out")"
+: >"$SECTION_LOG"
+ws_out="$(ws_round --no-workspaces-drill --no-floor-provision-drill)"
+t w814-opt-out-is-a-skip-row 1 "$(grep -c '^## leg not-executed workspaces  (skip; --no-workspaces-drill)$' <<<"$ws_out")"
+t w815-opt-out-is-a-skip-row 1 "$(grep -c '^## leg not-executed floor-provision  (skip; --no-floor-provision-drill)$' <<<"$ws_out")"
+t w814-opt-out-does-not-invoke-the-leg 0 "$(grep -cx workspaces "$SECTION_LOG" || true)"
+: >"$WS_LOG_F"
+ws_out="$(DRILL_WS_LOG="$WS_LOG_F" ws_round --no-floor-provision-drill)"
+t w814-one-leg-alone-runs-only-it 1 "$(grep -c -- '--legs workspaces|' "$WS_LOG_F")"
+t w815-its-row-says-skip 1 "$(grep -c '^## leg not-executed floor-provision  (skip; --no-floor-provision-drill)$' <<<"$ws_out")"
+: >"$WS_LOG_F"
+ws_out="$(DRILL_WS_LOG="$WS_LOG_F" ws_round --fast)"
+t w815-fast-leaves-out-the-mint 1 "$(grep -c '^## leg not-executed floor-provision  (skip; --fast: mints a box of its own)$' <<<"$ws_out")"
+t w814-fast-keeps-workspaces 1 "$(grep -c -- '--legs workspaces|' "$WS_LOG_F")"
+: >"$WS_LOG_F"; : >"$ROLE_LOG"
+ws_out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_SECTION_LOG="$SECTION_LOG" DRILL_REMOTE="$REMOTE" \
+  DRILL_WS_LOG="$WS_LOG_F" bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --roles reviewer --legs floor-provision 2>&1; echo "rc=$?")"
+t w815-legs-selects-the-leg 1 "$(grep -c -- '--legs floor-provision|' "$WS_LOG_F")"
+t w814-legs-leaves-the-other-unselected 1 "$(grep -c '^## leg not-executed workspaces  (skip; not selected by --legs)$' <<<"$ws_out")"
+# shellcheck disable=SC2016  # the source text, $ included
+t w815-the-round-hands-the-leg-its-creds-and-keep 1 \
+  "$(grep -cF 'REHEARSAL_KEEP="$KEEP" REHEARSAL_CREDS="$CREDS"' "$ROOT/drill/rehearsal-all.sh")"
+# The leg's box standing from an earlier --keep round is refused up front, with
+# the teardown that clears it; --no-floor-provision-drill does not need it gone.
+: >"$ROLE_LOG"
+ws_out="$(DRILL_EXISTING_BOXES='crew-drill-floor' w776_round --roles reviewer --keep)"
+t w815-a-standing-floor-box-is-refused-up-front 1 "$(grep -c 'still exist: crew-drill-floor$' <<<"$ws_out")"
+t w815-the-refusal-names-its-teardown 1 "$(grep -c 'drill/teardown.sh --box crew-drill-floor --yes$' <<<"$ws_out")"
+t w815-the-refused-round-runs-no-role 0 "$(grep -c . "$ROLE_LOG")"
+ws_out="$(DRILL_EXISTING_BOXES='crew-drill-floor crew-drill-reviewer' w776_round --roles reviewer --keep)"
+t w815-with-a-role-box-both-are-named 1 "$(grep -c 'drill/teardown.sh --roles "reviewer" --box crew-drill-floor --yes$' <<<"$ws_out")"
+ws_out="$(DRILL_EXISTING_BOXES='crew-drill-floor' w776_round --roles reviewer --keep --no-floor-provision-drill \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w815-without-the-leg-its-box-refuses-nothing 0 "$(grep -c 'still exist' <<<"$ws_out")"
+# teardown.sh accepts the leg's box by name (and only that new name).
+t w815-teardown-accepts-the-floor-box 1 \
+  "$(bash "$ROOT/drill/teardown.sh" --box crew-drill-floor --dry-run 2>&1 | grep -c 'not a drill box' | awk '{print ($1 == 0)}')"
+t w815-teardown-still-refuses-a-near-miss 1 \
+  "$(bash "$ROOT/drill/teardown.sh" --box crew-drill-floors --dry-run 2>&1 | grep -c 'not a drill box')"
+# The leg script refuses a non-drill box before it touches anything.
+t w814-the-leg-refuses-a-non-drill-box 1 \
+  "$(bash "$ROOT/drill/rehearsal-workspaces.sh" --boxes 'claude-builder' 2>&1 | grep -c "refusing non-drill box 'claude-builder'")"
+t w814-the-leg-is-documented 2 "$(runbook_documented_legs | grep -cxE 'workspaces|floor-provision')"
 
 suite_finish

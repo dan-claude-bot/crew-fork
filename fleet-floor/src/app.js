@@ -1583,7 +1583,16 @@ function repoURL(repo){
   if(parts.length<2)parts=["heavy-duty"].concat(parts);
   return "https://github.com/"+parts.join("/");
 }
-function apiURL(path){return (location.origin&&location.origin!=="null"?location.origin:"")+path;}
+/* The fleet this page is ON (#814): `/f/<id>/` in its own URL, or none for the
+   page at `/`. Every API path is that fleet's — `/f/<id>/api/…` — except the
+   fleets list itself, which is the host's. Read once: navigating to another
+   fleet is a new page, so two tabs on two fleets can never share one. */
+var FLEET_ID=((location.pathname||"").match(/^\/f\/([a-z][a-z0-9-]{0,29})\//)||[])[1]||"";
+function apiURL(path){
+  var base=(location.origin&&location.origin!=="null"?location.origin:"");
+  if(FLEET_ID&&/^\/api\//.test(path)&&!/^\/api\/fleets(\?|$)/.test(path))base+="/f/"+FLEET_ID;
+  return base+path;
+}
 /* No request waits forever (round 11): a command's longest server path is a
    restart's stop and start at the action timeout each, and a fleet action
    runs its boxes eight at a time, so it is given fifteen minutes and its
@@ -1813,12 +1822,13 @@ function goLive(){
     b.textContent="◈ LIVE";b.classList.add("live");
     b.title="Live telemetry — every box polled from the operator host over 'box exec'.";
   });
-  ["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","a-pause","a-restart","c-send"].forEach(function(id){
+  ["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","g-up","g-down","a-pause","a-restart","c-send"].forEach(function(id){
     var e=document.getElementById(id);if(e){e.classList.remove("woff");e.title="";}
   });
   var cin=document.getElementById("c-in");
   if(cin){cin.disabled=false;cin.classList.remove("woff");cin.placeholder="Send a prompt to the agent…";}
   var s=document.getElementById("stream");if(s)s.innerHTML="";
+  loadFleets();pollJobs();
 }
 /* Operator actions (#39). Every one is applied by the host with `box exec`,
    `box down`, `box start` or — for a guest that can no longer schedule its own
@@ -6622,7 +6632,190 @@ for(var _sd=0;_sd<6;_sd++)tickerEvent();
    controls stay shown-but-disabled. Serving the page with `crew floor` is what
    turns them on — goLive() clears every .woff below. */
 var CTL_TIP="Open this page with `crew floor` — a served page drives the boxes from the host.";
-if(!LIVE){["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","a-pause","a-restart","c-send"].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.add("woff");e.title=CTL_TIP;}});var cin=document.getElementById("c-in");if(cin){cin.disabled=true;cin.classList.add("woff");cin.placeholder="Messaging needs a served page — run: crew floor";}}
+if(!LIVE){["g-start","g-stop","g-wake","g-reg","g-roster","g-creds","g-up","g-down","a-pause","a-restart","c-send"].forEach(function(id){var e=document.getElementById(id);if(e){e.classList.add("woff");e.title=CTL_TIP;}});var cin=document.getElementById("c-in");if(cin){cin.disabled=true;cin.classList.add("woff");cin.placeholder="Messaging needs a served page — run: crew floor";}}
+/* ===================== fleets and jobs (#814, #815) =====================
+
+   FLEETS. A host carries several fleet definitions; this page is on one of
+   them — FLEET_ID from its own URL, or the host's home fleet at `/`. The
+   switcher lists the host's fleets and NAVIGATES: another fleet is another
+   page, at `/f/<id>/`, so a reload keeps the fleet and two tabs on two fleets
+   share nothing. "New fleet" runs the CLI's `init --fleet <id>` on the host and
+   opens the empty fleet.
+
+   JOBS. The floor runs the CLI's own verbs on the host — `up`, `up <box>`
+   (Create), `hire`, `upgrade`, `down` — as ONE process at a time for the whole
+   host. While one runs, the job bar says what it is (a spinner, the verb, the
+   fleet, the time, the line it last printed) in every tab on every fleet, and
+   every job button is held. `up` and Create show their plan (the `--dry-run`)
+   first and run only when that plan is confirmed; the collector refuses a run
+   that names no plan, a stale one, or one read before the roster changed. */
+var FLEETS=null;
+var JOBS={current:null,recent:[],open:"",lastPoll:0,dismissed:{}};
+/* Unlike api(), every answer comes back with its body — a refused job (409)
+   carries the sentence the operator needs, and the status beside it. */
+function jobFetch(path,opts){
+  return fetch(apiURL(path),opts||{}).then(function(r){
+    if(r.status===401)throw new Error("unauthorized");
+    return r.json().then(function(j){j=j||{};j._status=r.status;return j;},
+                         function(){return {ok:false,error:"HTTP "+r.status,_status:r.status};});
+  });
+}
+function homeFleet(){return FLEET_ID||(FLEETS&&FLEETS.home)||"";}
+function loadFleets(){
+  if(!LIVE)return;
+  jobFetch("/api/fleets").then(function(r){if(r&&r.fleets){FLEETS=r;paintFleets();}}).catch(function(){});
+}
+function paintFleets(){
+  var sel=document.getElementById("fleetsel");if(!sel||!FLEETS)return;
+  var cur=homeFleet();
+  sel.innerHTML=FLEETS.fleets.map(function(f){
+    return '<option value="'+esc(f.id)+'"'+(f.id===cur?' selected':'')+' title="'+f.members+' member'+(f.members===1?'':'s')
+      +(f.schedule==="off"?', off the host schedule':'')+'">'+esc(f.id)+' ('+f.members+')'+(f.schedule==="off"?' ·off':'')+'</option>';
+  }).join('')+'<option value="+new">+ New fleet…</option>';
+  sel.style.display="";
+  if(sel.parentNode)sel.parentNode.classList.add("fleets");
+  sel.title="this page's fleet — switching opens that fleet's page (/f/<id>/)";
+  document.title="Fleet Floor · "+cur;
+}
+function onFleetSelect(){
+  var sel=document.getElementById("fleetsel"),v=sel.value;
+  if(v==="+new"){sel.value=homeFleet();newFleet();return;}
+  var f=((FLEETS&&FLEETS.fleets)||[]).filter(function(x){return x.id===v;})[0];
+  if(f)location.href=f.url;
+}
+function newFleet(){
+  if(jobBusy()){setStatus("one job at a time on this host: "+jobDesc(JOBS.current)+" is running",true);return;}
+  var id=prompt("New fleet id — lower case letters, digits and '-', a letter first (for example: la-familia).\nIt starts with no member: add them in its Roster, then Create each one.");
+  if(!id)return;id=id.trim();
+  setStatus("creating fleet "+id+"…",false);
+  jobFetch("/api/fleets",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:id})}).then(function(r){
+    if(!r.ok){setStatus("new fleet refused: "+(r.error||"HTTP "+r._status),true);return;}
+    location.href=r.url;
+  }).catch(function(e){setStatus("new fleet failed: "+e.message,true);});
+}
+function jobBusy(){return !!JOBS.current;}
+function jobDesc(j){return "crew "+((j&&j.argv)||[j&&j.verb]).join(" ");}
+function fmtElapsed(s){s=Math.max(0,s|0);return Math.floor(s/60)+":"+("0"+(s%60)).slice(-2);}
+function pollJobs(){
+  if(!LIVE)return;
+  JOBS.lastPoll=Date.now();
+  jobFetch("/api/jobs").then(function(r){
+    if(!r||r._status!==200)return;
+    JOBS.current=r.current;JOBS.recent=r.recent||[];
+    paintJobBar();syncJobButtons();
+    if(JOBS.open)refreshJobPanel();
+  }).catch(function(){});
+}
+function paintJobBar(){
+  var bar=document.getElementById("jobbar");if(!bar)return;
+  var c=JOBS.current,last=JOBS.recent[0];
+  if(c){
+    bar.className="jobbar run";
+    bar.innerHTML='<span class="spin" aria-hidden="true"></span><b>'+esc(jobDesc(c))+'</b>'
+      +'<span class="jf">fleet '+esc(c.fleet||"?")+'</span><span class="je">'+fmtElapsed(c.elapsed)+'</span>'
+      +'<span class="js">'+esc(c.step||"")+'</span>'
+      +(c.fleet===homeFleet()?'<button class="jbtn" data-jobopen="'+esc(c.id)+'">output</button>':'');
+    bar.style.display="flex";return;
+  }
+  if(last&&!JOBS.dismissed[last.id]&&(Date.now()/1000-(last.ended||0))<900){
+    var good=last.state==="done";
+    bar.className="jobbar "+(good?"ok":"bad");
+    bar.innerHTML='<span class="jmark">'+(good?"✓":"✕")+'</span><b>'+esc(jobDesc(last))+'</b>'
+      +'<span class="je">exit '+esc(String(last.rc))+' · '+fmtElapsed(last.elapsed)+'</span>'
+      +(last.plan&&good?'<span class="js">plan ready — open it to review and confirm</span>':'')
+      +'<button class="jbtn" data-jobopen="'+esc(last.id)+'">output</button><button class="jbtn" data-jobdismiss="'+esc(last.id)+'" title="hide">✕</button>';
+    bar.style.display="flex";return;
+  }
+  bar.style.display="none";
+}
+function syncJobButtons(){
+  var busy=jobBusy(),tip=busy?("one job at a time on this host: "+jobDesc(JOBS.current)+" is running"):"";
+  [].forEach.call(document.querySelectorAll("[data-job]"),function(e){
+    e.disabled=busy;e.classList.toggle("jheld",busy);
+    if(busy)e.title=tip;else if(e.dataset.tip)e.title=e.dataset.tip;
+  });
+}
+function rosterJobButtons(m,u,saved){
+  if(!saved)return '<span class="rosst">save first</span>';
+  /* No unit and no completed poll yet: the standing is unknown, not "no box".
+     Offering Create here would offer it for boxes that are hired. */
+  if(!u&&!(LIVEMETA&&LIVEMETA.generated))return '<span class="rosst">reading the fleet…</span>';
+  var st=u?rosterStanding(u):"not created",b=esc(m.box);
+  if(st==="hired")return '<button class="lbtn jobb" data-job="upgrade" data-box="'+b+'" data-tip="crew upgrade '+b+'">⟳ Upgrade</button>';
+  if(st==="not hired")return '<button class="lbtn jobb" data-job="hire" data-box="'+b+'" data-tip="crew hire '+b+'">⇪ Hire</button>';
+  return '<button class="lbtn jobb" data-job="create" data-box="'+b+'" data-tip="crew up '+b+' — its plan is shown first">▶ Create</button>';
+}
+var JOB_ASK={
+  hire:function(b){return "Hire "+b+"?\n\ncrew hire "+b+" installs this host's engine on it and arms its cron: it goes on duty.";},
+  upgrade:function(b){return "Upgrade "+b+"?\n\ncrew upgrade "+b+" re-installs this host's engine on it.";},
+  down:function(){return "Down this whole fleet ("+homeFleet()+")?\n\ncrew down drains every roster box of this fleet and stops it. No other fleet is touched.";}
+};
+function onJobButton(b){
+  if(!LIVE)return;
+  var verb=b.dataset.job,box=b.dataset.box||"";
+  if(jobBusy()){setStatus("one job at a time on this host: "+jobDesc(JOBS.current)+" is running",true);return;}
+  if(verb==="up"||verb==="create"){startJob({verb:verb,box:box,plan:true});return;}
+  if(!confirm(JOB_ASK[verb](box)))return;
+  startJob({verb:verb,box:box});
+}
+function startJob(body){
+  setStatus("starting crew "+body.verb+(body.box?" "+body.box:"")+(body.plan?" (plan)":"")+"…",false);
+  return jobFetch("/api/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}).then(function(r){
+    if(!r.ok){setStatus(r.error||("HTTP "+r._status),true);pollJobs();return null;}
+    setStatus(jobDesc(r.job)+" — running",false);
+    JOBS.current={id:r.job.id,fleet:r.job.fleet,verb:r.job.verb,argv:r.job.argv,elapsed:0,step:r.job.step};
+    paintJobBar();syncJobButtons();openJob(r.job.id);
+    return r.job;
+  }).catch(function(e){setStatus("could not start the job: "+e.message,true);});
+}
+function ensureJobPanel(){
+  var ov=document.getElementById("jobov");if(ov)return ov;
+  ov=document.createElement("div");ov.id="jobov";
+  ov.innerHTML='<div class="logbox"><div class="loghd"><span id="jobttl"></span><button id="jobx">✕ close</button></div>'
+    +'<div class="jobstate" id="jobstate"></div><pre class="jobout" id="jobout"></pre><div class="regacts" id="jobacts"></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener("click",function(e){
+    if(e.target===ov||e.target.id==="jobx"){ov.style.display="none";JOBS.open="";return;}
+    var c=e.target.closest("[data-jobconfirm]");if(c)confirmPlan(c.dataset.jobconfirm,c.dataset.verb,c.dataset.box||"");
+  });
+  return ov;
+}
+function openJob(id){JOBS.open=id;ensureJobPanel().style.display="flex";refreshJobPanel();}
+function refreshJobPanel(){
+  var id=JOBS.open;if(!id)return;
+  jobFetch("/api/jobs?id="+encodeURIComponent(id)).then(function(j){
+    if(JOBS.open!==id||!j||!j.id)return;
+    var run=j.state==="running";
+    document.getElementById("jobttl").textContent=jobDesc(j)+" · fleet "+j.fleet+(j.plan?" · PLAN":"");
+    document.getElementById("jobstate").innerHTML=run
+      ?'<span class="spin" aria-hidden="true"></span> running '+fmtElapsed(j.elapsed)+' — '+esc(j.step||"")
+      :'<span class="jmark '+(j.state==="done"?"ok":"bad")+'">'+(j.state==="done"?"✓":"✕")+'</span> '+(j.state==="done"?"finished":"FAILED")+' · exit '+esc(String(j.rc))+' · '+fmtElapsed(j.elapsed);
+    var out=document.getElementById("jobout"),atEnd=out.scrollTop+out.clientHeight>=out.scrollHeight-8;
+    out.textContent=(j.output||[]).join("\n")||(run?"(waiting for the first line…)":"(no output)");
+    if(atEnd)out.scrollTop=out.scrollHeight;
+    var acts=document.getElementById("jobacts");
+    if(j.plan&&j.state==="done"&&j.rc===0){
+      acts.innerHTML='<button class="lbtn" data-jobconfirm="'+esc(j.id)+'" data-verb="'+esc(j.verb)+'" data-box="'+esc(j.box||"")+'">Run crew '+esc(j.verb==="create"?"up "+j.box:"up")+' — as planned above</button>';
+    }else if(j.plan&&!run){
+      acts.innerHTML='<div class="regnote">The plan did not succeed (exit '+esc(String(j.rc))+'): nothing to confirm.</div>';
+    }else acts.innerHTML="";
+  }).catch(function(){});
+}
+function confirmPlan(planId,verb,box){
+  var what=verb==="create"?"crew up "+box:"crew up";
+  if(!confirm("Run "+what+" now, as the plan above says?\n\nThe collector refuses it if the roster changed since the plan was read."))return;
+  startJob({verb:verb,box:box,confirm:planId});
+}
+document.addEventListener("click",function(e){
+  var o=e.target.closest("[data-jobopen]");if(o){openJob(o.dataset.jobopen);return;}
+  var d=e.target.closest("[data-jobdismiss]");if(d){JOBS.dismissed[d.dataset.jobdismiss]=1;paintJobBar();}
+});
+setInterval(function(){
+  if(!LIVE)return;
+  var fast=jobBusy()||!!JOBS.open;
+  if(fast||Date.now()-JOBS.lastPoll>5000)pollJobs();
+},1000);
+setInterval(loadFleets,60000);
 /* Fleet-wide actions. "Start/Stop all" are box lifecycle, not a mood: they
    power the roster's boxes up and down. "Wake silent" resumes a paused crontab
    and starts a stopped box — it does NOT start a model session, because a box
@@ -6633,6 +6826,9 @@ document.getElementById("g-reg").addEventListener("click",function(){openRegistr
 document.getElementById("g-roster").addEventListener("click",function(){openRoster();});
 document.getElementById("g-creds").addEventListener("click",function(){openCreds();});
 document.getElementById("g-wake").addEventListener("click",function(){if(!LIVE)return;act("fleet","wake-silent");});
+document.getElementById("g-up").addEventListener("click",function(){onJobButton(this);});
+document.getElementById("g-down").addEventListener("click",function(){onJobButton(this);});
+document.getElementById("fleetsel").addEventListener("change",onFleetSelect);
 setInterval(tickOps,1000);setInterval(updateCurrent,1000);
 /* The access panel is re-rendered on every poll, so its buttons are handled by
    delegation on the rail rather than bound per render. */
@@ -6892,10 +7088,10 @@ function openRoster(){
     var units={};((LIVEMETA&&LIVEMETA.units)||[]).forEach(function(u){units[u.box]=u;});
     document.getElementById("rosbody").innerHTML=
       '<div class="regnote">One line per box: its name, the agent it runs, its role(s), and the box/snapshot it is minted from (optional). '
-      +'Saving writes <code>fleet.roster</code> on the host and nothing else: a new line becomes a box when you run <code>crew up</code> there '
-      +'(it creates, starts and hires every roster box; the login is yours, by hand). A removed line\'s box is left alone — the console stops watching it, nothing is ever deleted.</div>'
-      +'<table class="rostbl"><thead><tr><th>box</th><th>agent</th><th>roles</th><th>from (box/snapshot)</th><th>pool</th><th></th></tr></thead><tbody id="roslist">'
-      +r.members.map(function(m){return rosterRow(m,units[m.box]);}).join('')
+      +'Saving writes <code>fleet.roster</code> on the host and nothing else. A saved line becomes a box with its <b>Create</b> button (<code>crew up &lt;box&gt;</code>: that one member, created, started and hired — its plan is shown first); '
+      +'<b>Hire</b> and <b>Upgrade</b> run <code>crew hire</code> / <code>crew upgrade</code> on it. One job runs at a time on the host. The login is yours: the Credentials panel. A removed line\'s box is left alone — the console stops watching it, nothing is ever deleted.</div>'
+      +'<table class="rostbl"><thead><tr><th>box</th><th>agent</th><th>roles</th><th>from (box/snapshot)</th><th>pool</th><th>run</th><th></th></tr></thead><tbody id="roslist">'
+      +r.members.map(function(m){return rosterRow(m,units[m.box],true);}).join('')
       +'</tbody></table>'
       +'<div class="regacts"><button class="lbtn" data-ros="add">+ Add a box</button><button class="lbtn" data-ros="save">Save roster</button></div>';
     ov.style.display="flex";
@@ -6908,7 +7104,7 @@ function rosterStanding(u){
   if(/not created|inventory/.test(u.note||""))return "not created";
   return u.hired==="no"?"not hired":"";
 }
-function rosterRow(m,u){
+function rosterRow(m,u,saved){
   var chosen={};(m.room||"").split(",").forEach(function(x){if(x)chosen[x]=1;});
   var st=rosterStanding(u);
   var kept=(m.room||"").split(",").filter(function(x){return x&&ROSTER_OPTS.roles.indexOf(x)<0;});
@@ -6922,6 +7118,7 @@ function rosterRow(m,u){
     /* The pool assignment (#774) rides the row unedited: assigning is the
        host's, where the per-repository gh rule is checked against the pool. */
     +(m.creds?'<td><div class="rosst" title="credentials from the host pool — assigned on the host, carried through this save">'+esc(m.creds)+'</div></td>':'<td></td>')
+    +'<td>'+rosterJobButtons(m,u,saved)+'</td>'
     +'<td><button class="lbtn rosdrop" data-ros="drop" title="remove this line (the box itself is left alone)">✕</button></td></tr>';
 }
 function closeRoster(){var ov=document.getElementById("rosov");if(ov)ov.style.display="none";}
@@ -6938,10 +7135,12 @@ function rosterRoles(written,offered,checked){
   return out;
 }
 function onRosterClick(e){
+  var jb=e.target.closest("[data-job]");
+  if(jb){onJobButton(jb);return;}
   var b=e.target.closest("[data-ros]");if(!b)return;
   var list=document.getElementById("roslist");
   if(b.dataset.ros==="add"){
-    list.insertAdjacentHTML("beforeend",rosterRow({box:"",agent:ROSTER_OPTS.agents[0]||"",room:"",from:""},null));
+    list.insertAdjacentHTML("beforeend",rosterRow({box:"",agent:ROSTER_OPTS.agents[0]||"",room:"",from:""},null,false));
     var inp=list.lastElementChild.querySelector('[data-k="box"]');if(inp)inp.focus();
     return;
   }

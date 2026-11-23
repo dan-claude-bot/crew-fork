@@ -391,7 +391,8 @@ against it.
 
 The declared legs are: `hygiene`, `breaker`, `resume`, `attention`,
 `attention-audit`, `release`, `notify`, `installer`, `config`, `app`,
-`browser`, `app-armed`, `fleet`, `teardown`. Each has an entry below, headed by its row name —
+`browser`, `app-armed`, `fleet`, `workspaces`, `floor-provision`,
+`teardown`. Each has an entry below, headed by its row name —
 that heading IS the leg's name, and CI diffs the set of them against the
 harness's own declaration in both directions, so this runbook cannot fall a
 release behind the harness again without a red check.
@@ -817,6 +818,66 @@ fleet that is half down.
   restore on a box hired ninety minutes ago proves the restore *path*; it does
   not prove a production reviewer comes back without a re-login. That reading
   is the operator's, on the release candidate's own gate.
+
+### workspaces — `drill/rehearsal-workspaces.sh`
+
+One floor in front of **two fleet definitions** (#814): the round's own, a
+definition over its drill boxes made with `crew init`, and an empty second one
+made with `crew init --fleet second`. Both live under the leg's own
+`XDG_CONFIG_HOME` and host state directory, so the operator's fleets, index and
+host maintenance lock are never read or written. It runs after `fleet`, which
+moves the round's boxes, and before `teardown`.
+
+- **Needs** at least one role to have reached a box. Nothing else: no
+  credential, no browser.
+- **Reads** that the floor lists both fleets; that `/f/default/` holds exactly
+  the round's boxes and `/f/second/` none of them; that the unscoped API is the
+  home fleet's; that an unknown fleet is a 404 on the page and the API; that a
+  `pause` posted to the second fleet naming a round box is refused with the
+  box's crontab and the pause markers untouched; that a roster save in the
+  second fleet listing a round box is refused naming the round's fleet; that
+  `crew --fleet second up --dry-run` would refuse that box and plans nothing
+  for it; and that the second fleet's tick counts the round's running boxes
+  against the host cap.
+- **Produces** the `workspaces` row: `ok (two fleets on one floor: …)`,
+  `FAIL (…)`, `INCOMPLETE (…)`, `SKIPPED (blocked by role install: no
+  installed drill box)`, or `skip (--no-workspaces-drill)`.
+- **A failure means** one fleet's console, actions or roster can reach another
+  fleet's boxes, or the host cap does not see the other fleet.
+
+### floor-provision — `drill/rehearsal-workspaces.sh`
+
+A fleet **built from the floor's own buttons** (#815), in the same leg's floor:
+New fleet (`prov`, empty), a roster save adding one triage member
+(`crew-drill-floor`), **Up**'s plan, then **Create** — the plan of `crew up
+crew-drill-floor`, confirmed — which mints, starts and hires the box as one
+streamed job. Then **Hire** again, **Credentials** from the round's own pool
+entry, one `crew --fleet prov tick`, and the row's removal.
+
+- **Needs** a role to have reached a box (the leg runs after the roles) and the
+  round's `--creds gh:<name>`: Credentials is set from that pool entry, its
+  secret carried in a 0600 request body and never in an argv. Without it the
+  Credentials row is a `skip` and the leg reads INCOMPLETE. It mints a box, so
+  `--fast` leaves it out.
+- **Reads** that the new fleet is empty with an empty registry; that Up's plan
+  names `crew-drill-floor` (`WOULD create`, `WOULD hire`) and no round box; that
+  Create without its own plan is refused; that the confirmed Create streams its
+  output and finishes `done 0`; that a second job is refused while it runs,
+  naming it; that the member reads `hired` on the round's engine at the next
+  poll; that Hire again is the CLI's own no-op at the same version; that
+  Credentials logs the box in; that one host tick on the empty registry starts
+  nothing; that the journal holds one line per job; and that removing the row
+  leaves the box standing.
+- **Produces** the `floor-provision` row: `ok (a fleet made, a member created,
+  hired and logged in from the floor, one job at a time)`, `FAIL (…)`,
+  `INCOMPLETE (…)`, `SKIPPED (…)`, or `skip (--no-floor-provision-drill)` /
+  `skip (--fast: mints a box of its own)`.
+- **Its box** is removed by the leg unless the round runs with `--keep`; a kept
+  one is cleared with `drill/teardown.sh --box crew-drill-floor --yes`, and the
+  round refuses to start while it stands, as it does for the role boxes (#806).
+- **A failure means** a fleet cannot be stood up from the floor: a button that
+  runs something other than its verb, a plan that is skipped or names another
+  fleet's box, two jobs at once, or a member that does not come out hired.
 
 ### teardown — `drill/teardown.sh`
 

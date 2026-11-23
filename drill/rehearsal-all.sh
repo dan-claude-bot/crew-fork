@@ -67,6 +67,9 @@ CONFIG_ROLE=""
 # offline" non-comparison #494 exists to remove.
 FLEET_DRILL=1
 FLEET_STATUS=""
+# The fleets-as-workspaces leg (#814) and the floor-built fleet leg (#815).
+WORKSPACES_DRILL=1
+PROVISION_DRILL=1
 # Section A's installer driver runs once, against the first role box this
 # session actually reached. It acquires the same tree/ref as the role drills.
 # That box is also the config phase's box, on purpose — and the two phases only
@@ -147,6 +150,8 @@ while [ $# -gt 0 ]; do
     --no-breaker-drill) BREAKER_DRILL=0; shift ;;
     --no-notify-drill) NOTIFY_DRILL=0; shift ;;
     --no-fleet-drill) FLEET_DRILL=0; shift ;;
+    --no-workspaces-drill) WORKSPACES_DRILL=0; shift ;;
+    --no-floor-provision-drill) PROVISION_DRILL=0; shift ;;
     --app-boxes) APP_ARGS+=(--boxes "$2"); shift 2 ;;
     --app-allow-control) APP_ARGS+=(--allow-control); shift ;;
     --app-roster) APP_ROSTER="$2"; shift 2 ;;
@@ -158,7 +163,7 @@ while [ $# -gt 0 ]; do
     --legs) LEGS="$2"; shift 2 ;;
     --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
-       echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--app-boxes \"a b\"] [--app-allow-control]"
+       echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--no-workspaces-drill] [--no-floor-provision-drill] [--app-boxes \"a b\"] [--app-allow-control]"
        echo "         [--app-roster <path>] [--no-app-armed-self] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>[,tg:<name>]]"; exit 1 ;;
   esac
 done
@@ -199,7 +204,7 @@ fi
 if [ -n "$LEGS" ]; then
   RESUME_DRILL=0 ATTENTION_DRILL=0 ATTENTION_AUDIT_DRILL=0 RELEASE_DRILL=0
   HYGIENE_DRILL=0 BREAKER_DRILL=0 NOTIFY_DRILL=0 INSTALL_DRILL=0
-  CONFIG_DRILL=0 APP=0 FLEET_DRILL=0 KEEP=1
+  CONFIG_DRILL=0 APP=0 FLEET_DRILL=0 WORKSPACES_DRILL=0 PROVISION_DRILL=0 KEEP=1
   for leg in ${LEGS//,/ }; do
     case "$leg" in
       hygiene) HYGIENE_DRILL=1 ;;
@@ -213,6 +218,8 @@ if [ -n "$LEGS" ]; then
       config) CONFIG_DRILL=1 ;;
       app|browser|app-armed) APP=1 ;;
       fleet) FLEET_DRILL=1 ;;
+      workspaces) WORKSPACES_DRILL=1 ;;
+      floor-provision) PROVISION_DRILL=1 ;;
       teardown) KEEP=0 ;;
       *) echo "drill/rehearsal-all.sh: --legs: '$leg' is not a declared leg" >&2; exit 1 ;;
     esac
@@ -272,11 +279,20 @@ case " ${PASSTHRU[*]-} " in
           standing_boxes="$standing_boxes${standing_boxes:+ }crew-drill-$role" ;;
       esac
     done
-    if [ -n "$standing_roles" ]; then
+    # The floor-provision leg's own box (#815), when that leg is to run.
+    standing_floor=""
+    if [ "$PROVISION_DRILL" -eq 1 ]; then
+      case $'\n'"$existing_boxes"$'\n' in
+        *$'\n'"crew-drill-floor"$'\n'*)
+          standing_floor=" --box crew-drill-floor"
+          standing_boxes="$standing_boxes${standing_boxes:+ }crew-drill-floor" ;;
+      esac
+    fi
+    if [ -n "$standing_roles$standing_floor" ]; then
       echo "drill/rehearsal-all.sh: drill boxes from an earlier round still exist: $standing_boxes" >&2
       echo "         every role section mints a fresh box and refuses an existing one (#116);" >&2
       echo "         --legs and --only-failed re-run the role sections too. Clear them first:" >&2
-      echo "           drill/teardown.sh --roles \"$standing_roles\" --yes" >&2
+      echo "           drill/teardown.sh${standing_roles:+ --roles \"$standing_roles\"}$standing_floor --yes" >&2
       echo "         then re-run this command. Nothing has run." >&2
       exit 1
     fi
@@ -287,7 +303,7 @@ esac
 # resume wake, the attention dispatch — left out by name. Inside each role the
 # stub agent stands in, and the sections that read agent output say so.
 if [ "$FAST" -eq 1 ]; then
-  PARALLEL=1 APP=0 RELEASE_DRILL=0 RESUME_DRILL=0 ATTENTION_DRILL=0
+  PARALLEL=1 APP=0 RELEASE_DRILL=0 RESUME_DRILL=0 ATTENTION_DRILL=0 PROVISION_DRILL=0
   echo "== --fast: plumbing only — roles in parallel, a zero-action agent, no app pass; NOT a promotion reading"
 fi
 # omitted FLAG — the reason a leg that did not run gives: the operator's flag,
@@ -297,6 +313,7 @@ omitted() {
   elif [ "$FAST" -eq 1 ]; then
     case "$1" in
       --no-app|--no-release-drill|--no-resume-drill|--no-attention-drill) printf -- '--fast: reads a real agent session'"'"'s output' ;;
+      --no-floor-provision-drill) printf -- '--fast: mints a box of its own' ;;
       *) printf '%s' "$1" ;;
     esac
   else printf '%s' "$1"; fi
@@ -367,12 +384,14 @@ RELEASE_STATUS="$(mktemp)"
 APP_AGREEMENT_STATUS="$(mktemp)"
 APP_OUTPUT="$(mktemp)"
 FLEET_STATUS="$(mktemp)"
+WORKSPACES_STATUS="$(mktemp)"
+PROVISION_STATUS="$(mktemp)"
 # One row per independently runnable leg. The final record is checked against
 # this list before it is printed: adding a leg here without wiring a result is
 # therefore a visible red row, never an absence that looks like coverage.
 declare -a DECLARED_LEGS=(
   hygiene breaker resume attention attention-audit release notify
-  installer config app browser app-armed fleet teardown
+  installer config app browser app-armed fleet workspaces floor-provision teardown
 )
 
 leg_is_declared() {
@@ -428,6 +447,8 @@ cleanup_role_hygiene_files() {
   [ -z "${APP_AGREEMENT_STATUS:-}" ] || rm -f -- "$APP_AGREEMENT_STATUS"
   [ -z "${APP_OUTPUT:-}" ] || rm -f -- "$APP_OUTPUT"
   [ -z "${FLEET_STATUS:-}" ] || rm -f -- "$FLEET_STATUS"
+  [ -z "${WORKSPACES_STATUS:-}" ] || rm -f -- "$WORKSPACES_STATUS"
+  [ -z "${PROVISION_STATUS:-}" ] || rm -f -- "$PROVISION_STATUS"
   # A round interrupted inside the self-armed pass (#789) must not leave its
   # box armed or skewed: the stage says what was changed, and only that is
   # undone. Here and not under a second trap, for the reason given above.
@@ -1131,6 +1152,54 @@ else
   SUMMARY+=("skip       fleet  ($(omitted --no-fleet-drill))")
 fi
 [ "$FLEET_DRILL" -eq 0 ] || TIMINGS+=("fleet $((SECONDS - section_start))")
+
+# The workspaces (#814) and floor-provision (#815) legs: one floor in front of
+# two fleets, and a fleet built from the floor's buttons. AFTER the fleet leg,
+# which moves the round's boxes, and before teardown. Both run from one script
+# under its own XDG and host state, so nothing of the operator's is read; each
+# leg's row is its own folded verdict, read the way the fleet row is.
+section_start=$SECONDS
+workspaces_row() { # LEG STATUS-FILE RC OK-DETAIL
+  local verdict why
+  verdict="$(fleet_worst_verdict "$(cat "$2" 2>/dev/null)")" || verdict="" # Decision-path empty fallback: the leg reached no case
+  why="${verdict#* }"; verdict="${verdict%% *}"
+  if [ "$3" -ne 0 ] || [ "$verdict" = FAIL ]; then
+    SUMMARY+=("FAIL       $1  (${why:-the leg exited $3})"); overall=1
+  elif [ -z "$verdict" ]; then
+    SUMMARY+=("INCOMPLETE $1  (the leg reached no case)"); [ "$overall" -eq 1 ] || overall=2
+  elif [ "$verdict" = skip ]; then
+    SUMMARY+=("INCOMPLETE $1  (leg skipped a reading: $why)"); [ "$overall" -eq 1 ] || overall=2
+  else
+    SUMMARY+=("ok         $1  ($4)")
+  fi
+}
+WS_LEGS=""
+[ "$WORKSPACES_DRILL" -eq 0 ] || WS_LEGS="workspaces"
+[ "$PROVISION_DRILL" -eq 0 ] || WS_LEGS="$WS_LEGS${WS_LEGS:+ }floor-provision"
+if [ -n "$WS_LEGS" ] && [ -z "${DRILLED// /}" ]; then
+  [ "$WORKSPACES_DRILL" -eq 0 ] || SUMMARY+=("SKIPPED    workspaces  (blocked by role install: no installed drill box)")
+  [ "$PROVISION_DRILL" -eq 0 ] || SUMMARY+=("SKIPPED    floor-provision  (blocked by role install: no installed drill box)")
+  [ "$overall" -eq 1 ] || overall=2
+elif [ -n "$WS_LEGS" ]; then
+  echo
+  echo "############################################################"
+  echo "## fleets on one floor — workspaces and a floor-built fleet"
+  echo "############################################################"
+  WS_BOXES=""
+  for drilled_role in $DRILLED; do WS_BOXES="$WS_BOXES crew-drill-$drilled_role"; done
+  : >"$WORKSPACES_STATUS"; : >"$PROVISION_STATUS"
+  REHEARSAL_WORKSPACES_STATUS="$WORKSPACES_STATUS" REHEARSAL_PROVISION_STATUS="$PROVISION_STATUS" \
+  REHEARSAL_KEEP="$KEEP" REHEARSAL_CREDS="$CREDS" \
+    "$HERE/rehearsal-workspaces.sh" --boxes "${WS_BOXES# }" --agent "$AGENT" --legs "$WS_LEGS"
+  rc=$?
+  [ "$WORKSPACES_DRILL" -eq 0 ] || workspaces_row workspaces "$WORKSPACES_STATUS" "$rc" \
+    "two fleets on one floor: pages, actions and roster saves stay in their fleet; the host cap counts both"
+  [ "$PROVISION_DRILL" -eq 0 ] || workspaces_row floor-provision "$PROVISION_STATUS" "$rc" \
+    "a fleet made, a member created, hired and logged in from the floor, one job at a time"
+  TIMINGS+=("workspaces $((SECONDS - section_start))")
+fi
+[ "$WORKSPACES_DRILL" -eq 1 ] || SUMMARY+=("skip       workspaces  ($(omitted --no-workspaces-drill))")
+[ "$PROVISION_DRILL" -eq 1 ] || SUMMARY+=("skip       floor-provision  ($(omitted --no-floor-provision-drill))")
 
 # Validate the declaration/result agreement before teardown decides whether a
 # green round may remove its fixtures. Teardown's own row does not exist yet,

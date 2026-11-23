@@ -72,6 +72,63 @@ valid_version() {
   esac
   return 0
 }
+
+# --- fleets as workspaces (#814) ---------------------------------------------
+#
+# A host can carry several fleet definitions. Besides the one resolution has
+# always found (CREW_CONFIG_DIR, else ~/.config/crew, else $PWD), the INDEX
+# holds one complete definition per directory: $CREW_FLEETS_DIR/<id>/, by
+# default ~/.config/crew/fleets/<id>/. `--fleet <id>` (anywhere on the line)
+# or CREW_FLEET selects one of them by setting CREW_CONFIG_DIR, so everything
+# below — the store, the paused markers, the wake digests — is already that
+# fleet's. The id `default` names the old resolution itself.
+#
+# A fleet id is a box-name-shaped word: lower case, a letter first, at most 30
+# characters. It becomes a directory name and a URL segment on the floor, and
+# nothing else.
+valid_fleet_id() {
+  case "$1" in
+    ''|*[!a-z0-9-]*|[!a-z]*) return 1 ;;
+  esac
+  [ "${#1}" -le 30 ]
+}
+fleets_dir() {
+  if [ -n "${CREW_FLEETS_DIR:-}" ]; then printf '%s\n' "$CREW_FLEETS_DIR"
+  elif [ -n "${XDG_CONFIG_HOME:-}" ]; then printf '%s\n' "$XDG_CONFIG_HOME/crew/fleets"
+  else printf '%s\n' "$HOME/.config/crew/fleets"; fi
+}
+# `--fleet <id>` / `--fleet=<id>` is lifted off the line before anything reads
+# it, so it may sit before or after the verb. No verb takes a --fleet of its
+# own; this is the only reader.
+FLEET_ARG=""
+CONFIG_DIR_GIVEN="${CREW_CONFIG_DIR+x}"
+declare -a CREW_ARGV=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fleet)
+      [ "$#" -ge 2 ] || { echo "crew: --fleet needs a fleet id" >&2; exit 2; }
+      FLEET_ARG="$2"; shift 2 ;;
+    --fleet=*) FLEET_ARG="${1#--fleet=}"; shift ;;
+    *) CREW_ARGV+=("$1"); shift ;;
+  esac
+done
+set -- ${CREW_ARGV[@]+"${CREW_ARGV[@]}"}
+FLEET_ID="${FLEET_ARG:-${CREW_FLEET:-}}"
+FLEET_INIT_ID=""
+if [ -n "$FLEET_ID" ] && [ "$FLEET_ID" != default ]; then
+  valid_fleet_id "$FLEET_ID" ||
+    { echo "crew: '$FLEET_ID' is not a fleet id (lower case letters, digits and '-', a letter first, at most 30)" >&2; exit 2; }
+  if [ "${1:-}" = init ]; then
+    # `crew init --fleet <id>` makes the fleet, so it cannot be resolved yet:
+    # the id is the target, and resolution below runs as it always has.
+    FLEET_INIT_ID="$FLEET_ID"
+  else
+    [ -f "$(fleets_dir)/$FLEET_ID/fleet.roster" ] ||
+      { echo "crew: no fleet '$FLEET_ID' in $(fleets_dir) (fleet.roster is required; make one with: crew init --fleet $FLEET_ID)" >&2; exit 1; }
+    CREW_CONFIG_DIR="$(fleets_dir)/$FLEET_ID"
+    export CREW_CONFIG_DIR
+  fi
+fi
 if [ "${CREW_CONFIG_DIR+x}" = x ]; then
   if [ -z "$CREW_CONFIG_DIR" ] || [ ! -d "$CREW_CONFIG_DIR" ] ||
      [ ! -f "$CREW_CONFIG_DIR/fleet.roster" ]; then
@@ -85,7 +142,18 @@ else
   CONFIG_IS_OPERATOR=0
   if [ -n "${XDG_CONFIG_HOME:-}" ]; then CONFIG_CANDIDATE="$XDG_CONFIG_HOME/crew"
   else CONFIG_CANDIDATE="$HOME/.config/crew"; fi
-  for candidate in "$CONFIG_CANDIDATE" "$PWD" "$CREW_ROOT/examples"; do
+  # A host whose only definitions live in the fleets index (#814) resolves
+  # its first fleet before the shipped examples: those are fleets an operator
+  # made, and the examples are a scaffold nobody did.
+  FIRST_INDEX_FLEET=""
+  for candidate in "$(fleets_dir)"/*/; do
+    candidate="${candidate%/}"
+    if [ -f "$candidate/fleet.roster" ] && valid_fleet_id "$(basename "$candidate")" &&
+       [ "$(basename "$candidate")" != default ]; then
+      FIRST_INDEX_FLEET="$candidate"; break
+    fi
+  done
+  for candidate in "$CONFIG_CANDIDATE" "$PWD" ${FIRST_INDEX_FLEET:+"$FIRST_INDEX_FLEET"} "$CREW_ROOT/examples"; do
     if [ -d "$candidate" ] && [ -f "$candidate/fleet.roster" ]; then
       CONFIG_DIR="$(cd "$candidate" && pwd)"
       [ "$CONFIG_DIR" = "$CREW_ROOT/examples" ] || CONFIG_IS_OPERATOR=1
@@ -443,6 +511,68 @@ fallback_banner() {
   echo "crew: 'crew init' scaffolds one; until then no verb here will create a box or arm cron." >&2
 }
 
+# --- the host's fleets (#814) ---------------------------------------------------
+#
+# fleet_dirs — "<id>\t<dir>" per fleet definition on this host: the operator's
+# own location (~/.config/crew, id `default`) when it holds a fleet.roster, then
+# every directory of the index that does. Never $PWD and never examples/: these
+# are the definitions an operator WROTE, which is what a walk over the host or
+# a one-fleet-per-box check may read.
+fleet_dirs() {
+  local legacy d id
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then legacy="$XDG_CONFIG_HOME/crew"; else legacy="$HOME/.config/crew"; fi
+  if [ -f "$legacy/fleet.roster" ]; then printf 'default\t%s\n' "$(cd "$legacy" && pwd)"; fi
+  [ -d "$(fleets_dir)" ] || return 0
+  for d in "$(fleets_dir)"/*/; do
+    [ -f "$d/fleet.roster" ] || continue
+    id="$(basename "$d")"
+    valid_fleet_id "$id" || continue
+    printf '%s\t%s\n' "$id" "$(cd "$d" && pwd)"
+  done
+}
+# this_fleet_id — the id of the fleet this invocation resolved: its index name,
+# `default` for the operator's own location, or the directory itself for any
+# other CREW_CONFIG_DIR.
+this_fleet_id() {
+  local id dir
+  while IFS=$'\t' read -r id dir; do
+    [ "$dir" != "$CONFIG_DIR" ] || { printf '%s\n' "$id"; return 0; }
+  done < <(fleet_dirs)
+  printf '%s\n' "$CONFIG_DIR"
+}
+roster_names_in() { # DIR — the member names of one fleet's roster
+  [ -f "$1/fleet.roster" ] || return 0
+  awk '!/^[[:space:]]*(#|$)/ {print $1}' "$1/fleet.roster"
+}
+# fleet_claiming_box BOX — the id of ANOTHER fleet on this host whose roster
+# names BOX, or nothing. A box belongs to exactly one fleet: two fleets that
+# both list it would both tick it, restart it and reset it.
+fleet_claiming_box() { # BOX
+  local id dir
+  while IFS=$'\t' read -r id dir; do
+    [ "$dir" != "$CONFIG_DIR" ] || continue
+    if grep -qxF -- "$1" <<<"$(roster_names_in "$dir")"; then printf '%s\n' "$id"; return 0; fi
+  done < <(fleet_dirs)
+  return 0
+}
+# off_roster_lines — box names on stdin, one per line, printed indented; a box
+# another fleet on this host lists says which, so "not in the roster" never
+# reads as "nobody's" when it is simply another fleet's member.
+off_roster_lines() {
+  local name other
+  while read -r name; do
+    [ -n "$name" ] || continue
+    other="$(fleet_claiming_box "$name")"
+    if [ -n "$other" ]; then echo "  $name  (fleet $other)"; else echo "  $name"; fi
+  done
+}
+refuse_foreign_fleet_box() { # BOX VERB
+  local other
+  other="$(fleet_claiming_box "$1")"
+  [ -z "$other" ] ||
+    die "$2 refuses $1: fleet '$other' on this host already lists it, and a box belongs to exactly one fleet (both would tick, restart and reset it). Take it out of that fleet's roster first."
+}
+
 # `--flag` with no value is a malformed invocation and must exit 2 like every
 # other one. Reading "$2" directly under `set -u` makes BASH kill the process
 # with its own "unbound variable" and exit 1 — so `crew new --agent` reported
@@ -499,7 +629,7 @@ CMDS=(
   "create-all^^Create every roster box that does not exist yet^cmd_create_all"
   "hire^<box> [--role <r> --agent <a>] [--ref <version-or-git-ref>] [--pool <p>] [--force] [--allow-offroster]^Put a box on duty: engine installed, cron armed. Idempotent^cmd_hire"
   "hire-all^[--ref <version-or-git-ref>]^Hire every created roster box; skips those already at this version^cmd_hire_all"
-  "up^[--dry-run]^Converge the fleet: create missing, start stopped, hire, report^cmd_up"
+  "up^[<box>] [--dry-run]^Converge the fleet (or one member): create missing, start stopped, hire, report^cmd_up"
   "restart^<box>... | --all [--force-after <hours>]^Drain and cycle selected boxes; busy boxes are skipped^cmd_restart"
   "down^[--force]^Drain and stop every roster box; --force skips the drain^cmd_down"
   "reset^[--cut] <box>... | --all [--force-after <hours>]^Restore boxes to their 'armed' checkpoint; --cut takes that checkpoint^cmd_reset"
@@ -517,7 +647,7 @@ CMDS=(
   "upgrade^<box> | --all [--ref <version-or-git-ref>] [--force]^Ship the engine from this host and re-install it in place^cmd_upgrade"
   "gold^<box> [--force]^Snapshot a box as a gold image — cut PRE-login, credential-free^cmd_gold"
   "floor^[--port <n>] [--bind <a>] [--local] [--user <u>] [--pass <p>] [--roster <path>] [--interval <s>]^Serve the fleet-floor console on IP:PORT^cmd_floor"
-  "init^[config-dir]^Scaffold a new operator fleet definition^cmd_init"
+  "init^[config-dir] | --fleet <id>^Scaffold a new operator fleet definition, or a new empty fleet in the index^cmd_init"
   "profiles^^List the role and agent profiles this crew resolves^cmd_profiles"
   "help^[<command>]^This help, or 'crew help <command>' for one command^cmd_help"
 )
@@ -621,7 +751,22 @@ THE LIFECYCLE — two verbs around one human step in the middle
   into GitHub ('crew login <box> gh', or the floor), 'crew hire-all', then each
   agent ('crew login <box> agent'). Steady state afterwards is just 'crew up'.
 
+SEVERAL FLEETS ON ONE HOST (#814)
+
+  Besides the definition at ~/.config/crew (the fleet 'default'), a host can
+  carry any number of fleets in its index, ~/.config/crew/fleets/<id>/.
+      crew init --fleet <id>          a new, EMPTY fleet in the index
+      crew --fleet <id> <command>     run one command against that fleet
+  --fleet may sit anywhere on the line. A box belongs to exactly one fleet:
+  up, hire and the floor's roster refuse a box another fleet lists. The host
+  schedule (tick, restart --all, reset --all, with no fleet selected) walks
+  every fleet in turn; HOST_SCHEDULE=off in a fleet's fleet.conf keeps it
+  off that walk. HOST_MAX_RUNNING caps the boxes all fleets run together.
+  'crew floor' serves every fleet: its own at /, each other at /f/<id>/.
+
 ENVIRONMENT
+  CREW_FLEET        A fleet id, as --fleet: the index's <id>, or 'default'.
+  CREW_FLEETS_DIR   The fleets index (default ~/.config/crew/fleets).
   CREW_CONFIG_DIR   Select one fleet definition directory. An invalid value
                     is an error, never a silent fall-through to the examples.
   CREW_ROSTER       Roster-only override, for drills and fixtures. It does
@@ -2659,6 +2804,7 @@ cmd_hire() {
   case "$pool" in *[!A-Za-z0-9._:-]*) usage_error "--pool must be a safe token (letters, digits, . _ : -)" ;; esac
   resolve_engine "$ref"
   require_operator_config "crew hire"
+  refuse_foreign_fleet_box "$name" "crew hire"
   box_exists "$name" || die "no box named '$name' — crew new $name first"
   line="$(roster_line "$name")"
   if [ -n "$line" ] && [ "$explicit_profile" -eq 1 ]; then
@@ -2711,6 +2857,11 @@ cmd_hire_all() {
       echo "$name: not created — crew new $name first"
       continue
     fi
+    if [ -n "$(fleet_claiming_box "$name")" ]; then
+      echo "$name: REFUSED — fleet '$(fleet_claiming_box "$name")' on this host already lists it (a box belongs to exactly one fleet)"
+      failed=$((failed + 1))
+      continue
+    fi
     # `|| rc=$?`, not a bare call: crew's top-level `set -e` used to kill
     # hire-all on the first failing box, so one failed engine convergence
     # blocked the ENTIRE fleet (#49). A fleet verb reports what it could not
@@ -2752,15 +2903,22 @@ cmd_up() {
   # Same silently-ignored-flag defect as hire-all above: `crew up --dry-run`
   # is the ONLY accepted form, and anything else used to converge the fleet
   # without a word.
-  local dry=0
-  if [ "$#" -gt 0 ]; then
+  # `crew up <box>` (#815) is the same convergence for ONE roster member:
+  # created if missing, started if stopped, hired — and no other member is
+  # read, created, started or hired. It is what the floor's per-member Create
+  # runs, so adding one line never converges the rest of the roster with it.
+  local dry=0 only=""
+  while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1; shift ;;
-      *) usage_error "unknown argument '$1' (usage: $(synopsis_of up))" ;;
+      -*) usage_error "unknown argument '$1' (usage: $(synopsis_of up))" ;;
+      *) [ -z "$only" ] || usage_error "usage: $(synopsis_of up)"; only="$1"; shift ;;
     esac
-    [ "$#" -eq 0 ] || usage_error "usage: $(synopsis_of up)"
-  fi
+  done
   [ -f "$ROSTER" ] || die "no roster at $ROSTER"
+  if [ -n "$only" ] && ! read_roster | awk -v b="$only" '$1 == b {f=1} END {exit !f}'; then
+    die "up: '$only' is not a member of this fleet's roster ($ROSTER) — add its line first"
+  fi
   # --dry-run is a read: it is exactly how an operator inspects a host that has
   # no configuration yet, so it keeps working and carries the banner. The
   # converging form creates boxes and arms cron, so it refuses.
@@ -2796,7 +2954,17 @@ cmd_up() {
   local new_box=0 would_create=0 would_start=0 would_hire=0
   foreign_actor_check
   while read -r name agent role from; do
+    [ -z "$only" ] || [ "$name" = "$only" ] || continue
     validate_profiles "$agent" "$role"
+    if [ -n "$(fleet_claiming_box "$name")" ]; then
+      if [ "$dry" -eq 1 ]; then
+        echo "$name: WOULD REFUSE — fleet '$(fleet_claiming_box "$name")' on this host already lists it (a box belongs to exactly one fleet)"
+        continue
+      fi
+      echo "$name: REFUSED — fleet '$(fleet_claiming_box "$name")' on this host already lists it (a box belongs to exactly one fleet); take it out of that roster first"
+      failed=$((failed + 1))
+      continue
+    fi
     new_box=0
     if ! box_exists "$name"; then
       new_box=1
@@ -2871,6 +3039,7 @@ cmd_up() {
     echo
     echo "auth:"
     while read -r name _agent _role _from; do
+      [ -z "$only" ] || [ "$name" = "$only" ] || continue
       if bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then
         echo "  $name: logged in"
       else
@@ -2879,7 +3048,7 @@ cmd_up() {
     done < <(read_roster)
     echo
     echo "boxes on this host but not in the roster (left alone):"
-    comm -23 <(box_names | sort) <(roster_names | sort) | sed 's/^/  /' || true
+    comm -23 <(box_names | sort) <(roster_names | sort) | off_roster_lines || true
   fi
   # Convergence that could not converge must not exit 0: `crew up` is what
   # automation runs, and a success rc is the only thing most callers read. A
@@ -4343,13 +4512,30 @@ tick_conf_knobs() {
   # The label names too: wake_reasons reads an issue's labels by the conf's
   # names (a renamed `ready` is still the builder's queue, and not a stray for
   # triage), with the defaults the engine ships (#763 round 4).
-  for line in FLEET_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW TICK_BLIND_TICKS \
+  for line in FLEET_MAX_RUNNING HOST_MAX_RUNNING IDLE_TICKS_BEFORE_STOP HOST_TICK_READY_S BUDGET_WINDOW TICK_BLIND_TICKS \
               LABEL_NEEDS_TRIAGE LABEL_READY LABEL_CLAIMED LABEL_BLOCKED LABEL_EPIC LABEL_ATTENTION; do
     eval "$line=\"\$(tick_conf_value $line)\""
   done
-  : "${FLEET_MAX_RUNNING:=2}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}" "${TICK_BLIND_TICKS:=3}"
+  : "${FLEET_MAX_RUNNING:=2}" "${HOST_MAX_RUNNING:=$FLEET_MAX_RUNNING}" "${IDLE_TICKS_BEFORE_STOP:=3}" "${HOST_TICK_READY_S:=180}" "${BUDGET_WINDOW:=86400}" "${TICK_BLIND_TICKS:=3}"
   : "${LABEL_NEEDS_TRIAGE:=needs-triage}" "${LABEL_READY:=ready}" "${LABEL_CLAIMED:=claimed}" "${LABEL_BLOCKED:=blocked}" "${LABEL_EPIC:=epic}" "${LABEL_ATTENTION:=attention}"
 }
+# host_other_running — how many boxes the host's OTHER fleets are running:
+# every unpaused member of every other fleet definition (fleet_dirs) whose box
+# reads running. A box listed by two fleets is refused elsewhere; here it is
+# counted once, for the fleet that is not this one.
+host_other_running() {
+  local id dir name n=0
+  while IFS=$'\t' read -r id dir; do
+    [ "$dir" != "$CONFIG_DIR" ] || continue
+    while read -r name; do
+      [ -n "$name" ] || continue
+      [ ! -e "$dir/store/paused/$name" ] || continue
+      [ "$(box_state "$name")" != running ] || n=$((n + 1))
+    done <<<"$(roster_names_in "$dir")"
+  done < <(fleet_dirs)
+  printf '%s\n' "$n"
+}
+
 # tick_woken_file MEMBER — what the host woke this member for, one
 # `reason ts idle ctx` line per reason: the reason as wake_reasons named it,
 # the board's timestamp it carried, the member's idle count at the wake, and
@@ -4541,6 +4727,14 @@ tick_run() { # DRY_RUN
     [ ! -e "$(tick_paused_file "$name")" ] || continue
     [ "$(box_state "$name")" = running ] && running=$((running + 1))
   done <<<"$(read_roster)"
+  # The host's memory is one pool however many fleets share it (#814): the
+  # boxes other fleets on this host are running count against HOST_MAX_RUNNING
+  # (default: this fleet's own cap). Said only when another fleet exists.
+  local host_other=0
+  if fleet_dirs | awk -F '\t' -v d="$CONFIG_DIR" '$2 != d {f=1} END {exit !f}'; then
+    host_other="$(host_other_running)"
+    echo "  host: $running running in this fleet, $host_other in the host's other fleets (host cap $HOST_MAX_RUNNING)"
+  fi
   # 3. Each member, against the boards that moved since it last looked.
   while read -r name _agent roles _rest; do
     [ -n "$name" ] || continue
@@ -4648,6 +4842,11 @@ tick_run() { # DRY_RUN
             echo "  $name: held — $running of $FLEET_MAX_RUNNING boxes running; why=$why"
             held=$((held + 1))
             continue   # no digest recorded: the next tick re-evaluates
+          fi
+          if [ $((running + host_other)) -ge "$HOST_MAX_RUNNING" ]; then
+            echo "  $name: held — host cap: $((running + host_other)) of $HOST_MAX_RUNNING boxes running across the host's fleets; why=$why"
+            held=$((held + 1))
+            continue
           fi
           echo "  $name: starting why=$why"
           # Counted the moment it is up: a box whose guest is slow to answer is
@@ -5865,7 +6064,7 @@ cmd_upgrade() {
     echo
     echo "boxes on this host but not in the roster (left alone):"
     # shellcheck disable=SC2086  # splitting the name list is the point
-    printf '  %s\n' $skipped
+    printf '%s\n' $skipped | off_roster_lines
   fi
 }
 
@@ -5990,6 +6189,10 @@ cmd_floor() {
   # Always printed, not only when overridden: which boxes the console is
   # watching is the first thing to check when it shows something surprising.
   echo "  roster    $roster"
+  # The host's other fleets (#814), each at /f/<id>/ behind this one port.
+  local fleet_ids
+  fleet_ids="$(fleet_dirs | awk -F '\t' -v d="$CONFIG_DIR" '$2 != d {printf "%s%s", sep, $1; sep=", "}')"
+  [ -z "$fleet_ids" ] || echo "  fleets    this one ($(this_fleet_id)) at /, and $fleet_ids at /f/<id>/ — the page's switcher lists them"
   [ "$bind" = "127.0.0.1" ] \
     || echo "  NOTE      plain HTTP: the password crosses the network in the clear."
   echo
@@ -6001,13 +6204,21 @@ cmd_floor() {
 }
 
 cmd_init() {
-  [ "$#" -le 1 ] || usage_error "usage: crew init [config-dir]"
+  [ "$#" -le 1 ] || usage_error "usage: crew init [config-dir] | crew init --fleet <id>"
   local target="${1:-}" file name _agent _role _from
+  if [ -n "$FLEET_INIT_ID" ]; then
+    [ -z "$target" ] || usage_error "crew init --fleet <id> takes no directory: the fleet lives in $(fleets_dir)/<id>"
+    init_fleet "$FLEET_INIT_ID"
+    return 0
+  fi
   if [ -z "$target" ]; then
     if [ -n "${XDG_CONFIG_HOME:-}" ]; then target="$XDG_CONFIG_HOME/crew"
     else target="$HOME/.config/crew"; fi
   fi
-  [ ! -e "$target" ] ||
+  # A directory holding nothing but the fleets index (#814) is not a config
+  # to overwrite: the index lives under the default location, so a host that
+  # began with index fleets can still scaffold its default one.
+  [ ! -e "$target" ] || [ -z "$(find "$target" -mindepth 1 -maxdepth 1 ! -name fleets -print -quit 2>/dev/null)" ] ||
     die "refusing to overwrite existing operator config '$target'"
 
   mkdir -p "$target/agents"
@@ -6022,6 +6233,28 @@ cmd_init() {
   while read -r name _agent _role _from; do
     echo "  $name — crew login $name gh, then once hired crew login $name agent (or the floor's Credentials)"
   done < <(grep -vE '^[[:space:]]*(#|$)' "$target/fleet.roster")
+}
+
+# init_fleet ID — a new, EMPTY fleet in the index (#814). Unlike the plain
+# `crew init`, whose roster is the shipped seven-box example to read and edit,
+# a fleet made here (by hand or by the floor's "New fleet") starts with no
+# member at all: its roster keeps the example's header and nothing below it,
+# and repos.txt ships empty as it always has. Nothing can be created or armed
+# from it until somebody adds a line.
+init_fleet() { # ID
+  local id="$1" target file
+  target="$(fleets_dir)/$id"
+  [ ! -e "$target" ] || die "refusing to overwrite existing fleet '$id' at $target"
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then file="$XDG_CONFIG_HOME/crew"; else file="$HOME/.config/crew"; fi
+  [ "$id" != default ] || die "'default' names the definition at $file, not a fleet in the index"
+  mkdir -p "$target/agents"
+  awk '/^[[:space:]]*#/ || /^[[:space:]]*$/ {print; next} {exit}' \
+    "$CREW_ROOT/examples/fleet.roster" >"$target/fleet.roster"
+  for file in fleet.conf repos.txt notify-repos.txt doctrine.conf; do
+    cp "$CREW_ROOT/examples/$file" "$target/$file"
+  done
+  echo "initialized fleet '$id': $target (no members yet)"
+  echo "add members (the floor's Roster, or edit fleet.roster), then: crew --fleet $id up --dry-run"
 }
 
 cmd_profiles() {
@@ -6046,6 +6279,59 @@ cmd_profiles() {
   done
 }
 
+# --- the host schedule over every fleet (#814) ---------------------------------
+#
+# The three scheduled verbs — `crew tick`, `crew restart --all`, `crew reset
+# --all` — are one crontab line each, and a host with several fleets keeps
+# those three lines: run with no fleet selected (no --fleet, CREW_FLEET or
+# CREW_CONFIG_DIR) on a host whose index holds a fleet, each walks every fleet
+# definition on the host in turn, each fleet against its own roster and store,
+# each run taking the host maintenance lock itself. A fleet whose fleet.conf
+# says HOST_SCHEDULE=off is named and skipped: the walk never reaches it, and
+# only an explicit --fleet does. --all still means ONE fleet's roster.
+fleet_walk_applies() { # VERB ARGS...
+  local verb="$1" a all=0; shift
+  [ -z "${CREW_FLEET_WALK:-}" ] || return 1
+  [ -z "$FLEET_ID" ] && [ -z "$CONFIG_DIR_GIVEN" ] || return 1
+  for a in "$@"; do
+    case "$a" in --all) all=1 ;; --dry-run) : ;; --help|-h) return 1 ;; esac
+  done
+  case "$verb" in
+    tick) : ;;
+    restart|reset) [ "$all" -eq 1 ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ -d "$(fleets_dir)" ] || return 1
+  fleet_dirs | awk -F '\t' '$1 != "default" {f=1} END {exit !f}'
+}
+fleet_walk() { # VERB ARGS...
+  local verb="$1" id dir rc worst="" n=0; shift
+  while IFS=$'\t' read -r id dir; do
+    n=$((n + 1))
+    if grep -qE '^[[:space:]]*HOST_SCHEDULE=["'"'"']?off' "$dir/fleet.conf" 2>/dev/null; then
+      echo "== fleet $id: off the host schedule (HOST_SCHEDULE=off in $dir/fleet.conf) — not walked"
+      continue
+    fi
+    echo "== fleet $id ($dir)"
+    rc=0
+    CREW_FLEET_WALK=1 CREW_CONFIG_DIR="$dir" "$CREW_ROOT/cli/crew" "$verb" "$@" </dev/null || rc=$?
+    # The walk's status is the worst of the fleets': a box that failed (1)
+    # outranks one skipped busy (3), which outranks "nothing to do" (4); a
+    # fleet with nothing to do never hides one that acted (0).
+    case "$rc:$worst" in
+      0:|0:"$EXIT_NOTHING_TO_DO") worst=0 ;;
+      0:*) : ;;
+      "$EXIT_NOTHING_TO_DO":) worst="$EXIT_NOTHING_TO_DO" ;;
+      "$EXIT_NOTHING_TO_DO":*) : ;;
+      "$EXIT_SKIPPED_BUSY":|"$EXIT_SKIPPED_BUSY":0|"$EXIT_SKIPPED_BUSY":"$EXIT_NOTHING_TO_DO") worst="$EXIT_SKIPPED_BUSY" ;;
+      "$EXIT_SKIPPED_BUSY":*) : ;;
+      *) worst="$rc" ;;
+    esac
+  done < <(fleet_dirs)
+  [ "$n" -gt 0 ] || die "$verb: no fleet definition on this host"
+  return "${worst:-$EXIT_NOTHING_TO_DO}"
+}
+
 # --- dispatch: driven by the table, not by a hand-written case --------------
 
 cmd="${1:-help}"; shift || true
@@ -6057,4 +6343,8 @@ esac
 
 cmd="$(normalize_verb "$cmd")"
 fn="$(field "$cmd" fn)" || unknown_command "$cmd"
+if fleet_walk_applies "$cmd" "$@"; then
+  fleet_walk "$cmd" "$@"
+  exit $?
+fi
 "$fn" "$@"

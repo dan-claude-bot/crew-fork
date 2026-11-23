@@ -123,6 +123,9 @@ drill_box_names() {
   local role
   printf '%s\n' crew-drill
   for role in $KNOWN_ROLES; do printf 'crew-drill-%s\n' "$role"; done
+  # The floor-provision leg's own box (#815): minted by the floor's Create in
+  # a fleet the leg builds, and removed by `--box crew-drill-floor`.
+  printf '%s\n' crew-drill-floor
 }
 # The repository set carries one name the box set never can: the notifier
 # union leg mints a SECOND sandbox per role, `crew-drill-<role>-notify`, so

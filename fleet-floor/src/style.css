@@ -219,3 +219,25 @@ input.woff{color:#5a6a80}
    operator reading those entries as a list they were free to replace. */
 .regnote{font:10.5px/1.5 var(--mono);color:#7f97b0;background:#1d577214;border:1px solid #1d57722e;border-radius:7px;padding:7px 10px;margin-bottom:6px}
 .regnote code{font-family:var(--mono);color:#9fb4cb}
+/* fleets and jobs (#814, #815) */
+/* The switcher takes the repository label's place and size, so the bar keeps its width (the canvas byline is laid out under it). */
+.fleetbar .brand .fleetsel{margin-left:8px;font-family:var(--mono);font-weight:400;font-size:11px;letter-spacing:.06em;text-transform:none;color:#5fd6ff;background:transparent;border:1px solid #1d3346;border-radius:5px;padding:1px 2px;max-width:150px}
+.fleetbar .brand.fleets .rp{display:none}
+.jobbar{position:fixed;top:98px;left:50%;transform:translateX(-50%);z-index:55;display:flex;align-items:center;gap:10px;max-width:min(980px,92vw);font-family:var(--mono);font-size:11px;color:#cfe3f5;background:#0b1320;border:1px solid #2b4560;border-radius:8px;padding:7px 12px;box-shadow:0 6px 24px rgba(0,0,0,.45)}
+.jobbar.run{border-color:#3d6a93}
+.jobbar.ok{border-color:#2f7a57}
+.jobbar.bad{border-color:#8a2f2a}
+.jobbar .jf,.jobbar .je{color:#8aa0b8;white-space:nowrap}
+.jobbar .js{color:#9fb7cc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.jobbar .jbtn{font-family:var(--mono);font-size:10px;color:#cfe3f5;background:#101a28;border:1px solid #223148;border-radius:5px;padding:3px 7px;cursor:pointer}
+.jmark{font-weight:bold}.jobbar.ok .jmark,.jmark.ok{color:#5fce9b}.jobbar.bad .jmark,.jmark.bad{color:#ff5147}
+.spin{display:inline-block;width:11px;height:11px;flex:none;border:2px solid #2b4560;border-top-color:#5fce9b;border-radius:50%;animation:jspin .8s linear infinite;vertical-align:-2px}
+@keyframes jspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none;border-top-color:#2b4560;background:#5fce9b}}
+#jobov{display:none;position:fixed;inset:0;z-index:61;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
+#jobov .logbox{display:flex;flex-direction:column;width:min(1000px,94vw);height:min(720px,86vh);background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
+#jobov .jobstate{padding:8px 14px;font-family:var(--mono);font-size:11px;color:#9fb7cc;border-bottom:1px solid #142230}
+#jobov .jobout{flex:1;margin:0;overflow:auto;padding:10px 14px;font-family:var(--mono);font-size:11px;line-height:1.45;color:#cfe3f5;white-space:pre-wrap}
+#jobov .regacts{padding:10px 14px}
+.jobb{white-space:nowrap}
+[data-job].jheld{opacity:.45;cursor:not-allowed}
