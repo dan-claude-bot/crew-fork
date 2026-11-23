@@ -208,12 +208,28 @@ _release_ci() {
   echo "$verdict"
 }
 
+# _release_open_prs_json REPO — the repository's open pull requests that carry
+# the release label, as `gh pr list` JSON (number, author, headRefName).
+#
+# The label is matched HERE, never passed as `--label` (#811). gh answers a
+# label-filtered `pr list` from GitHub's search index, which is eventually
+# consistent: a pull request opened or labelled seconds ago is not in it yet.
+# The cut reads the board one second after its session exits, so on the rc6
+# round the session's own release PR — open, on the right branch, by this
+# identity, labelled — read as absent and the cut was counted as a failed try.
+# The unfiltered listing is read from the repository itself, and is current.
+_release_open_prs_json() {
+  gh pr list -R "$1" --state open --limit 100 \
+    --json number,author,headRefName,labels 2>/dev/null \
+    | jq -c --arg l "${LABEL_RELEASE:-release}" \
+        '[.[] | select(any(.labels[]?; .name == $l)) | {number, author, headRefName}]' 2>/dev/null
+}
+
 # _release_open_prs REPO — `num author branch` lines of the open pull requests
 # carrying the release label, whoever opened them.
 _release_open_prs() {
-  gh pr list -R "$1" --state open --label "${LABEL_RELEASE:-release}" --limit 20 \
-    --json number,author,headRefName \
-    --jq '.[] | "\(.number) \(.author.login) \(.headRefName)"' 2>/dev/null
+  _release_open_prs_json "$1" \
+    | jq -r '.[] | "\(.number) \(.author.login) \(.headRefName)"' 2>/dev/null
 }
 
 # _release_branch_is_other_track BRANCH REPO PREFIX — true when BRANCH is the
@@ -524,8 +540,7 @@ _release_after() {
     log "release: $repo — the session was refused by its lane (budget or breaker); not a try, the cut waits for the lane"
     return 1
   fi
-  num="$(gh pr list -R "$repo" --state open --label "${LABEL_RELEASE:-release}" --limit 20 \
-    --json number,author,headRefName 2>/dev/null \
+  num="$(_release_open_prs_json "$repo" \
     | jq -r --arg b "$branch" --arg me "$ME" \
         '.[] | select(.headRefName == $b and .author.login == $me) | .number' 2>/dev/null | head -1)"
   if [ -z "$num" ]; then

@@ -944,3 +944,41 @@ rehearsal_cleanup() {
     || echo "WARNING: could not disarm the drill cron; stop the box: box down $BOX_NAME" >&2
   return "$rc"
 }
+
+# rehearsal_tick — one duty tick on the box, re-fired while the box REFUSES it
+# (#810). Every row that ticks and then waits reads what that tick did; a tick
+# the lock refused did nothing, and a row that waits 900 s on it grades a
+# session that was never dispatched. On the rc6 round the triage stray's one
+# tick landed 2 s after the previous run's end, inside the window #809's
+# orphaned watcher sleep held the lock, and three rows waited out 1200 s before
+# reading FAIL. The breaker leg already declines to grade a skipped tick
+# (rehearsal_breaker_tick_was_skipped_from_log); this is that rule for every
+# other tick site.
+#
+# The refusal is read off the tick's OWN duty.log lines — the slice after the
+# line count taken just before it — in both of tick.sh's wordings (#726). A
+# refusal that outlasts the bound is a lock genuinely held, not a window: the
+# helper says so on its own line and returns 1, and the rows after it grade
+# what did not happen, loudly.
+rehearsal_tick() {
+  local tries=0 max="${REHEARSAL_TICK_TRIES:-6}" pause="${REHEARSAL_TICK_RETRY_S:-6}" before slice
+  while :; do
+    before="$(bx "wc -l < ~/duty/duty.log" 2>/dev/null | tr -d '[:space:]')" \
+      || before="" # Decision-path empty fallback: an unreadable log counts from its start
+    case "$before" in '' | *[!0-9]*) before=0 ;; esac
+    bx "~/duty/bin/tick.sh" || true
+    slice="$(bx "tail -n +$((before + 1)) ~/duty/duty.log" 2>/dev/null)" \
+      || slice="" # Decision-path empty fallback: an unreadable slice reads as a tick that ran
+    if ! grep -Fq -e 'tick skipped: previous run still holds the lock' \
+        -e 'tick skipped: lock held with no live holder' <<<"$slice"; then
+      return 0
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge "$max" ]; then
+      echo "   tick refused $tries times in a row — the duty lock is held, not a window; the rows below read a tick that did not run"
+      return 1
+    fi
+    echo "   tick refused by the duty lock ($(sed -n 's/.*tick skipped: //p' <<<"$slice" | tail -1)); re-ticking in ${pause}s ($tries of $max)"
+    sleep "$pause"
+  done
+}

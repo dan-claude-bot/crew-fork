@@ -489,6 +489,15 @@ engine when they are taken at their word:
   | the tick logged `FAILED` | `INCOMPLETE (<what> never ran: the tick logged FAILED (tick.sh rc N))` |
   | the log could not be measured or read back | `INCOMPLETE (<what> never ran: the box's duty.log could not be measured / read back)` |
 
+Every other tick the role drill fires (`rehearsal_tick`, in
+`drill/rehearsal-safety.sh`) follows the same rule (#810). If the tick's own
+`duty.log` lines are a `tick skipped:` refusal, in either wording, it re-fires
+up to six times, six seconds apart, instead of letting the row after it wait out
+its whole bound on a tick that never ran. A refusal that outlasts that is a held
+lock, not a window, and it is said on its own line above the rows that then
+read what did not happen. The rc6 round's triage stray waited 1200 s that way
+on a tick #809's orphaned watcher sleep had refused.
+
 ### resume — `drill/rehearsal-resume.sh`
 
 The builder resume lane: a settled check conclusion wakes a parked builder, an

@@ -101,6 +101,12 @@ to `RELEASE_MAX_TRIES` times; then the track state is refused and said, so
 a session that cannot open its pull request (a missing label, an assembler
 refusal, a leftover fork branch) never spends the lane's whole budget.
 
+The read-back lists the repository's open pull requests and matches the
+`release` label in the engine. It never asks `gh pr list --label`, which gh
+answers from GitHub's search index: a pull request opened seconds earlier is
+not in it yet, and the session's own cut would read as a failed try (#811).
+The open-cut hold reads the same listing.
+
 ## When the cut is wrong
 
 - **Stale** — main moved past the cut on the track (another PR merged
