@@ -222,6 +222,16 @@ v="${DRILL_PV_VERDICT:-ok a floor-built fleet}"; [ "$v" = - ] && v=""
 exit "${DRILL_WS_RC:-0}"
 WORKSPACES
 chmod +x "$HARNESS/rehearsal-workspaces.sh"
+# The service leg (#822): its status channel gets the verdict its env names.
+cat >"$HARNESS/rehearsal-service.sh" <<'SERVICE'
+#!/usr/bin/env bash
+printf 'service\n' >>"${DRILL_SECTION_LOG:-/dev/null}"
+[ -z "${DRILL_SVC_LOG:-}" ] || printf '%s\n' "$*" >>"$DRILL_SVC_LOG"
+v="${DRILL_SVC_VERDICT:-ok a scratch service}"; [ "$v" = - ] && v=""
+[ -z "${REHEARSAL_SERVICE_STATUS:-}" ] || [ -z "$v" ] || printf '%s\n' "$v" >>"$REHEARSAL_SERVICE_STATUS"
+exit "${DRILL_SVC_RC:-0}"
+SERVICE
+chmod +x "$HARNESS/rehearsal-service.sh"
 
 round_run() {  # <script> <roles> <ref>
   local script="$1" roles="$2" ref="$3"
@@ -305,7 +315,7 @@ t drill-tree-record-names-head 1 \
   "$(grep -cF "## drilled source: $SECOND (tree $SOURCE)" <<<"$tree_out")"
 t drill-tree-phase-zero-names-head 1 \
   "$(grep -cF "phase 0: crew at $SECOND (tree $SOURCE), static checks" <<<"$tree_out")"
-t drill-record-enumerates-all-declared-legs 16 \
+t drill-record-enumerates-all-declared-legs 17 \
   "$(grep -c '^## leg \(executed\|not-executed\) ' <<<"$tree_out")"
 t drill-record-names-browser-exclusion 1 \
   "$(grep -c '^## leg not-executed browser  (skip; --no-app)' <<<"$tree_out")"
@@ -389,7 +399,7 @@ t w776-parallel-says-so 1 "$(grep -c '^== --parallel: running triage builder rev
 t w776-parallel-heartbeat-names-who-is-still-running 1 \
   "$(grep -c '^== --parallel: still running: triage' <<<"$w776_out" | awk '{print ($1 >= 1)}')"
 t w776-parallel-wall-time-line 1 \
-  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · reviewer [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · service [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s \(roles in parallel\)$' <<<"$w776_out")"
 t w776-parallel-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w776_out")"
 # #783: each role is told which roles tick alongside it.
 t w783-parallel-each-role-hears-its-siblings "builder:triage reviewer|reviewer:triage builder|triage:builder reviewer" \
@@ -403,7 +413,7 @@ w776_out="$(DRILL_SIBLINGS_LOG="$W783_SIBS" DRILL_SLEEP_triage=0.6 w776_round --
 t w776-sequential-keeps-role-order "triage builder" "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
 t w783-sequential-roles-have-no-siblings "builder:|triage:" "$(sort "$W783_SIBS" | paste -sd'|' -)"
 t w776-sequential-wall-time-line 1 \
-  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
+  "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · service [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
 
 # --legs: only the named legs run; every other leg says it was not selected.
 : >"$ROLE_LOG"
@@ -623,9 +633,9 @@ t drill-phase2-records-browser-executed 1 \
 t drill-phase2-records-app-armed-on-its-own-box 1 \
   "$(grep -c "^## leg executed app-armed  (ok; agreement compared; the round's own box" \
     <<<"$phase2_out")"
-t drill-phase2-failure-invokes-config-and-app $'config\napp\napp\nworkspaces' "$(cat "$SECTION_LOG")"
-t drill-phase2-summary-counts-seven-passed 1 \
-  "$(grep -cE '^## section states: 7 passed, 1 failed, [0-9]+ skipped/not-run$' <<<"$phase2_out")"
+t drill-phase2-failure-invokes-config-and-app $'config\napp\napp\nworkspaces\nservice' "$(cat "$SECTION_LOG")"
+t drill-phase2-summary-counts-eight-passed 1 \
+  "$(grep -cE '^## section states: 8 passed, 1 failed, [0-9]+ skipped/not-run$' <<<"$phase2_out")"
 
 if armed_out="$(DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" \
     DRILL_SECTION_LOG="$SECTION_LOG" DRILL_REMOTE="$REMOTE" \
@@ -1278,7 +1288,7 @@ runbook_prose_legs() {  # the enumerating sentence, read to its blank line
     | grep -oE '`[a-z][a-z-]*`' | tr -d '`' | sort -u
 }
 
-t drill-runbook-harness-declares-legs 16 "$(runbook_harness_legs | n)"
+t drill-runbook-harness-declares-legs 17 "$(runbook_harness_legs | n)"
 t drill-runbook-documents-every-declared-leg '' \
   "$(comm -23 <(runbook_harness_legs) <(runbook_documented_legs) | paste -sd, -)"
 t drill-runbook-documents-no-undeclared-leg '' \
@@ -1293,7 +1303,7 @@ t drill-runbook-prose-list-matches-declaration '' \
 # this issue's own finding. Both the census and the runbook go stale silently,
 # so the assertion above has to red on a declaration it has never seen.
 MUTATED_ALL="$TMP/rehearsal-all-extra-leg.sh"
-sed 's/^  installer config app browser app-armed fleet workspaces floor-provision teardown$/  installer config app browser app-armed fleet workspaces floor-provision teardown newleg/' \
+sed 's/^  installer config app browser app-armed fleet workspaces floor-provision service teardown$/  installer config app browser app-armed fleet workspaces floor-provision service teardown newleg/' \
   "$ROOT/drill/rehearsal-all.sh" >"$MUTATED_ALL"
 t drill-runbook-extra-leg-mutation-applied 1 \
   "$(sed -n '/^declare -a DECLARED_LEGS=(/,/^)/p' "$MUTATED_ALL" \
@@ -5241,7 +5251,7 @@ t w814-one-script-runs-both-legs-once 1 "$(grep -cx workspaces "$SECTION_LOG")"
 t w814-the-leg-is-driven-from-the-drilled-roster 1 \
   "$(grep -cFx -- '--boxes crew-drill-reviewer --agent claude --legs workspaces floor-provision|keep=1|creds=' "$WS_LOG_F")"
 t w814-each-row-once 2 "$(grep -cE '^##   .*  (workspaces|floor-provision)  ' <<<"$ws_out")"
-t w814-the-wall-time-names-the-section 1 "$(grep -cE '^## wall time: .*· workspaces [0-9]+m[0-9]{2}s · total' <<<"$ws_out")"
+t w814-the-wall-time-names-the-section 1 "$(grep -cE '^## wall time: .*· workspaces [0-9]+m[0-9]{2}s · (service [0-9]+m[0-9]{2}s · )?total' <<<"$ws_out")"
 ws_out="$(DRILL_WS_VERDICT='FAIL a pause reached crew-drill-reviewer' DRILL_WS_RC=0 ws_round)"
 t w814-a-fail-verdict-reds-the-round 1 "$(grep -cx 'rc=1' <<<"$ws_out")"
 t w814-the-fail-names-why 1 "$(grep -c '^## leg executed workspaces  (FAIL; a pause reached crew-drill-reviewer)$' <<<"$ws_out")"
@@ -5314,5 +5324,25 @@ w818_out="$(DRILL_FLOOR_MARK="$W818_MARK" ws_round --no-floor-provision-drill)"
 t w818-without-the-leg-the-hint-is-the-roles 1 \
   "$(grep -c '^## When you are done with them:  drill/teardown.sh --roles "reviewer"$' <<<"$w818_out")"
 rm -f "$W818_MARK"
+
+# --- #822: the service leg's row ---------------------------------------------------
+: >"$SECTION_LOG"
+svc_out="$(ws_round)"
+t w822-service-row-is-executed 1 \
+  "$(grep -c '^## leg executed service  (ok; the service set up, read and purged: its account, grant, floor, a box in its project, its tick)$' <<<"$svc_out")"
+t w822-service-runs-once 1 "$(grep -cx service "$SECTION_LOG")"
+svc_out="$(DRILL_SVC_VERDICT='skip service: the leg ran — needs passwordless sudo on the drill host (sudo -n)' ws_round)"
+t w822-no-sudo-is-incomplete 1 "$(grep -c '^## leg not-executed service  (INCOMPLETE; leg skipped a reading: service: the leg ran — needs passwordless sudo' <<<"$svc_out")"
+svc_out="$(DRILL_SVC_VERDICT='FAIL service: a caller outside the group is refused — expected [1] got [0]' ws_round)"
+t w822-a-fail-reds-the-round 1 "$(grep -c '^## leg executed service  (FAIL; service: a caller outside the group is refused' <<<"$svc_out")"
+: >"$SECTION_LOG"
+svc_out="$(ws_round --no-service-drill)"
+t w822-opt-out-is-a-skip 1 "$(grep -c '^## leg not-executed service  (skip; --no-service-drill)$' <<<"$svc_out")"
+t w822-opt-out-runs-nothing 0 "$(grep -cx service "$SECTION_LOG" || true)"
+svc_out="$(ws_round --fast)"
+t w822-fast-leaves-it-out 1 "$(grep -c '^## leg not-executed service  (skip; --fast: mints a box of its own)$' <<<"$svc_out")"
+t w822-the-leg-uses-scratch-names-only 0 \
+  "$(grep -nE '(^|[^-])/etc/crew([^-]|$)|/var/lib/crew([^-]|$)|--user crew([^-]|$)|crew-floor\.service' "$ROOT/drill/rehearsal-service.sh" | grep -vE ':[0-9]+:\s*#' | grep -c . || true)"
+t w822-the-leg-is-documented 1 "$(runbook_documented_legs | grep -cx service)"
 
 suite_finish

@@ -3387,23 +3387,20 @@ PATH="$CL_TMP/bin:$PATH" CREW_CONFIG_DIR="$CL_OPCONF" \
   "$CL_ROOT/cli/crew" floor --help </dev/null >"$CL_TMP/op-help.out" 2>&1 || CL_RC=$?
 t "floor: --help still exits 0 with an operator config dir" 0 "$CL_RC"
 
-# $PWD discovery is an operator definition too — the third resolution hop, and
-# the one a developer running crew from a config directory relies on. Both
-# processes must agree it is one: the CLI passes the refusal, and the floor.py
-# it execs resolves the same directory and serves.
+# #822: $PWD is no longer a resolution hop. crew is one service per machine and
+# its fleets are the service's index; a config directory you stand in is not
+# one of them. Both processes agree: the CLI resolves the shipped examples and
+# refuses to serve them.
 CL_RC=0
 (cd "$CL_OPCONF" && env -u CREW_CONFIG_DIR -u XDG_CONFIG_HOME -u CREW_ROSTER \
-   -u CREW_FLOOR_ROSTER HOME="$CL_FB_HOME" PATH="$CL_TMP/bin:$PATH" \
+   -u CREW_FLOOR_ROSTER HOME="$CL_FB_HOME" CREW_FLEETS_DIR="$CL_TMP/no-fleets" PATH="$CL_TMP/bin:$PATH" \
    timeout 4 "$CL_ROOT/cli/crew" floor --local --port $((CL_PORT_BASE + 12)) </dev/null) \
    >"$CL_TMP/pwd-floor.out" 2>&1 || CL_RC=$?
 if grep -q 'refuses under the shipped example' "$CL_TMP/pwd-floor.out"; then
-  fail "floor: \$PWD discovery still counts as an operator definition" \
-       "$(cat "$CL_TMP/pwd-floor.out")"
-elif grep -q 'serving fleet-floor on' "$CL_TMP/pwd-floor.out"; then
-  ok "floor: \$PWD discovery still counts as an operator definition"
+  ok "floor: \$PWD is not a fleet definition — the floor refuses the examples there"
 else
-  fail "floor: \$PWD discovery still counts as an operator definition" \
-       "the server never came up: rc=$CL_RC $(cat "$CL_TMP/pwd-floor.out")"
+  fail "floor: \$PWD is not a fleet definition — the floor refuses the examples there" \
+       "$(cat "$CL_TMP/pwd-floor.out")"
 fi
 
 # Validation parity: floor.py's completeness check ran only for operator

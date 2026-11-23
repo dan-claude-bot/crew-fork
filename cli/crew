@@ -62,6 +62,9 @@ source "$CREW_ROOT/shared/lib/host/pause.sh"
 source "$CREW_ROOT/shared/lib/host/credentials.sh"
 # shellcheck source=shared/lib/host/pool.sh
 source "$CREW_ROOT/shared/lib/host/pool.sh"
+# crew as a system service (#822): setup, check and teardown.
+# shellcheck source=shared/lib/host/service.sh
+source "$CREW_ROOT/shared/lib/host/service.sh"
 ROLES_DIR="$CREW_ROOT/shared/conf/roles"
 AGENTS_DIR="$CREW_ROOT/shared/conf/agents"
 
@@ -77,15 +80,50 @@ valid_version() {
   return 0
 }
 
+# --- crew as a service (#822) -------------------------------------------------
+#
+# crew is ONE install per machine, and everything a fleet owns belongs to a
+# service account, not to whoever typed the command: the definitions, stores
+# and credentials under /var/lib/crew, the boxes in that account's box project
+# (`box grant --service`), the schedule and the floor as systemd units.
+# `crew service setup` (as root) makes all of it and writes
+# /etc/crew/service.conf, which is how every later invocation knows.
+#
+# On a service host, an operator's `crew <verb>` re-runs itself as the service
+# account — through the sudoers rule setup wrote for its group, or runuser for
+# root — so every file and box it touches is the service's. Someone outside the
+# group is refused and told which group to join. The verbs that manage the
+# install or the service itself (service, help, versions, use, uninstall) run as
+# the caller.
+#
+# There is no per-user mode (operator ruling on #822). Without service.conf,
+# crew reads the shipped examples for inspection (status, profiles, up
+# --dry-run) and refuses everything that would act. CREW_CONFIG_DIR — and
+# CREW_ETC_DIR / CREW_DATA_DIR / CREW_FLEETS_DIR — remain as the knobs the
+# suites and the drill point at fixtures; they are not a mode to run a fleet in.
+CREW_ETC_DIR="${CREW_ETC_DIR:-/etc/crew}"
+SERVICE_CONF="$CREW_ETC_DIR/service.conf"
+service_conf_value() { # KEY — from service.conf, read, never sourced
+  [ -f "$SERVICE_CONF" ] || return 0
+  sed -n "s/^$1=//p" "$SERVICE_CONF" | tail -1 | tr -d "\"'"
+}
+SERVICE_ON=0
+[ ! -f "$SERVICE_CONF" ] || SERVICE_ON=1
+SERVICE_USER="$(service_conf_value CREW_SERVICE_USER)"; SERVICE_USER="${SERVICE_USER:-crew}"
+SERVICE_GROUP="$(service_conf_value CREW_SERVICE_GROUP)"; SERVICE_GROUP="${SERVICE_GROUP:-crew}"
+SERVICE_CLI="$(service_conf_value CREW_SERVICE_CLI)"; SERVICE_CLI="${SERVICE_CLI:-/usr/local/bin/crew}"
+if [ -z "${CREW_DATA_DIR:-}" ]; then CREW_DATA_DIR="$(service_conf_value CREW_DATA_DIR)"; fi
+CREW_DATA_DIR="${CREW_DATA_DIR:-/var/lib/crew}"
+
 # --- fleets as workspaces (#814) ---------------------------------------------
 #
-# A host can carry several fleet definitions. Besides the one resolution has
-# always found (CREW_CONFIG_DIR, else ~/.config/crew, else $PWD), the INDEX
-# holds one complete definition per directory: $CREW_FLEETS_DIR/<id>/, by
-# default ~/.config/crew/fleets/<id>/. `--fleet <id>` (anywhere on the line)
-# or CREW_FLEET selects one of them by setting CREW_CONFIG_DIR, so everything
-# below — the store, the paused markers, the wake digests — is already that
-# fleet's. The id `default` names the old resolution itself.
+# A host carries several fleet definitions, one per directory of the INDEX:
+# $CREW_FLEETS_DIR/<id>/, by default /var/lib/crew/fleets/<id>/. `--fleet <id>`
+# (anywhere on the line) or CREW_FLEET selects one by setting CREW_CONFIG_DIR,
+# so everything below — the store, the paused markers, the wake digests — is
+# already that fleet's. With one fleet on the host it is selected; with several,
+# a verb that acts on one fleet must be told which (the host schedule walks
+# them all, and the floor serves them all).
 #
 # A fleet id is a box-name-shaped word: lower case, a letter first, at most 30
 # characters. It becomes a directory name and a URL segment on the floor, and
@@ -98,8 +136,7 @@ valid_fleet_id() {
 }
 fleets_dir() {
   if [ -n "${CREW_FLEETS_DIR:-}" ]; then printf '%s\n' "$CREW_FLEETS_DIR"
-  elif [ -n "${XDG_CONFIG_HOME:-}" ]; then printf '%s\n' "$XDG_CONFIG_HOME/crew/fleets"
-  else printf '%s\n' "$HOME/.config/crew/fleets"; fi
+  else printf '%s\n' "$CREW_DATA_DIR/fleets"; fi
 }
 # `--fleet <id>` / `--fleet=<id>` is lifted off the line before anything reads
 # it, so it may sit before or after the verb. No verb takes a --fleet of its
@@ -118,8 +155,34 @@ while [ "$#" -gt 0 ]; do
 done
 set -- ${CREW_ARGV[@]+"${CREW_ARGV[@]}"}
 FLEET_ID="${FLEET_ARG:-${CREW_FLEET:-}}"
+
+# The re-run as the service account (#822), once the line is read: the fleet
+# travels as --fleet, because sudo resets the environment.
+case "${1:-}" in
+  service|help|-h|--help|-V|--version|versions|use|uninstall) : ;;
+  *)
+    # A run pointed at a fixture (CREW_CONFIG_DIR, CREW_FLEETS_DIR — the suites
+    # and the drill's own fleets) is not the service's and is never re-run.
+    if [ "$SERVICE_ON" -eq 1 ] && [ "$(id -un)" != "$SERVICE_USER" ] &&
+       [ -z "$CONFIG_DIR_GIVEN" ] && [ -z "${CREW_FLEETS_DIR:-}" ]; then
+      declare -a SERVICE_ARGS=()
+      [ -z "$FLEET_ID" ] || SERVICE_ARGS=(--fleet "$FLEET_ID")
+      if [ "$(id -u)" -eq 0 ]; then
+        exec runuser -u "$SERVICE_USER" -- env HOME="$CREW_DATA_DIR" "$SERVICE_CLI" ${SERVICE_ARGS[@]+"${SERVICE_ARGS[@]}"} "$@"
+      fi
+      case " $(id -nG 2>/dev/null) " in
+        *" $SERVICE_GROUP "*)
+          exec sudo -n -H -u "$SERVICE_USER" -- "$SERVICE_CLI" ${SERVICE_ARGS[@]+"${SERVICE_ARGS[@]}"} "$@" ;;
+      esac
+      echo "crew: this host runs crew as the '$SERVICE_USER' service, and $(id -un) is not in its group '$SERVICE_GROUP'." >&2
+      echo "crew: join it (sudo usermod -aG $SERVICE_GROUP $(id -un), then log in again), or run crew as root." >&2
+      exit 1
+    fi ;;
+esac
+
 FLEET_INIT_ID=""
-if [ -n "$FLEET_ID" ] && [ "$FLEET_ID" != default ]; then
+FLEET_AUTO_MANY=""
+if [ -n "$FLEET_ID" ]; then
   valid_fleet_id "$FLEET_ID" ||
     { echo "crew: '$FLEET_ID' is not a fleet id (lower case letters, digits and '-', a letter first, at most 30)" >&2; exit 2; }
   if [ "${1:-}" = init ]; then
@@ -144,20 +207,21 @@ if [ "${CREW_CONFIG_DIR+x}" = x ]; then
 else
   CONFIG_DIR=""
   CONFIG_IS_OPERATOR=0
-  if [ -n "${XDG_CONFIG_HOME:-}" ]; then CONFIG_CANDIDATE="$XDG_CONFIG_HOME/crew"
-  else CONFIG_CANDIDATE="$HOME/.config/crew"; fi
-  # A host whose only definitions live in the fleets index (#814) resolves
-  # its first fleet before the shipped examples: those are fleets an operator
-  # made, and the examples are a scaffold nobody did.
+  # No fleet named: the index's only fleet, or — on a host with several — the
+  # first, remembered so a verb that acts on ONE fleet can refuse to guess
+  # (checked at dispatch). With no fleet at all, the shipped examples, which
+  # every acting verb refuses (#216).
   FIRST_INDEX_FLEET=""
+  index_fleets=0
   for candidate in "$(fleets_dir)"/*/; do
     candidate="${candidate%/}"
-    if [ -f "$candidate/fleet.roster" ] && valid_fleet_id "$(basename "$candidate")" &&
-       [ "$(basename "$candidate")" != default ]; then
-      FIRST_INDEX_FLEET="$candidate"; break
+    if [ -f "$candidate/fleet.roster" ] && valid_fleet_id "$(basename "$candidate")"; then
+      index_fleets=$((index_fleets + 1))
+      [ -n "$FIRST_INDEX_FLEET" ] || FIRST_INDEX_FLEET="$candidate"
     fi
   done
-  for candidate in "$CONFIG_CANDIDATE" "$PWD" ${FIRST_INDEX_FLEET:+"$FIRST_INDEX_FLEET"} "$CREW_ROOT/examples"; do
+  [ "$index_fleets" -le 1 ] || FLEET_AUTO_MANY="$index_fleets"
+  for candidate in ${FIRST_INDEX_FLEET:+"$FIRST_INDEX_FLEET"} "$CREW_ROOT/examples"; do
     if [ -d "$candidate" ] && [ -f "$candidate/fleet.roster" ]; then
       CONFIG_DIR="$(cd "$candidate" && pwd)"
       [ "$CONFIG_DIR" = "$CREW_ROOT/examples" ] || CONFIG_IS_OPERATOR=1
@@ -432,7 +496,9 @@ RESTART_READY_POLL_S="${CREW_RESTART_READY_POLL_SECONDS:-2}"
 # not configuration. The explicit override exists for fixtures and for an
 # operator running two fleet definitions on one host, who wants two schedules
 # that do not share a lock.
-HOST_STATE_DIR="${CREW_HOST_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/crew}"
+# On a service host, the service's own data dir (#822).
+if [ "$SERVICE_ON" -eq 1 ]; then HOST_STATE_DIR="${CREW_HOST_STATE_DIR:-$CREW_DATA_DIR/state}"
+else HOST_STATE_DIR="${CREW_HOST_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/crew}"; fi
 HOST_JOB_LOG="$HOST_STATE_DIR/host-maintenance.log"
 HOST_JOB_LOCK="$HOST_STATE_DIR/.host-maintenance.lock"
 # tick.sh's number, for tick.sh's reason: a log that grows without bound is a
@@ -501,10 +567,11 @@ require_operator_config() { # VERB
   if [ "$CONFIG_IS_OPERATOR" -eq 1 ]; then return 0; fi
   die "$1 refuses under the shipped example fleet definition at $CONFIG_DIR.
   Nobody configured this host, so there is nothing here to create or arm: the
-  examples are a scaffold to read, not a fleet to run. Scaffold your own —
-    crew init
-  then edit the generated files (repos.txt ships EMPTY: name your repos) and
-  run again. 'crew status', 'crew profiles' and 'crew up --dry-run' keep
+  examples are a scaffold to read, not a fleet to run. crew runs as a system
+  service (#822) —
+    sudo crew service setup          # once per machine
+    crew init --fleet <id>           # a fleet, or the floor's New fleet
+  then add members (repos.txt ships EMPTY: name your repos) and run again. 'crew status', 'crew profiles' and 'crew up --dry-run' keep
   working here, which is how you inspect a host in this state."
 }
 
@@ -520,20 +587,17 @@ fallback_banner() {
   if [ "$CONFIG_IS_OPERATOR" -eq 1 ]; then return 0; fi
   echo "crew: NOTE this host has NO operator fleet definition." >&2
   echo "crew: reading the shipped examples at $CONFIG_DIR — a scaffold, not an operator definition." >&2
-  echo "crew: 'crew init' scaffolds one; until then no verb here will create a box or arm cron." >&2
+  echo "crew: 'sudo crew service setup' sets this host up; until then no verb here will create a box or arm cron." >&2
 }
 
 # --- the host's fleets (#814) ---------------------------------------------------
 #
-# fleet_dirs — "<id>\t<dir>" per fleet definition on this host: the operator's
-# own location (~/.config/crew, id `default`) when it holds a fleet.roster, then
-# every directory of the index that does. Never $PWD and never examples/: these
-# are the definitions an operator WROTE, which is what a walk over the host or
-# a one-fleet-per-box check may read.
+# fleet_dirs — "<id>\t<dir>" per fleet definition on this host: every directory
+# of the index that holds a fleet.roster, by name. These are the definitions
+# the service owns, which is what a walk over the host or a one-fleet-per-box
+# check may read.
 fleet_dirs() {
-  local legacy d id
-  if [ -n "${XDG_CONFIG_HOME:-}" ]; then legacy="$XDG_CONFIG_HOME/crew"; else legacy="$HOME/.config/crew"; fi
-  if [ -f "$legacy/fleet.roster" ]; then printf 'default\t%s\n' "$(cd "$legacy" && pwd)"; fi
+  local d id
   [ -d "$(fleets_dir)" ] || return 0
   for d in "$(fleets_dir)"/*/; do
     [ -f "$d/fleet.roster" ] || continue
@@ -543,8 +607,7 @@ fleet_dirs() {
   done
 }
 # this_fleet_id — the id of the fleet this invocation resolved: its index name,
-# `default` for the operator's own location, or the directory itself for any
-# other CREW_CONFIG_DIR.
+# or the directory itself for a CREW_CONFIG_DIR outside the index.
 this_fleet_id() {
   local id dir
   while IFS=$'\t' read -r id dir; do
@@ -659,6 +722,7 @@ CMDS=(
   "upgrade^<box> | --all [--ref <version-or-git-ref>] [--force]^Ship the engine from this host and re-install it in place^cmd_upgrade"
   "gold^<box> [--force]^Snapshot a box as a gold image — cut PRE-login, credential-free^cmd_gold"
   "floor^[--port <n>] [--bind <a>] [--local] [--user <u>] [--pass <p>] [--roster <path>] [--interval <s>]^Serve the fleet-floor console on IP:PORT^cmd_floor"
+  "service^setup [options] | check | teardown [--purge]^Make this machine's crew service (account, box grant, units), read it back, or remove it — as root^cmd_service"
   "init^[config-dir] | --fleet <id>^Scaffold a new operator fleet definition, or a new empty fleet in the index^cmd_init"
   "profiles^^List the role and agent profiles this crew resolves^cmd_profiles"
   "help^[<command>]^This help, or 'crew help <command>' for one command^cmd_help"
@@ -764,22 +828,35 @@ THE LIFECYCLE — two verbs around one human step in the middle
   into GitHub ('crew login <box> gh', or the floor), 'crew hire-all', then each
   agent ('crew login <box> agent'). Steady state afterwards is just 'crew up'.
 
+ONE SERVICE PER MACHINE (#822)
+
+  crew runs as a system service: one install (/opt/crew, /usr/local/bin/crew),
+  and everything a fleet owns belongs to the 'crew' account — definitions and
+  stores under /var/lib/crew, boxes in its box project, the floor and the
+  schedule as systemd units. Once per machine, as root:
+      sudo crew service setup         account, group, box grant, units, a first fleet
+      sudo crew service check         read it back; exit 1 on drift
+      sudo crew service teardown      units, rule and grant gone; data kept
+  Members of the 'crew' group run crew as the service (it re-runs itself via
+  sudo); the host's gh login is the service's: sudo -u crew -H gh auth login.
+
 SEVERAL FLEETS ON ONE HOST (#814)
 
-  Besides the definition at ~/.config/crew (the fleet 'default'), a host can
-  carry any number of fleets in its index, ~/.config/crew/fleets/<id>/.
-      crew init --fleet <id>          a new, EMPTY fleet in the index
+  The service carries any number of fleets, /var/lib/crew/fleets/<id>/.
+      crew init --fleet <id>          a new, EMPTY fleet (or the floor's New fleet)
       crew --fleet <id> <command>     run one command against that fleet
-  --fleet may sit anywhere on the line. A box belongs to exactly one fleet:
-  up, hire and the floor's roster refuse a box another fleet lists. The host
-  schedule (tick, restart --all, reset --all, with no fleet selected) walks
-  every fleet in turn; HOST_SCHEDULE=off in a fleet's fleet.conf keeps it
-  off that walk. HOST_MAX_RUNNING caps the boxes all fleets run together.
-  'crew floor' serves every fleet: its own at /, each other at /f/<id>/.
+  --fleet may sit anywhere on the line; with one fleet it may be left off.
+  A box belongs to exactly one fleet: up, hire and the floor's roster refuse a
+  box another fleet lists. The schedule (tick, restart --all, reset --all, with
+  no fleet named) walks every fleet in turn; HOST_SCHEDULE=off in a fleet's
+  fleet.conf keeps it off that walk. HOST_MAX_RUNNING caps the boxes all fleets
+  run together. 'crew floor' serves every fleet: one at /, each at /f/<id>/.
 
 ENVIRONMENT
-  CREW_FLEET        A fleet id, as --fleet: the index's <id>, or 'default'.
-  CREW_FLEETS_DIR   The fleets index (default ~/.config/crew/fleets).
+  CREW_FLEET        A fleet id, as --fleet.
+  CREW_FLEETS_DIR   The fleets index (default /var/lib/crew/fleets) — a fixture knob.
+  CREW_ETC_DIR, CREW_DATA_DIR
+                    /etc/crew and /var/lib/crew, for fixtures and the drill.
   CREW_CONFIG_DIR   Select one fleet definition directory. An invalid value
                     is an error, never a silent fall-through to the examples.
   CREW_ROSTER       Roster-only override, for drills and fixtures. It does
@@ -6213,7 +6290,19 @@ cmd_floor() {
   CREW_FLOOR_PORT="$port" CREW_FLOOR_BIND="$bind" CREW_FLOOR_USER="$user" \
   CREW_FLOOR_PASS="$pass" CREW_FLOOR_INTERVAL="$interval" \
   CREW_FLOOR_ROSTER="$roster" CREW_FLOOR_VERSION="$(version)" \
+  CREW_FLEETS_DIR="$(fleets_dir)" \
     exec python3 "$CREW_ROOT/fleet-floor/server/floor.py"
+}
+
+cmd_service() {
+  local sub="${1:-}"
+  [ "$#" -eq 0 ] || shift
+  case "$sub" in
+    setup) service_setup "$@" ;;
+    check) service_check "$@" ;;
+    teardown) service_teardown "$@" ;;
+    *) usage_error "usage: $(synopsis_of service)" ;;
+  esac
 }
 
 cmd_init() {
@@ -6224,14 +6313,11 @@ cmd_init() {
     init_fleet "$FLEET_INIT_ID"
     return 0
   fi
-  if [ -z "$target" ]; then
-    if [ -n "${XDG_CONFIG_HOME:-}" ]; then target="$XDG_CONFIG_HOME/crew"
-    else target="$HOME/.config/crew"; fi
-  fi
-  # A directory holding nothing but the fleets index (#814) is not a config
-  # to overwrite: the index lives under the default location, so a host that
-  # began with index fleets can still scaffold its default one.
-  [ ! -e "$target" ] || [ -z "$(find "$target" -mindepth 1 -maxdepth 1 ! -name fleets -print -quit 2>/dev/null)" ] ||
+  # The plain form scaffolds a definition at a directory you name — a fixture,
+  # a drill's own fleet. A fleet the service runs is `init --fleet <id>` (#822).
+  [ -n "$target" ] ||
+    usage_error "crew init needs a directory (crew init <dir>), or makes a fleet with: crew init --fleet <id>"
+  [ ! -e "$target" ] ||
     die "refusing to overwrite existing operator config '$target'"
 
   mkdir -p "$target/agents"
@@ -6258,8 +6344,6 @@ init_fleet() { # ID
   local id="$1" target file
   target="$(fleets_dir)/$id"
   [ ! -e "$target" ] || die "refusing to overwrite existing fleet '$id' at $target"
-  if [ -n "${XDG_CONFIG_HOME:-}" ]; then file="$XDG_CONFIG_HOME/crew"; else file="$HOME/.config/crew"; fi
-  [ "$id" != default ] || die "'default' names the definition at $file, not a fleet in the index"
   mkdir -p "$target/agents"
   awk '/^[[:space:]]*#/ || /^[[:space:]]*$/ {print; next} {exit}' \
     "$CREW_ROOT/examples/fleet.roster" >"$target/fleet.roster"
@@ -6314,8 +6398,7 @@ fleet_walk_applies() { # VERB ARGS...
     restart|reset) [ "$all" -eq 1 ] || return 1 ;;
     *) return 1 ;;
   esac
-  [ -d "$(fleets_dir)" ] || return 1
-  fleet_dirs | awk -F '\t' '$1 != "default" {f=1} END {exit !f}'
+  [ -n "$(fleet_dirs)" ]
 }
 fleet_walk() { # VERB ARGS...
   local verb="$1" id dir rc worst="" n=0; shift
@@ -6359,5 +6442,13 @@ fn="$(field "$cmd" fn)" || unknown_command "$cmd"
 if fleet_walk_applies "$cmd" "$@"; then
   fleet_walk "$cmd" "$@"
   exit $?
+fi
+# Several fleets and none named: a verb that acts on ONE fleet does not guess
+# which (#822). The floor serves them all, and the rest read nothing fleet-wide.
+if [ -n "$FLEET_AUTO_MANY" ]; then
+  case "$cmd" in
+    floor|help|profiles|versions|use|uninstall|init|service) : ;;
+    *) usage_error "$FLEET_AUTO_MANY fleets on this host ($(fleet_dirs | cut -f1 | paste -sd' ' -)): name one with --fleet <id>" ;;
+  esac
 fi
 "$fn" "$@"

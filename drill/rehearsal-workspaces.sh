@@ -71,7 +71,9 @@ TMP="$(mktemp -d)"
 export XDG_CONFIG_HOME="$TMP/xdg" CREW_HOST_STATE_DIR="$TMP/hoststate"
 unset CREW_CONFIG_DIR CREW_FLEET CREW_FLEETS_DIR CREW_ROSTER CREW_FLOOR_ROSTER CREW_FLEET_WALK
 mkdir -p "$XDG_CONFIG_HOME" "$CREW_HOST_STATE_DIR"
-DEF="$XDG_CONFIG_HOME/crew"; FLEETS="$DEF/fleets"
+# The service's index (#822), here a scratch one: the round's fleet is `default`.
+export CREW_FLEETS_DIR="$TMP/fleets"
+FLEETS="$CREW_FLEETS_DIR"; DEF="$FLEETS/default"
 PASS_W="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)"
 PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
 SRV=""
@@ -114,7 +116,7 @@ jf() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null
 
 # --- the host: the round's fleet (default) and a second, empty one -----------------
 echo "== workspaces — one floor, several fleets (#814)"
-if ! "$CREW" init >"$TMP/init.out" 2>&1; then
+if ! "$CREW" init --fleet default >"$TMP/init.out" 2>&1; then
   echo "could not build the round's fleet with crew init: $(cat "$TMP/init.out")" >&2; exit 1
 fi
 : >"$DEF/fleet.roster"

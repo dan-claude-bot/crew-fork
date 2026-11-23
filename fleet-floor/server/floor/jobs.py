@@ -61,6 +61,10 @@ def host_state_dir():
     explicit = os.environ.get("CREW_HOST_STATE_DIR")
     if explicit:
         return explicit
+    # On a service host, the service's own state dir — the CLI's default (#822).
+    from floor.fleets import data_dir, service_conf_value
+    if service_conf_value("CREW_SERVICE_USER") is not None:
+        return os.path.join(data_dir(), "state")
     xdg = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
     return os.path.join(xdg, "crew")
 

@@ -57,11 +57,16 @@ resolve_dest() { # <uid> [environment assignments]
   env FAKE_UID="$uid" HOME=/home/tester PATH="$ID_SHIM:$PATH" "$@" bash "$DEST_BLOCK"
 }
 same "root-resolves-system-layout" "DEST=/opt/crew BINDIR=/usr/local/bin" "$(resolve_dest 0)"
-same "nonroot-resolves-user-layout" "DEST=/home/tester/.local/share/crew BINDIR=/home/tester/.local/bin" "$(resolve_dest 1000)"
+# #822: no per-user install. A non-root caller with no explicit prefix is
+# refused, naming the system install and the service; one naming both
+# CREW_HOME and CREW_BIN (CI, the suites, the drill's scratch prefix) installs.
+nonroot_refusal="$(resolve_dest 1000 2>&1)"; nonroot_rc=$?
+same "nonroot-without-a-prefix-is-refused" 1 "$nonroot_rc"
+same "nonroot-refusal-names-the-system-install" 1 "$(grep -c 'crew installs system-wide — run this as root (sudo), then: sudo crew service setup' <<<"$nonroot_refusal")"
+same "nonroot-CREW_HOME-alone-is-refused" 1 "$(resolve_dest 1000 CREW_HOME=/srv/crew >/dev/null 2>&1; echo $?)"
 same "root-CREW_HOME-wins" "DEST=/srv/crew BINDIR=/usr/local/bin" "$(resolve_dest 0 CREW_HOME=/srv/crew)"
 same "root-CREW_BIN-wins" "DEST=/opt/crew BINDIR=/srv/bin" "$(resolve_dest 0 CREW_BIN=/srv/bin)"
-same "nonroot-CREW_HOME-wins" "DEST=/srv/crew BINDIR=/home/tester/.local/bin" "$(resolve_dest 1000 CREW_HOME=/srv/crew)"
-same "nonroot-CREW_BIN-wins" "DEST=/home/tester/.local/share/crew BINDIR=/srv/bin" "$(resolve_dest 1000 CREW_BIN=/srv/bin)"
+same "nonroot-explicit-prefix-installs" "DEST=/srv/crew BINDIR=/srv/bin" "$(resolve_dest 1000 CREW_HOME=/srv/crew CREW_BIN=/srv/bin)"
 
 # The root-only pieces cannot be exercised by this no-root lifecycle suite, so
 # bind their placement structurally: the chmod must sit in its own uid guard,
@@ -183,27 +188,31 @@ else
   bad "nonroot-traverses-and-executes-global-tree (blocked at '${world_bad:-execution}')"
 fi
 
-# The caller's HOME, not the shared tree's installing HOME, selects and creates
-# fleet configuration. Seed a conflicting root roster, initialize the operator
-# normally, and make a read prove it selected the operator definition.
-mkdir -p "$ROOT_PERSONA/.config"
-cp -a "$GLOBAL_HOME/current/examples" "$ROOT_PERSONA/.config/crew"
-printf 'root-only claude builder examples\n' >"$ROOT_PERSONA/.config/crew/fleet.roster"
-if HOME="$OPERATOR_HOME" XDG_CONFIG_HOME="$OPERATOR_HOME/.config" \
-   "$GLOBAL_BIN/crew" init >/dev/null 2>&1 &&
-   [ -f "$OPERATOR_HOME/.config/crew/fleet.roster" ]; then
-  printf 'operator-only claude builder examples\n' >"$OPERATOR_HOME/.config/crew/fleet.roster"
-  if HOME="$OPERATOR_HOME" XDG_CONFIG_HOME="$OPERATOR_HOME/.config" \
-     CREW_EXPECT_OPERATOR_CONFIG=1 \
-     "$GLOBAL_BIN/crew" profiles >/dev/null 2>&1 &&
-     grep -q '^operator-only ' "$OPERATOR_HOME/.config/crew/fleet.roster" &&
-     grep -q '^root-only ' "$ROOT_PERSONA/.config/crew/fleet.roster"; then
-    ok "global-tree-uses-caller-config"
+# #822: one service per machine. The global tree reads the SERVICE's fleets
+# index, never a caller's ~/.config/crew: a definition left there is inert, and
+# `init --fleet` makes the fleet in the index the service owns (a fixture dir
+# here, /var/lib/crew/fleets on a host).
+SVC_INDEX="$WORK/svc-fleets"
+SVC_BOX="$WORK/svc-box"; mkdir -p "$SVC_BOX"
+# shellcheck disable=SC2016  # the stub's own source text
+printf '#!/usr/bin/env bash\ncase "$1" in --version) echo "box 0.10.0 (x)";; list) echo "[]";; esac\n' >"$SVC_BOX/box"
+chmod +x "$SVC_BOX/box"
+mkdir -p "$OPERATOR_HOME/.config"
+cp -a "$GLOBAL_HOME/current/examples" "$OPERATOR_HOME/.config/crew"
+printf 'home-only claude builder examples\n' >"$OPERATOR_HOME/.config/crew/fleet.roster"
+if HOME="$OPERATOR_HOME" XDG_CONFIG_HOME="$OPERATOR_HOME/.config" CREW_FLEETS_DIR="$SVC_INDEX" \
+   "$GLOBAL_BIN/crew" init --fleet lf >/dev/null 2>&1 &&
+   [ -f "$SVC_INDEX/lf/fleet.roster" ]; then
+  printf 'index-only claude builder\n' >>"$SVC_INDEX/lf/fleet.roster"
+  if prof="$(HOME="$OPERATOR_HOME" XDG_CONFIG_HOME="$OPERATOR_HOME/.config" CREW_FLEETS_DIR="$SVC_INDEX" \
+       PATH="$SVC_BOX:$PATH" CREW_EXPECT_OPERATOR_CONFIG=1 "$GLOBAL_BIN/crew" up --dry-run 2>&1)" &&
+     grep -q '^index-only: ' <<<"$prof" && ! grep -q '^home-only' <<<"$prof"; then
+    ok "global-tree-reads-the-service-index-not-the-callers-home"
   else
-    bad "global-tree-uses-caller-config"
+    bad "global-tree-reads-the-service-index-not-the-callers-home"
   fi
 else
-  bad "global-tree-uses-caller-config (crew init did not create caller config)"
+  bad "global-tree-reads-the-service-index-not-the-callers-home (crew init --fleet made no fleet)"
 fi
 
 # Complete the second global version, then model a root-owned install by

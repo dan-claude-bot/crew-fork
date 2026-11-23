@@ -392,7 +392,7 @@ against it.
 The declared legs are: `hygiene`, `breaker`, `resume`, `attention`,
 `attention-audit`, `release`, `notify`, `installer`, `config`, `app`,
 `browser`, `app-armed`, `fleet`, `workspaces`, `floor-provision`,
-`teardown`. Each has an entry below, headed by its row name —
+`service`, `teardown`. Each has an entry below, headed by its row name —
 that heading IS the leg's name, and CI diffs the set of them against the
 harness's own declaration in both directions, so this runbook cannot fall a
 release behind the harness again without a red check.
@@ -880,6 +880,33 @@ entry, one `crew --fleet prov tick`, and the row's removal.
 - **A failure means** a fleet cannot be stood up from the floor: a button that
   runs something other than its verb, a plan that is skipped or names another
   fleet's box, two jobs at once, or a member that does not come out hired.
+
+### service — `drill/rehearsal-service.sh`
+
+crew as **one service per machine** (#822), stood up under **scratch names** so
+a real crew service on the host is never touched: account and group
+`crew-drill-svc`, `/etc/crew-drill-svc`, `/var/lib/crew-drill-svc`, units
+`crew-drill-svc-*`, and the drilled tree installed under `/opt/crew-drill-svc`.
+It runs after the workspaces legs and needs no role box.
+
+- **Needs** passwordless sudo on the drill host (`sudo -n`), box 0.11.0 or later
+  (service grants, box#281) and systemd. Without one of them its readings are
+  skips naming it and the row is INCOMPLETE. `--fast` leaves it out (it mints a
+  box).
+- **Reads** that `crew service setup` converges, and a second run changes no
+  unit; that `check` is clean; that a caller outside the group is refused,
+  naming it; that the account makes fleets in its own index; that the floor
+  unit answers with the service's fleets, running as the account; that a box
+  Created from that floor lands in the service's box project and not the
+  operator's; that the tick unit runs the tick as the account, logging under
+  its data dir; and that `teardown --purge` leaves no unit, sudoers rule,
+  account or data behind.
+- **Produces** the `service` row: `ok (the service set up, read and purged:
+  …)`, `FAIL (…)`, `INCOMPLETE (leg skipped a reading: …)`, or `skip
+  (--no-service-drill)` / `skip (--fast: mints a box of its own)`.
+- **It always purges** what it made, `--keep` or not: a scratch service on the
+  host is not a fixture to inspect, and the next round tears down a stale one
+  under the same names before it starts.
 
 ### teardown — `drill/teardown.sh`
 

@@ -3959,7 +3959,9 @@ printf '#!/usr/bin/env bash\nexit 0\n' >"$AGG/rehearsal-app.sh"
 # rounds are about the notify, resume and breaker rows, and their totals.
 # shellcheck disable=SC2016  # the stub's own source text, expanded where it runs
 printf '#!/usr/bin/env bash\n[ -z "${REHEARSAL_WORKSPACES_STATUS:-}" ] || echo "ok ws" >>"$REHEARSAL_WORKSPACES_STATUS"\n[ -z "${REHEARSAL_PROVISION_STATUS:-}" ] || echo "ok pv" >>"$REHEARSAL_PROVISION_STATUS"\nexit 0\n' >"$AGG/rehearsal-workspaces.sh"
-chmod +x "$AGG/rehearsal.sh" "$AGG/teardown.sh" "$AGG/rehearsal-app.sh" "$AGG/rehearsal-workspaces.sh"
+# shellcheck disable=SC2016  # the stub's own source text, expanded where it runs
+printf '#!/usr/bin/env bash\n[ -z "${REHEARSAL_SERVICE_STATUS:-}" ] || echo "ok svc" >>"$REHEARSAL_SERVICE_STATUS"\nexit 0\n' >"$AGG/rehearsal-service.sh"
+chmod +x "$AGG/rehearsal.sh" "$AGG/teardown.sh" "$AGG/rehearsal-app.sh" "$AGG/rehearsal-workspaces.sh" "$AGG/rehearsal-service.sh"
 agg_case() {  # $1 role, $2 notify verdict, $3 rc, $4 resume verdict
   printf '%s' "$2" >"$AGG/$1.verdict"
   printf '%s\n' "$3" >"$AGG/$1.rc"
@@ -3988,7 +3990,7 @@ agg_breaker_run() {
   AGG_DIR="$AGG" bash "$AGG/rehearsal-all.sh" --roles '' \
     --no-app --no-config-drill --no-install-drill --no-resume-drill \
     --no-attention-drill --no-attention-audit-drill --no-release-drill --no-fleet-drill \
-    --no-workspaces-drill --no-floor-provision-drill \
+    --no-workspaces-drill --no-floor-provision-drill --no-service-drill \
     --no-hygiene-drill --no-notify-drill ${1+"$@"} 2>&1
 }
 if agg_out="$(agg_breaker_run)"; then agg_rc=0; else agg_rc=$?; fi
@@ -10234,16 +10236,17 @@ gold somebox
 SPECS
 t cli-operator-config-never-refused-or-bannered "" "$overreach"
 
-# $PWD discovery is an operator definition too — the third resolution hop, and
-# the one a developer running crew from a config directory relies on. Banner
-# it and this fix breaks that workflow.
+# #822: $PWD is no longer a resolution hop. crew is one service per machine,
+# and the fleets it runs are the service's index; a config directory you
+# happen to stand in is not one of them, so it reads as the examples (with the
+# banner) and nothing in it is acted on.
 pwdcrew_out="$(cd "$OPCONF" && env -u CREW_CONFIG_DIR -u XDG_CONFIG_HOME -u CREW_ROSTER \
   HOME="$FBHOME" PATH="$CLISHIM:$PATH" bash "$CLIBIN" status 2>&1)"
 case "$pwdcrew_out" in
   *"NO operator fleet definition"*) r1=BANNERED ;;
   *) r1=clean ;;
 esac
-t cli-pwd-discovery-is-operator clean "$r1"
+t cli-pwd-is-not-a-fleet-definition BANNERED "$r1"
 
 # The shipped registry ships EMPTY. Asserted by parsing rather than by diffing
 # a literal, so a future edit that re-adds a live repository reds this instead

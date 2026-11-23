@@ -42,15 +42,21 @@ set -euo pipefail
 # artifact installs by unpacking and pointing CREW_INSTALL_SOURCE at the
 # result. Network distribution is #98's job, not this file's.
 
-# Root installs globally so every operator can execute one system tree;
-# non-root installs per-user exactly as before. CREW_HOME/CREW_BIN remain the
-# explicit scripting overrides on both arms.
+# crew installs ONCE per machine (#822): root installs /opt/crew and links
+# /usr/local/bin/crew, and `sudo crew service setup` then makes the service the
+# fleet runs as. There is no per-user install any more. CREW_HOME and CREW_BIN
+# remain the explicit overrides — for CI, the suites and the drill, which
+# install into a scratch prefix — and a non-root caller must name both.
 if [ "$(id -u)" -eq 0 ]; then
   DEST="${CREW_HOME:-/opt/crew}"
   BINDIR="${CREW_BIN:-/usr/local/bin}"
+elif [ -n "${CREW_HOME:-}" ] && [ -n "${CREW_BIN:-}" ]; then
+  DEST="$CREW_HOME"
+  BINDIR="$CREW_BIN"
 else
-  DEST="${CREW_HOME:-$HOME/.local/share/crew}"
-  BINDIR="${CREW_BIN:-$HOME/.local/bin}"
+  printf 'crew-install: ERROR: crew installs system-wide — run this as root (sudo), then: sudo crew service setup\n' >&2
+  printf 'crew-install:        (a scratch install for CI or a drill names both CREW_HOME and CREW_BIN)\n' >&2
+  exit 1
 fi
 
 log() { printf 'crew-install: %s\n' "$*"; }

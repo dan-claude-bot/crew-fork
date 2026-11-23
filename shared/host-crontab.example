@@ -1,3 +1,8 @@
+# REFERENCE ONLY since #822: `crew service setup` installs these three jobs as
+# systemd timers (crew-tick, crew-restart, crew-reset), run as the crew account.
+# The lines below are what each timer runs, kept as the readable statement of
+# the schedule.
+#
 # The HOST crontab: ONE line per job. All locking, logging and evidence lines
 # live inside the verb — the cron line carries no flock and no redirect, so it
 # can never drift per host again. This is shared/crontab.example's charter,

@@ -4,7 +4,7 @@
 #
 # The host is a shim: `box` answers a fixed inventory and logs every call, `gh`
 # answers one board. Two fleet definitions sit where the CLI looks for them —
-# the operator's own (~/.config/crew, id `default`) and one in the index
+# two fleets in the service's index (`dev` and `lf`, under a fixture data dir)
 # (~/.config/crew/fleets/lf) — and every row reads what the CLI printed and
 # which box calls it made.
 set -uo pipefail
@@ -27,7 +27,7 @@ SHIM="$TMP/shim"; STATE="$TMP/state"
 mkdir -p "$XDG_CONFIG_HOME" "$SHIM" "$STATE"
 export CF_STATE="$STATE"
 
-# The host: alpha and beta (the default fleet's) and floor1 exist; floor2 does
+# The host: alpha and beta (the dev fleet's) and floor1 exist; floor2 does
 # not. A box's state is <box>.state (running when absent).
 cat >"$SHIM/box" <<'EOF'
 #!/usr/bin/env bash
@@ -67,7 +67,8 @@ export PATH="$SHIM:$PATH"
 crew() { bash "$CLI" "$@"; }
 capture() { OUT="$(crew "$@" 2>&1)"; RC=$?; }
 calls() { grep -c "^$1" "$STATE/calls" 2>/dev/null || true; }
-FLEETS="$XDG_CONFIG_HOME/crew/fleets"
+FLEETS="$TMP/data/fleets"
+export CREW_DATA_DIR="$TMP/data" CREW_ETC_DIR="$TMP/etc"
 
 # --- init --fleet: a new, EMPTY fleet in the index ----------------------------
 capture init --fleet lf
@@ -88,21 +89,29 @@ t init-fleet-takes-no-directory 2 "$RC"
 capture --fleet
 t fleet-flag-needs-a-value 2 "$RC"
 
-# --- an index-only host resolves its first fleet, not the shipped examples --------
+# --- one fleet on the host is selected; the caller's home is never read (#822) ----
 printf 'floor1 claude triage\nfloor2 claude triage\n' >>"$FLEETS/lf/fleet.roster"
+mkdir -p "$XDG_CONFIG_HOME/crew"; cp "$ROOT"/examples/{fleet.conf,repos.txt} "$XDG_CONFIG_HOME/crew/"
+printf 'homeonly claude builder\n' >"$XDG_CONFIG_HOME/crew/fleet.roster"
 capture up --dry-run
-t index-only-host-resolves-the-index-fleet 1 "$(grep -c '^floor1: WOULD' <<<"$OUT")"
-t index-only-host-is-not-the-examples 0 "$(grep -c 'NO operator fleet definition' <<<"$OUT")"
-
-# --- the default fleet: the operator's own location, beside the index -------------
+t one-fleet-host-resolves-it 1 "$(grep -c '^floor1: WOULD' <<<"$OUT")"
+t one-fleet-host-is-not-the-examples 0 "$(grep -c 'NO operator fleet definition' <<<"$OUT")"
+t the-callers-home-config-is-never-read 0 "$(grep -c '^homeonly' <<<"$OUT")"
 capture init
-t init-default-beside-the-index-exits-0 0 "$RC"
-printf 'alpha claude builder\nbeta codex reviewer\n' >"$XDG_CONFIG_HOME/crew/fleet.roster"
+t plain-init-needs-a-directory 2 "$RC"
+t plain-init-names-the-fleet-form 1 "$(grep -c 'crew init --fleet <id>' <<<"$OUT")"
+
+# --- a second fleet: dev, with alpha and beta --------------------------------------
+capture init --fleet dev
+printf 'alpha claude builder\nbeta codex reviewer\n' >>"$FLEETS/dev/fleet.roster"
 
 # --- selection: --fleet anywhere, --fleet=, CREW_FLEET ----------------------------
 capture up --dry-run
-t no-selection-is-the-default-fleet 1 "$(grep -c '^alpha: ' <<<"$OUT")"
-t no-selection-reads-no-index-member 0 "$(grep -c '^floor' <<<"$OUT")"
+t several-fleets-and-none-named-is-2 2 "$RC"
+t several-fleets-are-named 1 "$(grep -c '2 fleets on this host (dev lf): name one with --fleet <id>' <<<"$OUT")"
+capture --fleet dev up --dry-run
+t fleet-dev-is-dev 1 "$(grep -c '^alpha: ' <<<"$OUT")"
+t fleet-dev-reads-no-lf-member 0 "$(grep -c '^floor' <<<"$OUT")"
 capture --fleet lf up --dry-run
 t fleet-before-the-verb-selects-it "2 0" "$(grep -oE '^floor[12]: ' <<<"$OUT" | sort -u | grep -c .) $(grep -c '^alpha' <<<"$OUT")"
 capture up --dry-run --fleet lf
@@ -111,8 +120,8 @@ capture up --dry-run --fleet=lf
 t fleet-equals-form-selects-it 2 "$(grep -oE '^floor[12]: ' <<<"$OUT" | sort -u | grep -c .)"
 OUT="$(CREW_FLEET=lf bash "$CLI" up --dry-run 2>&1)"
 t crew-fleet-env-selects-it 2 "$(grep -oE '^floor[12]: ' <<<"$OUT" | sort -u | grep -c .)"
-OUT="$(CREW_FLEET=lf bash "$CLI" --fleet default up --dry-run 2>&1)"
-t fleet-default-names-the-operator-location 1 "$(grep -c '^alpha: ' <<<"$OUT")"
+OUT="$(CREW_FLEET=lf bash "$CLI" --fleet dev up --dry-run 2>&1)"
+t fleet-flag-beats-the-env 1 "$(grep -c '^alpha: ' <<<"$OUT")"
 capture --fleet nope up --dry-run
 t unknown-fleet-is-1 1 "$RC"
 t unknown-fleet-says-how-to-make-it 1 "$(grep -c "no fleet 'nope' in $FLEETS .*crew init --fleet nope" <<<"$OUT")"
@@ -134,33 +143,33 @@ t up-box-takes-one-member 2 "$RC"
 echo stopped >"$STATE/floor1.state"; : >"$STATE/calls"
 capture --fleet lf up floor1
 t up-box-starts-only-that-member "1 0 0" "$(calls 'start floor1') $(calls 'start alpha') $(calls 'new ')"
-t up-box-off-roster-list-names-the-owning-fleet 1 "$(grep -cx '  alpha  (fleet default)' <<<"$OUT")"
+t up-box-off-roster-list-names-the-owning-fleet 1 "$(grep -cx '  alpha  (fleet dev)' <<<"$OUT")"
 rm -f "$STATE/floor1.state"
 
 # --- a box belongs to exactly one fleet --------------------------------------------
 printf 'alpha claude builder\n' >>"$FLEETS/lf/fleet.roster"
 capture --fleet lf up --dry-run
-t foreign-box-dry-run-would-refuse 1 "$(grep -c "^alpha: WOULD REFUSE — fleet 'default' on this host already lists it" <<<"$OUT")"
+t foreign-box-dry-run-would-refuse 1 "$(grep -c "^alpha: WOULD REFUSE — fleet 'dev' on this host already lists it" <<<"$OUT")"
 t foreign-box-dry-run-plans-nothing-for-it 0 "$(grep -c '^alpha: WOULD hire' <<<"$OUT")"
 : >"$STATE/calls"
 capture --fleet lf up alpha
 t foreign-box-up-is-1 1 "$RC"
-t foreign-box-up-says-refused 1 "$(grep -c "^alpha: REFUSED — fleet 'default' on this host already lists it" <<<"$OUT")"
+t foreign-box-up-says-refused 1 "$(grep -c "^alpha: REFUSED — fleet 'dev' on this host already lists it" <<<"$OUT")"
 t foreign-box-up-touches-nothing "0 0" "$(calls 'start alpha') $(calls 'new alpha')"
 capture --fleet lf hire alpha
 t foreign-box-hire-is-1 1 "$RC"
-t foreign-box-hire-names-the-fleet 1 "$(grep -c "crew hire refuses alpha: fleet 'default' on this host already lists it" <<<"$OUT")"
+t foreign-box-hire-names-the-fleet 1 "$(grep -c "crew hire refuses alpha: fleet 'dev' on this host already lists it" <<<"$OUT")"
 capture --fleet lf hire-all
-t foreign-box-hire-all-refuses-it 1 "$(grep -c "^alpha: REFUSED — fleet 'default'" <<<"$OUT")"
+t foreign-box-hire-all-refuses-it 1 "$(grep -c "^alpha: REFUSED — fleet 'dev'" <<<"$OUT")"
 # Symmetric: once a hand edit puts a box in two rosters, NEITHER fleet may hire
-# it — the default fleet is refused naming lf, as lf was refused naming it.
-capture hire alpha
+# it — the dev fleet is refused naming lf, as lf was refused naming it.
+capture --fleet dev hire alpha
 t two-rosters-refuse-from-both-sides 1 "$(grep -c "crew hire refuses alpha: fleet 'lf' on this host already lists it" <<<"$OUT")"
 sed -i '/^alpha /d' "$FLEETS/lf/fleet.roster"
 
 # --- the host schedule walks every fleet --------------------------------------------
 capture tick --dry-run
-t walk-tick-visits-the-default-fleet 1 "$(grep -c "^== fleet default ($XDG_CONFIG_HOME/crew)$" <<<"$OUT")"
+t walk-tick-visits-the-dev-fleet 1 "$(grep -c "^== fleet dev ($FLEETS/dev)$" <<<"$OUT")"
 t walk-tick-visits-the-index-fleet 1 "$(grep -c "^== fleet lf ($FLEETS/lf)$" <<<"$OUT")"
 t walk-tick-runs-one-tick-per-fleet 2 "$(grep -c '^tick: started' <<<"$OUT")"
 capture --fleet lf tick --dry-run
@@ -169,16 +178,16 @@ OUT="$(CREW_CONFIG_DIR="$FLEETS/lf" bash "$CLI" tick --dry-run 2>&1)"
 t an-explicit-config-dir-is-not-walked 0 "$(grep -c '^== fleet' <<<"$OUT")"
 capture restart nosuchbox
 t restart-without-all-is-not-walked 0 "$(grep -c '^== fleet' <<<"$OUT")"
-echo 'HOST_SCHEDULE=off' >>"$XDG_CONFIG_HOME/crew/fleet.conf"
+echo 'HOST_SCHEDULE=off' >>"$FLEETS/dev/fleet.conf"
 capture tick --dry-run
-t walk-skips-a-fleet-off-the-schedule 1 "$(grep -c '^== fleet default: off the host schedule (HOST_SCHEDULE=off in ' <<<"$OUT")"
+t walk-skips-a-fleet-off-the-schedule 1 "$(grep -c '^== fleet dev: off the host schedule (HOST_SCHEDULE=off in ' <<<"$OUT")"
 t walk-off-the-schedule-runs-no-tick-there 1 "$(grep -c '^tick: started' <<<"$OUT")"
-capture --fleet default tick --dry-run
+capture --fleet dev tick --dry-run
 t an-explicit-fleet-runs-even-off-the-schedule 1 "$(grep -c '^tick: started' <<<"$OUT")"
-sed -i '/^HOST_SCHEDULE=off$/d' "$XDG_CONFIG_HOME/crew/fleet.conf"
+sed -i '/^HOST_SCHEDULE=off$/d' "$FLEETS/dev/fleet.conf"
 
 # --- the host-wide running cap -------------------------------------------------------
-# alpha and beta (default) run; lf's triage member floor1 is stopped and the
+# alpha and beta (dev) run; lf's triage member floor1 is stopped and the
 # board gives triage a reason to wake. The host cap defaults to the fleet cap
 # (2): floor1 is held by the host, not by its own fleet (0 of 2 running there).
 echo o/r >"$FLEETS/lf/repos.txt"
@@ -191,7 +200,7 @@ echo 'HOST_MAX_RUNNING=3' >>"$FLEETS/lf/fleet.conf"
 capture --fleet lf tick --dry-run
 t host-cap-raised-starts-it 1 "$(grep -c '^  floor1: starting why=' <<<"$OUT")"
 t host-cap-raised-is-said 1 "$(grep -c '(host cap 3)$' <<<"$OUT")"
-echo paused >"$TMP/p"; mkdir -p "$XDG_CONFIG_HOME/crew/store/paused"; : >"$XDG_CONFIG_HOME/crew/store/paused/alpha"
+echo paused >"$TMP/p"; mkdir -p "$FLEETS/dev/store/paused"; : >"$FLEETS/dev/store/paused/alpha"
 sed -i '/^HOST_MAX_RUNNING=3$/d' "$FLEETS/lf/fleet.conf"
 capture --fleet lf tick --dry-run
 t host-cap-a-paused-box-elsewhere-does-not-count 1 "$(grep -c '1 in the host.s other fleets (host cap 2)$' <<<"$OUT")"

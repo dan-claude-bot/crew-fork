@@ -12,8 +12,10 @@
 echo
 echo "== workspaces and jobs (#814, #815)"
 WS="$TMP/ws"; WS_XDG="$WS/xdg"; WS_STATE="$WS/hoststate"
-WS_DEF="$WS_XDG/crew"; WS_SECOND="$WS_DEF/fleets/second"
-mkdir -p "$WS_DEF" "$WS_SECOND" "$WS_STATE"
+# The service's index (#822), a fixture: `default` (the fixture roster) and
+# `second`. The floor serves the first, alphabetically, at /.
+WS_IDX="$WS/fleets"; WS_DEF="$WS_IDX/default"; WS_SECOND="$WS_IDX/second"
+mkdir -p "$WS_XDG" "$WS_DEF" "$WS_SECOND" "$WS_STATE"
 cp "$CREW_CONFIG_DIR/fleet.conf" "$CREW_CONFIG_DIR/repos.txt" "$WS_DEF/"
 cp "$HERE/fixtures/roster.txt" "$WS_DEF/fleet.roster"
 cp "$CREW_CONFIG_DIR/fleet.conf" "$CREW_CONFIG_DIR/repos.txt" "$WS_SECOND/"
@@ -32,7 +34,7 @@ exit "\$(cat "$WS/rc" 2>/dev/null || echo 0)"
 EOF
 chmod +x "$WS_CLI"
 WS_PORT=$((PORT + 7))
-env -u CREW_CONFIG_DIR -u CREW_FLOOR_ROSTER XDG_CONFIG_HOME="$WS_XDG" \
+env -u CREW_CONFIG_DIR -u CREW_FLOOR_ROSTER XDG_CONFIG_HOME="$WS_XDG" CREW_FLEETS_DIR="$WS_IDX" \
   CREW_HOST_STATE_DIR="$WS_STATE" CREW_FLOOR_CREW_CLI="$WS_CLI" \
   CREW_FLOOR_PASS="$PASSWD" CREW_FLOOR_USER="$USER" CREW_FLOOR_PORT="$WS_PORT" \
   CREW_FLOOR_BIND=127.0.0.1 CREW_FLOOR_INTERVAL=3600 CREW_FLOOR_PING_INTERVAL=0 \
@@ -96,7 +98,7 @@ WS_R="$(wsapi POST /api/fleets '{"id":"third"}')"
 t "new fleet: created through the CLI" 200 "$(printf '%s' "$WS_R" | tail -1)"
 t "new fleet: the reply is its page" "/f/third/" "$(printf '%s' "$WS_R" | sed '$d' | jqf "d['url']")"
 t "new fleet: it is listed" "default second third" "$(wsbody GET /api/fleets | jqf "' '.join(f['id'] for f in d['fleets'])")"
-t "new fleet: it has no member" 0 "$(grep -cvE '^[[:space:]]*(#|$)' "$WS_DEF/fleets/third/fleet.roster")"
+t "new fleet: it has no member" 0 "$(grep -cvE '^[[:space:]]*(#|$)' "$WS_IDX/third/fleet.roster")"
 t "new fleet: its floor answers" 200 "$(wsstatus GET /f/third/api/roster)"
 t "new fleet: an existing id is refused" 409 "$(wsstatus POST /api/fleets '{"id":"third"}')"
 t "new fleet: a bad id is refused" 400 "$(wsstatus POST /api/fleets '{"id":"Third Fleet"}')"
@@ -164,7 +166,7 @@ t "jobs: each job's output is a log file" 1 "$(grep -c '^stub: crew up ws-two$' 
 echo 2 >"$WS/sleep"
 WS_RUN="$(wsbody POST /f/second/api/jobs '{"verb":"hire","box":"ws-two"}' | jqf "d['job']['id']")"
 sleep 0.5
-WS_TICK="$(env -u CREW_FLOOR_ROSTER XDG_CONFIG_HOME="$WS_XDG" CREW_HOST_STATE_DIR="$WS_STATE" CREW_CONFIG_DIR="$WS_DEF" \
+WS_TICK="$(env -u CREW_FLOOR_ROSTER XDG_CONFIG_HOME="$WS_XDG" CREW_FLEETS_DIR="$WS_IDX" CREW_HOST_STATE_DIR="$WS_STATE" CREW_CONFIG_DIR="$WS_DEF" \
   bash "$FLOOR/../cli/crew" tick --dry-run 2>&1)"
 t "jobs: the scheduled tick is skipped while a floor job runs" 1 \
   "$(grep -c "SKIPPED — the host maintenance lock is held by 'crew floor:hire'" <<<"$WS_TICK")"

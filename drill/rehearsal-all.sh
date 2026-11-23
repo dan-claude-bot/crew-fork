@@ -70,6 +70,8 @@ FLEET_STATUS=""
 # The fleets-as-workspaces leg (#814) and the floor-built fleet leg (#815).
 WORKSPACES_DRILL=1
 PROVISION_DRILL=1
+# crew as one service per machine (#822), under scratch names.
+SERVICE_DRILL=1
 # Section A's installer driver runs once, against the first role box this
 # session actually reached. It acquires the same tree/ref as the role drills.
 # That box is also the config phase's box, on purpose — and the two phases only
@@ -152,6 +154,7 @@ while [ $# -gt 0 ]; do
     --no-fleet-drill) FLEET_DRILL=0; shift ;;
     --no-workspaces-drill) WORKSPACES_DRILL=0; shift ;;
     --no-floor-provision-drill) PROVISION_DRILL=0; shift ;;
+    --no-service-drill) SERVICE_DRILL=0; shift ;;
     --app-boxes) APP_ARGS+=(--boxes "$2"); shift 2 ;;
     --app-allow-control) APP_ARGS+=(--allow-control); shift ;;
     --app-roster) APP_ROSTER="$2"; shift 2 ;;
@@ -163,7 +166,7 @@ while [ $# -gt 0 ]; do
     --legs) LEGS="$2"; shift 2 ;;
     --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
-       echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--no-workspaces-drill] [--no-floor-provision-drill] [--app-boxes \"a b\"] [--app-allow-control]"
+       echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--no-workspaces-drill] [--no-floor-provision-drill] [--no-service-drill] [--app-boxes \"a b\"] [--app-allow-control]"
        echo "         [--app-roster <path>] [--no-app-armed-self] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>[,tg:<name>]]"; exit 1 ;;
   esac
 done
@@ -204,7 +207,7 @@ fi
 if [ -n "$LEGS" ]; then
   RESUME_DRILL=0 ATTENTION_DRILL=0 ATTENTION_AUDIT_DRILL=0 RELEASE_DRILL=0
   HYGIENE_DRILL=0 BREAKER_DRILL=0 NOTIFY_DRILL=0 INSTALL_DRILL=0
-  CONFIG_DRILL=0 APP=0 FLEET_DRILL=0 WORKSPACES_DRILL=0 PROVISION_DRILL=0 KEEP=1
+  CONFIG_DRILL=0 APP=0 FLEET_DRILL=0 WORKSPACES_DRILL=0 PROVISION_DRILL=0 SERVICE_DRILL=0 KEEP=1
   for leg in ${LEGS//,/ }; do
     case "$leg" in
       hygiene) HYGIENE_DRILL=1 ;;
@@ -220,6 +223,7 @@ if [ -n "$LEGS" ]; then
       fleet) FLEET_DRILL=1 ;;
       workspaces) WORKSPACES_DRILL=1 ;;
       floor-provision) PROVISION_DRILL=1 ;;
+      service) SERVICE_DRILL=1 ;;
       teardown) KEEP=0 ;;
       *) echo "drill/rehearsal-all.sh: --legs: '$leg' is not a declared leg" >&2; exit 1 ;;
     esac
@@ -303,7 +307,7 @@ esac
 # resume wake, the attention dispatch — left out by name. Inside each role the
 # stub agent stands in, and the sections that read agent output say so.
 if [ "$FAST" -eq 1 ]; then
-  PARALLEL=1 APP=0 RELEASE_DRILL=0 RESUME_DRILL=0 ATTENTION_DRILL=0 PROVISION_DRILL=0
+  PARALLEL=1 APP=0 RELEASE_DRILL=0 RESUME_DRILL=0 ATTENTION_DRILL=0 PROVISION_DRILL=0 SERVICE_DRILL=0
   echo "== --fast: plumbing only — roles in parallel, a zero-action agent, no app pass; NOT a promotion reading"
 fi
 # omitted FLAG — the reason a leg that did not run gives: the operator's flag,
@@ -313,7 +317,7 @@ omitted() {
   elif [ "$FAST" -eq 1 ]; then
     case "$1" in
       --no-app|--no-release-drill|--no-resume-drill|--no-attention-drill) printf -- '--fast: reads a real agent session'"'"'s output' ;;
-      --no-floor-provision-drill) printf -- '--fast: mints a box of its own' ;;
+      --no-floor-provision-drill|--no-service-drill) printf -- '--fast: mints a box of its own' ;;
       *) printf '%s' "$1" ;;
     esac
   else printf '%s' "$1"; fi
@@ -396,12 +400,13 @@ APP_OUTPUT="$(mktemp)"
 FLEET_STATUS="$(mktemp)"
 WORKSPACES_STATUS="$(mktemp)"
 PROVISION_STATUS="$(mktemp)"
+SERVICE_STATUS="$(mktemp)"
 # One row per independently runnable leg. The final record is checked against
 # this list before it is printed: adding a leg here without wiring a result is
 # therefore a visible red row, never an absence that looks like coverage.
 declare -a DECLARED_LEGS=(
   hygiene breaker resume attention attention-audit release notify
-  installer config app browser app-armed fleet workspaces floor-provision teardown
+  installer config app browser app-armed fleet workspaces floor-provision service teardown
 )
 
 leg_is_declared() {
@@ -459,6 +464,7 @@ cleanup_role_hygiene_files() {
   [ -z "${FLEET_STATUS:-}" ] || rm -f -- "$FLEET_STATUS"
   [ -z "${WORKSPACES_STATUS:-}" ] || rm -f -- "$WORKSPACES_STATUS"
   [ -z "${PROVISION_STATUS:-}" ] || rm -f -- "$PROVISION_STATUS"
+  [ -z "${SERVICE_STATUS:-}" ] || rm -f -- "$SERVICE_STATUS"
   # A round interrupted inside the self-armed pass (#789) must not leave its
   # box armed or skewed: the stage says what was changed, and only that is
   # undone. Here and not under a second trap, for the reason given above.
@@ -1210,6 +1216,30 @@ elif [ -n "$WS_LEGS" ]; then
 fi
 [ "$WORKSPACES_DRILL" -eq 1 ] || SUMMARY+=("skip       workspaces  ($(omitted --no-workspaces-drill))")
 [ "$PROVISION_DRILL" -eq 1 ] || SUMMARY+=("skip       floor-provision  ($(omitted --no-floor-provision-drill))")
+
+# The service leg (#822): one service per machine, stood up under scratch names
+# (account crew-drill-svc, /etc and /var/lib crew-drill-svc), read end to end and
+# purged. It needs passwordless sudo and box 0.11.0; without them its readings
+# are skips and the row is INCOMPLETE. Like every independent leg, it runs only
+# once a role reached a box: a round that installed nothing acts on nothing.
+if [ "$SERVICE_DRILL" -eq 1 ] && [ -z "${DRILLED// /}" ]; then
+  SUMMARY+=("SKIPPED    service  (blocked by role install: no installed drill box)")
+  [ "$overall" -eq 1 ] || overall=2
+elif [ "$SERVICE_DRILL" -eq 1 ]; then
+  echo
+  echo "############################################################"
+  echo "## crew as a service — one per machine, under scratch names"
+  echo "############################################################"
+  section_start=$SECONDS
+  : >"$SERVICE_STATUS"
+  REHEARSAL_SERVICE_STATUS="$SERVICE_STATUS" "$HERE/rehearsal-service.sh" "$AGENT"
+  rc=$?
+  workspaces_row service "$SERVICE_STATUS" "$rc" \
+    "the service set up, read and purged: its account, grant, floor, a box in its project, its tick"
+  TIMINGS+=("service $((SECONDS - section_start))")
+else
+  SUMMARY+=("skip       service  ($(omitted --no-service-drill))")
+fi
 
 # Validate the declaration/result agreement before teardown decides whether a
 # green round may remove its fixtures. Teardown's own row does not exist yet,

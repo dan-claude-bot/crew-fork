@@ -53,12 +53,13 @@ shared/README.md	none
 shared/test/README.md	none
 shared/lib/host/credentials.sh	credentials,pool,cli-reset,cli-lifecycle,host-tick,floor-no-browser
 shared/lib/host/pool.sh	pool,cli-reset,cli-lifecycle,host-tick
+shared/lib/host/service.sh	service,cli-lifecycle,common
 shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
-cli/crew	cli-lifecycle,cli-reset,cli-store,cli-fleets,box-entry,host-tick,common,floor-no-browser,pool
+cli/crew	cli-lifecycle,cli-reset,cli-store,cli-fleets,box-entry,service,host-tick,common,floor-no-browser,pool
 drill/*	drill,install-drill,drill-teardown,box-entry
-install.sh	install-lifecycle,artifact,install-drill
+install.sh	install-lifecycle,artifact,install-drill,service
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate
 dist/*	artifact,install-lifecycle
 fleet-floor/server/floor/boxentry.py	floor-no-browser,box-entry
