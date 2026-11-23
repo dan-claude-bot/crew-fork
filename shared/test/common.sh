@@ -3952,7 +3952,11 @@ exit "$(cat "$AGG_DIR/$role.rc" 2>/dev/null || echo 0)"
 AGGSH
 printf '#!/usr/bin/env bash\nexit 0\n' >"$AGG/teardown.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$AGG/rehearsal-app.sh"
-chmod +x "$AGG/rehearsal.sh" "$AGG/teardown.sh" "$AGG/rehearsal-app.sh"
+# The workspaces / floor-provision legs (#814, #815) read green here: these
+# rounds are about the notify, resume and breaker rows, and their totals.
+# shellcheck disable=SC2016  # the stub's own source text, expanded where it runs
+printf '#!/usr/bin/env bash\n[ -z "${REHEARSAL_WORKSPACES_STATUS:-}" ] || echo "ok ws" >>"$REHEARSAL_WORKSPACES_STATUS"\n[ -z "${REHEARSAL_PROVISION_STATUS:-}" ] || echo "ok pv" >>"$REHEARSAL_PROVISION_STATUS"\nexit 0\n' >"$AGG/rehearsal-workspaces.sh"
+chmod +x "$AGG/rehearsal.sh" "$AGG/teardown.sh" "$AGG/rehearsal-app.sh" "$AGG/rehearsal-workspaces.sh"
 agg_case() {  # $1 role, $2 notify verdict, $3 rc, $4 resume verdict
   printf '%s' "$2" >"$AGG/$1.verdict"
   printf '%s\n' "$3" >"$AGG/$1.rc"
@@ -3981,6 +3985,7 @@ agg_breaker_run() {
   AGG_DIR="$AGG" bash "$AGG/rehearsal-all.sh" --roles '' \
     --no-app --no-config-drill --no-install-drill --no-resume-drill \
     --no-attention-drill --no-attention-audit-drill --no-release-drill --no-fleet-drill \
+    --no-workspaces-drill --no-floor-provision-drill \
     --no-hygiene-drill --no-notify-drill ${1+"$@"} 2>&1
 }
 if agg_out="$(agg_breaker_run)"; then agg_rc=0; else agg_rc=$?; fi

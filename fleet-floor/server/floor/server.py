@@ -21,6 +21,9 @@ from floor.roster import CONFIG_DIR, read_roster, require_operator_config, roste
 from floor.credentials import credentials_snapshot
 from floor.pool import pool_snapshot
 from floor.inflight import INFLIGHT
+from floor import front
+from floor.fleets import valid_id
+from floor.jobs import Jobs
 
 # --------------------------------------------------------------------------
 # HTTP
@@ -33,6 +36,12 @@ class Handler(BaseHTTPRequestHandler):
     # Args injected by serve()
     fleet = None
     auth_token = None
+    # The fleet's jobs (#815), and — in the process that owns the port, never
+    # in a fleet's child — the other fleets' children and this fleet's id
+    # (#814). `children` is None inside a child: it answers its one fleet.
+    jobs = None
+    children = None
+    home_fid = "default"
     # WHO, for the registry journal (#488 D5). The floor authenticates one
     # operator identity, so this is the whole of what the process knows about
     # the hand behind a write — and naming it beats recording every registry
@@ -48,6 +57,78 @@ class Handler(BaseHTTPRequestHandler):
         if not got.startswith("Basic "):
             return False
         return hmac.compare_digest(got[6:].strip(), self.auth_token)
+
+    def actor(self):
+        """Who is acting, for every journal. A fleet's child is reached only
+        through the front, with a password only the front holds, so the
+        operator identity the FRONT authenticated rides in a header; anywhere
+        else it is this process's own."""
+        if self.children is None and os.environ.get("CREW_FLOOR_CHILD"):
+            return self.headers.get("X-Crew-Floor-Actor", "") or self.auth_user
+        return self.auth_user
+
+    # -- fleets (#814) --------------------------------------------------------
+    def fleet_route(self, method):
+        """Answer what belongs to the front — the fleets list, a `/f/<id>/`
+        request for another fleet — and return True; or, for this process's
+        own fleet, strip `/f/<id>` off self.path and return False so the
+        ordinary routes answer it."""
+        if self.children is None:
+            return False
+        u = urlparse(self.path)
+        path = u.path
+        if path == "/api/fleets":
+            if method == "GET":
+                self.send_json(200, front.fleets_listing(self.children))
+            elif method == "POST":
+                body = self.read_json_body()
+                if body is None:
+                    return True
+                status, result = front.create_fleet(str(body.get("id", "") or ""))
+                if status == 200:
+                    self.children.get(result["id"])
+                self.send_json(status, result)
+            else:
+                self.send_bytes(405, "text/plain; charset=utf-8", b"method not allowed\n")
+            return True
+        if not path.startswith("/f/"):
+            return False
+        fid, sep, tail = path[3:].partition("/")
+        query = ("?" + u.query) if u.query else ""
+        if not sep:
+            self.send_response(301)
+            self.send_header("Location", "/f/%s/%s" % (fid, query))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+        if fid == self.home_fid:
+            self.path = "/" + tail + query
+            return False
+        kid = self.children.get(fid) if valid_id(fid) else None
+        if not kid:
+            self.send_bytes(404, "text/plain; charset=utf-8",
+                            ("no fleet %r on this host\n" % fid).encode("utf-8", "replace"))
+            return True
+        body = None
+        if method in ("POST", "PUT", "PATCH"):
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 1024 * 1024:
+                self.send_json(413, {"ok": False, "error": "body too large"})
+                return True
+            body = self.rfile.read(n)
+        front.proxy(self, kid, method, "/" + tail + query, body)
+        return True
+
+    def read_json_body(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 64 * 1024:
+                self.send_json(413, {"ok": False, "error": "body too large"})
+                return None
+            return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError) as e:
+            self.send_json(400, {"ok": False, "error": "bad JSON: %s" % e})
+            return None
 
     def deny(self):
         # Slow a guesser down. The server is threaded, so this costs the
@@ -82,6 +163,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authed():
             return self.deny()
+        if self.fleet_route("GET"):
+            return
         path = urlparse(self.path).path
         qs = parse_qs(urlparse(self.path).query)
 
@@ -114,6 +197,16 @@ class Handler(BaseHTTPRequestHandler):
             # progress. Cheap — one dict under a lock — so the page polls it
             # every second while anything is in flight, in every tab.
             return self.send_json(200, INFLIGHT.snapshot())
+
+        if path == "/api/jobs":
+            # The floor's jobs (#815): the host's running one, whichever
+            # fleet started it, and this fleet's recent ones with their
+            # output. Polled every second while a job runs.
+            job_id = (qs.get("id") or [""])[0]
+            if job_id:
+                j = self.jobs.get(job_id)
+                return self.send_json(200 if j else 404, j or {"error": "no such job"})
+            return self.send_json(200, self.jobs.snapshot())
 
         if path == "/api/credentials":
             # Which kinds each member's agent takes (#765) — never a
@@ -169,8 +262,11 @@ class Handler(BaseHTTPRequestHandler):
     # unauthenticated caller should learn nothing but "authenticate", so every
     # method this server does not implement is routed through the same gate.
     def do_PUT(self):
-        return self.deny() if not self.authed() else self.send_bytes(
-            405, "text/plain; charset=utf-8", b"method not allowed\n")
+        if not self.authed():
+            return self.deny()
+        if self.fleet_route(self.command):
+            return
+        return self.send_bytes(405, "text/plain; charset=utf-8", b"method not allowed\n")
 
     do_DELETE = do_PUT
     do_PATCH = do_PUT
@@ -179,12 +275,22 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         if not self.authed():
             return self.deny()
+        if self.fleet_route("HEAD"):
+            return
         self.send_bytes(405, "text/plain; charset=utf-8", b"")
 
     def do_POST(self):
         if not self.authed():
             return self.deny()
+        if self.fleet_route("POST"):
+            return
         path = urlparse(self.path).path
+        if path == "/api/jobs":
+            body = self.read_json_body()
+            if body is None:
+                return
+            status, result = self.jobs.start(body, actor=self.actor())
+            return self.send_json(status, result)
         if path != "/api/command":
             return self.send_bytes(404, "text/plain; charset=utf-8", b"not found\n")
         try:
@@ -194,7 +300,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
         except (ValueError, UnicodeDecodeError) as e:
             return self.send_json(400, {"ok": False, "error": "bad JSON: %s" % e})
-        status, result = do_command(self.fleet, body, actor=self.auth_user)
+        status, result = do_command(self.fleet, body, actor=self.actor())
         return self.send_json(status, result)
 
 
@@ -218,6 +324,34 @@ def serve(bind, port, user, password, interval):
     Handler.fleet = fleet
     Handler.auth_token = base64.b64encode(("%s:%s" % (user, password)).encode()).decode()
     Handler.auth_user = user
+    Handler.home_fid = front.home_id(CONFIG_DIR)
+    Handler.jobs = Jobs(Handler.home_fid)
+    children = None
+    if not os.environ.get("CREW_FLOOR_CHILD"):
+        # The process that owns the port also fronts every other fleet on the
+        # host (#814); a fleet's child answers its own fleet and nothing else.
+        children = front.Children(CONFIG_DIR, interval)
+        Handler.children = children
+        threading.Thread(target=children.start_all, daemon=True).start()
+
+    if os.environ.get("CREW_FLOOR_CHILD"):
+        # A fleet's child lives exactly as long as the front that started it:
+        # a front killed outright (SIGKILL, OOM) must not leave children
+        # polling boxes and holding ports nobody can reach.
+        parent = os.getppid()
+
+        def _orphan_watch():
+            while True:
+                time.sleep(2)
+                if os.getppid() != parent:
+                    os._exit(0)
+        threading.Thread(target=_orphan_watch, daemon=True).start()
+    else:
+        import signal
+
+        def _term(signum, frame):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM, _term)
 
     threading.Thread(target=fleet.loop, daemon=True).start()
     if PING_INTERVAL_S > 0:
@@ -225,6 +359,14 @@ def serve(bind, port, user, password, interval):
 
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.daemon_threads = True
+    port = httpd.server_address[1]
+    port_file = os.environ.get("CREW_FLOOR_PORT_FILE")
+    if port_file:
+        # A fleet's child is started on port 0; the front reads the port the
+        # kernel gave it from here (#814).
+        with open(port_file + ".tmp", "w", encoding="utf-8") as f:
+            f.write("%d\n" % port)
+        os.replace(port_file + ".tmp", port_file)
     log("serving fleet-floor on http://%s:%d/ (evidence every %ds, ping every %ds)"
         % (bind, port, interval, PING_INTERVAL_S))
     try:
@@ -232,6 +374,9 @@ def serve(bind, port, user, password, interval):
     except KeyboardInterrupt:
         log("shutting down")
         httpd.shutdown()
+    finally:
+        if children:
+            children.stop_all()
 
 
 def main():

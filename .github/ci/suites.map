@@ -44,6 +44,7 @@ shared/lib/platform.sh	common,cli-lifecycle,cli-reset,cli-store,host-tick,boot-g
 shared/lib/version-skew.sh	common,cli-lifecycle,boot-gate
 shared/bin/*	full
 shared/prompts/*	builder,review,triage,hygiene,release
+shared/conf/fleet.defaults.conf	conf,model-prices,common/conf,boot-gate,vitals,credentials,host-tick,cli-fleets
 shared/conf/*	conf,model-prices,common/conf,boot-gate,vitals,credentials
 shared/host-crontab.example	cli-lifecycle,cli-reset,host-tick
 shared/docs/*	none
@@ -54,7 +55,7 @@ shared/lib/host/pool.sh	pool,cli-reset,cli-lifecycle,host-tick
 shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
-cli/crew	cli-lifecycle,cli-reset,cli-store,host-tick,common,floor-no-browser,pool
+cli/crew	cli-lifecycle,cli-reset,cli-store,cli-fleets,host-tick,common,floor-no-browser,pool
 drill/*	drill,install-drill,drill-teardown
 install.sh	install-lifecycle,artifact,install-drill
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate

@@ -35,6 +35,33 @@ The daily cycle is also the fleet's only routine liveness signal.
 `grok-reviewer` ran no session at all between `2026-08-19` and `2026-08-28`,
 and nothing on the board or the floor reported it.
 
+## Several fleets on one host (#814)
+
+A host can carry more than one fleet definition: the operator's own at
+`~/.config/crew` (the fleet `default`) and any number in the index,
+`~/.config/crew/fleets/<id>/` (`crew init --fleet <id>`, or the floor's New
+fleet). The schedule above stays three lines. Run with no fleet selected, each
+of the three verbs **walks every fleet in turn**, each against its own roster
+and store, each run taking the host maintenance lock itself, and prints
+`== fleet <id>` before each. Its exit status is the worst of the fleets'.
+
+- **`HOST_SCHEDULE=off`** in a fleet's `fleet.conf` keeps that fleet off the
+  walk. It is named and skipped (`off the host schedule`), never ticked,
+  cycled or reset by cron; `crew --fleet <id> tick` still runs it by hand. Set
+  it on a fleet of boxes you work in interactively: an unhired box the host
+  tick reads as idle is stopped after `IDLE_TICKS_BEFORE_STOP` ticks.
+- **`HOST_MAX_RUNNING`** caps the boxes every fleet runs together, because
+  they share one memory. Empty means `FLEET_MAX_RUNNING`. The tick prints
+  `host: N running in this fleet, M in the host's other fleets (host cap K)`
+  and holds a member at the host cap even when its own fleet has room.
+- **A box belongs to exactly one fleet.** `crew up`, `crew hire` and the
+  floor's roster save refuse a box another fleet's roster lists, from both
+  sides, so no box is ticked, cycled or reset twice.
+- **Floor jobs** (#815) take the same host maintenance lock while `up`,
+  Create, `hire`, `upgrade` or `down` runs from the floor, so a scheduled run
+  is skipped with `held by 'crew floor:<verb>'` rather than racing it, and a
+  floor job is refused while a scheduled run holds the lock.
+
 ## The weekly reset — scheduled again since `0.1.4` (#761)
 
 Three rules the reset keeps since the `0.1.4` review, each the host tick's

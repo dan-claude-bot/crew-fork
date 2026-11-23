@@ -304,6 +304,17 @@ def _roster_validate(members, before=None):
     if not clean:
         return None, ("a roster names at least one member — remove boxes one at a time; "
                       "an empty fleet is a definition to retire by hand")
+    # A box belongs to exactly one fleet on this host (#814): two fleets that
+    # both list it would both tick it, restart it and reset it. Checked on
+    # every line, not only new ones, so a hand edit that put a box in two
+    # rosters is named on the next save rather than carried forward.
+    from floor.fleets import claiming_fleet
+    for m in clean:
+        other = claiming_fleet(m["box"], CONFIG_DIR)
+        if other:
+            return None, ("box %s is already on fleet '%s''s roster on this host; a box "
+                          "belongs to exactly one fleet (both would tick, restart and reset "
+                          "it) — take it out of that roster first" % (m["box"], other))
     # A NEW line must name a box that does not exist yet (#763 round 3). Put on
     # the roster, an existing off-roster box — a gold source, a scratch box —
     # is one `crew up` would hire, which is exactly what the CLI's off-roster

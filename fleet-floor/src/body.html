@@ -15,7 +15,10 @@
 
   <!-- fleet command bar (floor view) -->
   <div class="fleetbar">
-    <div class="brand"><b>◆</b> FLEET FLOOR<span class="rp">heavy-duty/crew</span></div>
+    <div class="brand"><b>◆</b> FLEET FLOOR<span class="rp">heavy-duty/crew</span><!--
+      The host's fleets (#814): this page's fleet, and every other one on the
+      host. Switching opens that fleet's own page (/f/<id>/). Hidden until a
+      collector answers. --><select id="fleetsel" class="fleetsel" aria-label="fleet" style="display:none"></select></div>
     <span class="clock" id="clock">--:--:--</span>
     <span class="demo-badge" title="Roster is real (crew examples/fleet.roster). States, active ops, metrics &amp; activity are placeholder data — run `crew floor` to serve this page against the real fleet.">◈ DEMO DATA</span>
     <!-- Result of the last operator action, and the reason a live page stopped
@@ -41,6 +44,11 @@
       <button class="fchip" data-f="role" data-v="triage">Triage</button>
     </div>
   </div>
+
+  <!-- The floor's one running job (#815), host-wide: what the CLI is doing
+       right now, in every tab on every fleet, with a spinner while it runs and
+       its exit status after. Painted by paintJobBar(). -->
+  <div class="jobbar" id="jobbar" role="status" aria-live="polite" style="display:none"></div>
 
   <!-- agent console (zoom view) -->
   <div class="rail rail-l">
@@ -69,6 +77,9 @@
   <div class="opsbar">
     <div class="obox ops">
       <div class="oh"><span>ACTIVE OPERATIONS <b id="ops-count"></b></span><span class="gacts"><button class="gbtn" id="g-start">▶ Start all</button><button class="gbtn" id="g-stop">⏸ Stop all</button><button class="gbtn" id="g-wake">◈ Wake silent</button><!--
+        The CLI's own verbs as jobs (#815): Up shows `crew up --dry-run`'s plan
+        and runs it when confirmed; Down is `crew down`. One job at a time on
+        the host. --><button class="gbtn" id="g-up" data-job="up" data-tip="crew up — its plan is shown first">▲ Up</button><button class="gbtn" id="g-down" data-job="down" data-tip="crew down — drains and stops this fleet's boxes">▼ Down</button><!--
         The fleet-wide half of #488. It sits with the other fleet-scope
         controls rather than in the chrome above, because that is what it is:
         a change to what the whole fleet watches. The per-box half is in the

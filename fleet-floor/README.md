@@ -224,6 +224,11 @@ no build step, no dependencies.
 | `/api/actions` | GET | what is in flight right now: per box the action holding it, its step and age; for the fleet the action and its progress (#766) |
 | `/api/credentials` | GET | per member, the credential kinds its gh and its agent take — never a credential (#765) |
 | `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set`, `credentials-set` |
+| `/api/jobs` | GET | the host's running job, whichever fleet started it, and this fleet's recent jobs with their output; `?id=<job>` for one job in full (#815) |
+| `/api/jobs` | POST | `{"verb", "box"?, "plan"?, "confirm"?}` with verb one of `up`, `create`, `hire`, `upgrade`, `down`: run one of the CLI's verbs as a job. Up and Create run only as `plan: true` first, then with `confirm: <plan id>` (#815) |
+| `/api/fleets` | GET | the host's fleets: id, directory, member count, whether the host schedule walks it, and its page `/f/<id>/` (#814) |
+| `/api/fleets` | POST | `{"id": "<id>"}`: a new, empty fleet, made with the CLI's `init --fleet` (#814) |
+| `/f/<id>/…` | any | fleet `<id>`'s page and API: the same routes as above, for that fleet (#814) |
 | `/api/logs` | GET | tail `duty.log` or one session log |
 | `/healthz` | GET | liveness |
 
@@ -257,6 +262,41 @@ cannot be messaged; the request is refused rather than queued.
 - **Where the value never goes.** It is never in argv, the collector's log, `.credentials-journal.log` (who set which kind, for which member, and the verdict), the reply, or a file on the host. No endpoint reads a credential back.
 - **Refusals.** A kind the agent does not take, an empty value or an unknown box is refused 400, and nothing reaches a box. The box must be running.
 
+### Several fleets, one floor (#814)
+
+The floor serves every fleet definition on the host. Its own fleet — the one
+the CLI resolves — is at `/`, as it always was, and also at `/f/<its id>/`.
+Every other fleet in the index (`~/.config/crew/fleets/<id>/`) is at
+`/f/<id>/`: the request is proxied to a child floor started for that fleet
+alone, bound to loopback behind a password only the front holds. A child holds
+one fleet's roster, store and registries, so nothing posted to `/f/<id>/` can
+reach another fleet's boxes, whatever it names. The page reads its fleet from
+its own URL, so a reload keeps it and two tabs can sit on two fleets. The
+switcher beside the brand lists the host's fleets and opens one; **+ New
+fleet** runs the CLI's `init --fleet <id>` and opens the empty fleet.
+
+### The CLI's verbs, from the floor (#815)
+
+**▲ Up** and **▼ Down** in the operations bar run `crew up` and `crew down`
+for the page's fleet. Each roster row offers its member's next verb:
+**Create** (`crew up <box>`: that member alone, created, started and hired),
+**Hire**, or **Upgrade**. They are the CLI's own verbs, run as host processes:
+the floor adds no flow of its own.
+
+- **One job at a time on the host.** A second job anywhere, on any fleet, is
+  refused with the running one named. While one runs, the job bar shows it in
+  every tab — a spinner, the verb, the fleet, the elapsed time and the line it
+  last printed — and every job button is held.
+- **The plan first.** Up and Create run `--dry-run` first and show it; the run
+  is a button on that plan, and the collector refuses a run that names no plan,
+  a failed or stale one (15 minutes), or one read before the roster changed.
+- **Beside the schedule, never inside it.** A job takes the host maintenance
+  lock the scheduled verbs take, so the cron never acts mid-job and a job is
+  refused while a scheduled run holds it.
+- **The record.** Each job's output streams to a panel and is written to
+  `store/jobs/<stamp>-<id>.log`; `.jobs-journal.log` holds who, which verb,
+  which fleet, the plan it confirmed and the exit status.
+
 ### The roster is editable (#764)
 
 `fleet.roster` is the fleet — one line per box: name, agent, role(s), and the
@@ -285,9 +325,10 @@ own mode, fsynced, and journalled in `.roster-journal.log` (who, the state
 the write applied, the deltas). It is refused under the shipped examples
 fallback, as every writer is.
 
-Saving writes the definition and nothing else. A new line becomes a box when
-the operator runs `crew up` on the host (it creates, starts and hires every
-roster box; the login is the operator's, by hand). A removed line's box is
+Saving writes the definition and nothing else. A new line becomes a box with
+its row's **Create** (#815), or when the operator runs `crew up` on the host
+(it creates, starts and hires every roster box); the login is the operator's,
+in the Credentials panel. A removed line's box is
 left alone: the console stops watching it and the host tick stops waking it,
 and nothing is ever deleted. The collector reads the roster on every poll, so
 the edit is live at the next one.

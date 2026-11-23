@@ -162,6 +162,7 @@ cleanup() {
   [ -n "${SRV4:-}" ] && kill "$SRV4" 2>/dev/null
   [ -n "${SRV5:-}" ] && kill "$SRV5" 2>/dev/null
   [ -n "${SRV6:-}" ] && kill "$SRV6" 2>/dev/null
+  [ -n "${SRV7:-}" ] && kill "$SRV7" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
@@ -316,6 +317,11 @@ source "$HERE/floor/alerts.sh"
 # both before it returns; the position is the belt to that file's braces.
 # shellcheck source=floor/registry.sh
 source "$HERE/floor/registry.sh"
+# workspaces.sh boots its own collector over its own host (two fleets, a stub
+# CLI) and reads nothing the shared one writes, so its position is free; it
+# sits after registry.sh so that file's PATH and definition are restored first.
+# shellcheck source=floor/workspaces.sh
+source "$HERE/floor/workspaces.sh"
 # The two scripts that normally only run inside a box, executed for real —
 # without this the collector assertions above are circular (they validate the
 # parser against stub-box's imitation of probe.sh, not against probe.sh).

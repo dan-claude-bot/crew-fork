@@ -11,6 +11,12 @@
 # (not in a box). $HOME is expanded by cron; the path is the link `install.sh`
 # maintains.
 #
+# SEVERAL FLEETS (#814): these three lines serve every fleet on the host. With
+# no fleet selected each verb walks every definition in turn — the operator's
+# own (~/.config/crew) and each one in ~/.config/crew/fleets/ — and a fleet
+# whose fleet.conf says HOST_SCHEDULE=off is skipped by name. Set that on a
+# fleet of boxes you work in by hand: the tick stops a box it reads as idle.
+#
 # THE HOST NEEDS ITS OWN `gh` LOGIN. The tick reads every registered board
 # with the host's gh, not a box's: `gh auth login` once, as the operator (or a
 # read-only identity), before the first tick. A host whose gh is dead says so
