@@ -14,6 +14,7 @@ from floor import store as fleet_store
 from floor.roster import (CONFIG_DIR, FLOOR_VERSION, agent_conf_path, box_states,
                           read_roster, role_conf_path)
 from floor.units import build_unit, fmt_dur, stuck_verdict, unit_defaults
+from floor.boxentry import entry_mode, shell_hint
 
 
 def wedged(ping, now):
@@ -216,6 +217,9 @@ class Fleet:
             threads.append(t)
         for t in threads:
             t.join(PROBE_TIMEOUT_S + 15)
+        for u in units:
+            if u:
+                u["shell"] = shell_hint(u["box"], u.get("agent"))
 
         snap = {
             "live": True,
@@ -224,6 +228,9 @@ class Fleet:
             "interval": self.interval,
             "ping_interval": PING_INTERVAL_S,
             "units": [u for u in units if u],
+            # The door into a box (#792), and per unit the `box shell` line an
+            # operator pastes — `--user <agent>` on box 0.11.0 and later.
+            "box_entry": entry_mode() or "unknown",
             "polling": True,
             # When the inventory was read (#763 round 9): a box this poll saw
             # stopped or absent drops a heartbeat older than that reading — the

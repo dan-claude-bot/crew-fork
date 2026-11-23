@@ -7,6 +7,9 @@
 # `CREW_REINSTALL` of the ACTIVE default never leaves `current` resolving to
 # nothing.
 set -uo pipefail
+# This suite's box stubs model a box 0.10 host and predate #792's door: the
+# stamp entry is pinned here, and both doors are box-entry.sh's suite to test.
+export CREW_BOX_ENTRY_MODE=stamp
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"            # repo root: the crew tree to install

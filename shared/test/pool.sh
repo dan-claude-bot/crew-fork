@@ -13,6 +13,9 @@
 # The box-side snippets are single-quoted on purpose: they expand in the box.
 # shellcheck disable=SC2016
 set -uo pipefail
+# This suite's box stubs model a box 0.10 host and predate #792's door: the
+# stamp entry is pinned here, and both doors are box-entry.sh's suite to test.
+export CREW_BOX_ENTRY_MODE=stamp
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=shared/test/lib.sh

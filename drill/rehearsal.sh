@@ -106,6 +106,16 @@ esac
 [ -n "$BOX_NAME" ] || BOX_NAME="crew-drill-$ROLE"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$ROOT/shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+fi
 AGENT_CONF="$ROOT/shared/conf/agents/$AGENT.conf"
 available_agents() {
   local f
@@ -270,7 +280,7 @@ rehearsal_fast_restore_cli() {
   bx "sed -i '/^# rehearsal-fast-stub begin$/,/^# rehearsal-fast-stub end$/d' ~/duty/conf/roles/$ROLE.conf" \
     && REHEARSAL_FAST_STUB_SET=0
 }
-bx() { box exec "$BOX_NAME" -- bash -lc "$1"; }
+bx() { box_in "$BOX_NAME" -- bash -lc "$1"; }
 # shellcheck disable=SC2034  # read and updated by rehearsal-safety.sh
 REPOS_BACKUP=""
 ACQUIRE_TMP=""
@@ -542,7 +552,7 @@ BOX_TOUCHED=1
 check "box reachable" bx "true"
 
 # shellcheck disable=SC2016  # expanded by bash inside the box
-box exec "$BOX_NAME" -- bash -lc '
+box_in "$BOX_NAME" -- bash -lc '
   set -euo pipefail
   archive="$HOME/.crew-engine.tgz"
   tmp="$(mktemp "$HOME/.crew-engine.XXXXXX")"
@@ -626,7 +636,7 @@ CREW_CONFIG_DIR="$DRILL_CONFIG" "$CREW_BIN" hire "$BOX_NAME" --ref "$SOURCE_SHA"
 # also what gives the raw installer coverage layered ON TOP of the deployed
 # path, rather than instead of it.
 # shellcheck disable=SC2016  # expanded by bash inside the box
-box exec "$BOX_NAME" -- bash -lc '
+box_in "$BOX_NAME" -- bash -lc '
   set -euo pipefail
   archive="$HOME/.crew-engine.tgz"
   tmp="$(mktemp "$HOME/.crew-engine.XXXXXX")"

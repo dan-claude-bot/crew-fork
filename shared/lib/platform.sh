@@ -11,7 +11,7 @@
 # is the worst possible moment to discover a platform floor.
 #
 # FLOORS, NOT EQUALITY, AND THE OPPOSITE IS ONE LINE TO REVERSE (#679 D13).
-# The declaration means "built and tested against box 0.10.0 and rig 0.4.0":
+# The declaration means "built and tested against box 0.10.0 and rig 0.4.1 (box 0.11.0 enters with --user, #792)":
 # below the floor is a finding, at or above it is silence. Exact-equality
 # pinning would make box 0.10.1 — which exists on box's main today — an error
 # on a fleet nothing is wrong with, and would put the fleet into a lockstep
@@ -55,7 +55,7 @@
 # rig version in the tree is a COMMENT about when a capability arrived, which
 # is a different sentence and does not move when the floor does.
 CREW_PLATFORM_BOX_MIN="0.10.0"
-CREW_PLATFORM_RIG_MIN="0.4.0"
+CREW_PLATFORM_RIG_MIN="0.4.1"
 
 # platform_version_of LINE — the bare version out of a `<tool> <ver> (<root>)`
 # answer, which is the shape both box and rig print for --version:
@@ -208,6 +208,8 @@ platform_guest_rig_versions() { # [ROSTER_FILE]
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     grep -qxF -- "$name" <<<"$roster_names" || continue
+    # Root on purpose: /etc/rig/manifest is a system file, and root is box
+    # 0.11.0's default door (#792) as much as any user's was before it.
     answer="$(timeout 10 box exec "$name" -- bash -lc \
       'echo probe=ok; [ -r /etc/rig/manifest ] && cat /etc/rig/manifest' \
       </dev/null 2>/dev/null | tr -d '\r' || true)"

@@ -45,6 +45,18 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$ROOT/shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+  # shellcheck disable=SC2034,SC2317  # the caller reads it; reached only without shared/lib
+  box_in_flags() { BOX_IN_FLAGS=(); }
+fi
 # shellcheck source=drill/agreement.sh disable=SC1091
 source "$HERE/agreement.sh"
 
@@ -164,7 +176,7 @@ ARMED_BY_DRILL=""
 # the shell inside it; and the function is called from the control block and
 # from cleanup(), neither of which shellcheck treats as a call site.
 drill_arm_cron() {
-  box exec "$1" -- bash -lc '
+  box_in "$1" -- bash -lc '
     tmp=$(mktemp)
     { crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh"
       echo "*/5 * * * * $HOME/duty/bin/tick.sh"; } > "$tmp"
@@ -173,20 +185,20 @@ drill_arm_cron() {
 }
 # shellcheck disable=SC2016,SC2317
 drill_disarm_cron() {
-  box exec "$1" -- bash -lc '
+  box_in "$1" -- bash -lc '
     tmp=$(mktemp)
     crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh" > "$tmp" || true
     crontab "$tmp"; rc=$?
     rm -f "$tmp"; exit "$rc"' >/dev/null 2>&1
 }
 # shellcheck disable=SC2317
-drill_cron_armed()  { box exec "$1" -- bash -lc "crontab -l 2>/dev/null | grep -qE '^[^#].*tick\.sh'" >/dev/null 2>&1; }
+drill_cron_armed()  { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -qE '^[^#].*tick\.sh'" >/dev/null 2>&1; }
 # shellcheck disable=SC2317
-drill_cron_paused() { box exec "$1" -- bash -lc "crontab -l 2>/dev/null | grep -q '^#CREW-FLOOR-PAUSED'" >/dev/null 2>&1; }
+drill_cron_paused() { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -q '^#CREW-FLOOR-PAUSED'" >/dev/null 2>&1; }
 # Any tick.sh line at all, commented or live — the same fact rehearsal.sh's own
 # teardown check asserts, and the one that says "disarmed" without ambiguity.
 # shellcheck disable=SC2016,SC2317
-drill_cron_present() { box exec "$1" -- bash -lc 'crontab -l 2>/dev/null | grep -qF "$HOME/duty/bin/tick.sh"' >/dev/null 2>&1; }
+drill_cron_present() { box_in "$1" -- bash -lc 'crontab -l 2>/dev/null | grep -qF "$HOME/duty/bin/tick.sh"' >/dev/null 2>&1; }
 
 # shellcheck disable=SC2317  # invoked by the traps below, which shellcheck
 # does not treat as a call site.
@@ -576,7 +588,12 @@ BOX_READ_TIMEOUT="${CREW_FLOOR_PROBE_TIMEOUT:-45}"
 # collection read one duty.log. That is the same defect codex-bot named in the
 # dry-run verdict — a claim wider than the read behind it — one layer further
 # down, and it makes "every roster box's crontab" true rather than aspirational.
-box_read() { timeout "$BOX_READ_TIMEOUT" box exec "$@" </dev/null; }
+# timeout(1) cannot run a shell function, so the door's words are spliced in (#792).
+box_read() {
+  local b="$1"; shift
+  box_in_flags "$b" || { local rc=$?; return "$rc"; }
+  timeout "$BOX_READ_TIMEOUT" box exec ${BOX_IN_FLAGS[@]+"${BOX_IN_FLAGS[@]}"} "$b" "$@" </dev/null
+}
 
 # The box's own answer to the integrity question, asked over its own transport.
 # `--state` prints ONE bare word — absent, unverified, current or modified
@@ -653,7 +670,7 @@ t "ping and probe agree about the duty lock" "" "$DISAGREE"
 # `gh auth status` would cost ~450ms per box per poll and pass every stub test.
 echo
 echo "== credentials come from the flow"
-PROBE_MS="$( { TIMEFORMAT=%R; time box exec "$(body GET /api/fleet | jqf "d['units'][0]['box']")" -- \
+PROBE_MS="$( { TIMEFORMAT=%R; time box_in "$(body GET /api/fleet | jqf "d['units'][0]['box']")" -- \
   bash -lc "$(cat "$ROOT/fleet-floor/server/probe.sh")" >/dev/null 2>&1 </dev/null; } 2>&1 )"
 PROBE_MS="${PROBE_MS%.*}"
 if [ -n "$PROBE_MS" ] && [ "$PROBE_MS" -le 3 ]; then

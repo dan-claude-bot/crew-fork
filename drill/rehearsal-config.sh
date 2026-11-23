@@ -41,6 +41,16 @@ case "$ROLE" in
 esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$ROOT/shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+fi
 CREW="$ROOT/cli/crew"
 command -v box >/dev/null || { echo "drill/rehearsal-config.sh runs on a box HOST — no 'box' on PATH"; exit 1; }
 
@@ -48,10 +58,10 @@ PASS=0
 declare -a FAILS=()
 ok()   { echo "ok   $1"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL $1${2:+  — $2}"; FAILS+=("$1"); }
-bx()   { box exec "$BOX_NAME" -- bash -lc "$1" </dev/null; }
+bx()   { box_in "$BOX_NAME" -- bash -lc "$1" </dev/null; }
 put_registry() {
   # shellcheck disable=SC2016  # expanded by bash inside the box
-  box exec "$BOX_NAME" -- bash -lc '
+  box_in "$BOX_NAME" -- bash -lc '
     set -euo pipefail
     destination="$HOME/duty/repos.txt"
     tmp="$(mktemp "$HOME/duty/.repos.XXXXXX")"

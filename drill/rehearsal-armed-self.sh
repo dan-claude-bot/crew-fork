@@ -35,7 +35,14 @@ ARMED_SELF_STAGE=0   # 0 untouched · 1 cron armed · 2 clock moved
 ARMED_SELF_WHY=""
 
 armed_self_box() { "${ARMED_SELF_BOX_CMD:-box}" "$@"; }
-armed_self_bx() { armed_self_box exec "$1" -- bash -lc "$2" </dev/null; }
+# As the agent (#792): box_in's door, unless a fixture supplies the transport.
+armed_self_bx() {
+  if [ -n "${ARMED_SELF_BOX_CMD:-}" ] || ! declare -F box_in >/dev/null; then
+    armed_self_box exec "$1" -- bash -lc "$2" </dev/null
+  else
+    box_in "$1" -- bash -lc "$2" </dev/null
+  fi
+}
 armed_self_root() { armed_self_box incus "$1" -- exec "{}" -- bash -c "$2" </dev/null 2>/dev/null; }
 
 # armed_self_clock_delta BOX — host minus box, in whole seconds; nothing when

@@ -41,6 +41,10 @@ source "$CREW_ROOT/shared/lib/version-skew.sh"
 source "$CREW_ROOT/shared/lib/platform.sh"
 # shellcheck disable=SC1091
 source "$CREW_ROOT/shared/lib/box-mint.sh"
+# The one door into a box (#792): `box_in` enters as the agent on box 0.11.0
+# and later, as the stamped user before it.
+# shellcheck disable=SC1091
+source "$CREW_ROOT/shared/lib/box-entry.sh"
 # The detail view renders the report computed inside the box. Source only the
 # renderer's leaf module here: common.sh is the guest engine's entry point and
 # brings host-irrelevant state, while duplicating these rows would let the CLI
@@ -465,7 +469,15 @@ EXIT_NOTHING_TO_DO=4
 # profile is defined anywhere).
 die() { echo "crew: $*" >&2; exit 1; }         # 1 = it went wrong
 usage_error() { echo "crew: $*" >&2; echo "try 'crew help'." >&2; exit 2; }  # 2 = you asked wrong
-need_box() { command -v box >/dev/null || die "the 'box' CLI is not on PATH — crew runs on a box host"; }
+need_box() {
+  command -v box >/dev/null || die "the 'box' CLI is not on PATH — crew runs on a box host"
+  # The door into a box is decided once, in this shell, so every box_in after
+  # it reuses the answer (#792). An unreadable box version refuses here.
+  box_entry_resolve_mode || exit 2
+}
+# The agent a roster box is entered as on box 0.11.0 (#792): its roster line's
+# agent column. A box off the roster falls through to box-entry.sh's own read.
+box_entry_agent_of() { roster_line "$1" | awk '{print $1}'; }
 
 # The examples fallback is a definition NOBODY WROTE, and it must not be able
 # to create infrastructure or arm cron (#216). Resolution ends at
@@ -740,7 +752,8 @@ THE LIFECYCLE — two verbs around one human step in the middle
               crew login <box> gh                 # a PAT — one identity per box
               crew login <box> agent [<kind>]     # once hired: its profile's kinds
           or the floor's Credentials overlay, which runs the same shell.
-          The interactive way still works: box shell <box>, then
+          The interactive way still works: box shell <box> (on box 0.11.0
+          and later: box shell --user <agent> <box>), then
           gh auth login and <the agent profile's login hint>.
           'crew status' and 'crew up' report who still owes this.
   hire    crew hire / crew hire-all — the box joins the crew: engine
@@ -793,7 +806,7 @@ EXAMPLES
 
   # one new member, end to end
   crew new claude-builder
-  box shell claude-builder          # gh auth login, then the agent login
+  box shell --user claude claude-builder   # (box below 0.11.0: box shell claude-builder)
   crew hire claude-builder
 
   # a god-view of the fleet, reachable from the LAN
@@ -1291,7 +1304,7 @@ cmd_uninstall() {
 # "stdin is always pinned" checkable at all: before, the redirect was a thing
 # each call site had to remember, and the two that forgot were the two in
 # roster loops.
-bxn() { box exec "$1" -- bash -lc "$2" </dev/null; }
+bxn() { box_in "$1" -- bash -lc "$2" </dev/null; }
 
 # credentials_line BOX — the export's one answer off a running box (#765):
 # the LAST `CREDS1 …` or `CREDS-FAIL …` line, so a login banner before it is
@@ -1305,7 +1318,7 @@ credentials_line() {
 # this shell (#765): a credential to set, the credentials a reset carries.
 # Never the caller's stdin — inside a roster loop that would drain the roster
 # — and never a file: DATA crosses the host in memory only.
-bxpipe() { printf '%s' "$3" | box exec "$1" -- bash -lc "$2"; }
+bxpipe() { printf '%s' "$3" | box_in "$1" -- bash -lc "$2"; }
 
 # bxput is the one other stdin-bearing box channel: atomically stage one host
 # file without requiring it to be tracked by git in the box's checkout.
@@ -1319,7 +1332,7 @@ bxput() { # BOX SOURCE DESTINATION
     cat >\"\$tmp\"
     mv \"\$tmp\" \"\$destination\"
   "
-  box exec "$box_name" -- bash -lc "$remote_script" <"$source_file"
+  box_in "$box_name" -- bash -lc "$remote_script" <"$source_file"
 }
 
 # resolve_engine REF — select one host-side engine source and set the
@@ -2182,7 +2195,7 @@ stamp_version() {
 # vendor_probe NAME AGENT — run the agent profile's bot_cli_probe inside the
 # box, shipping the profile over stdin (works on unhired boxes too).
 vendor_probe() {
-  box exec "$1" -- bash -lc \
+  box_in "$1" -- bash -lc \
     'cat >/tmp/.crew-agent-probe.conf; source /tmp/.crew-agent-probe.conf; bot_cli_probe' \
     <"$(agent_conf "$2")" >/dev/null 2>&1
 }
@@ -3161,7 +3174,7 @@ cycle_box() {
     return 1
   fi
   after="$(wait_box_free_kb "$name")" || {
-    echo "  restart FAILED on $name — box started but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name"
+    echo "  restart FAILED on $name — box started but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: $(box_shell_hint "$name")"
     return 1
   }
   if [ "$initial_state" = stopped ]; then
@@ -3797,7 +3810,7 @@ cut_box() { # NAME
   # hired, is worse than none: the restore that uses it comes back looking
   # like it worked and the box cannot do a minute's work.
   if ! bxn "$name" 'gh auth status >/dev/null 2>&1' 2>/dev/null; then
-    echo "  $name: REFUSED — not logged in to GitHub (an $RESET_LABEL checkpoint of a box without credentials restores to a box that cannot work); log it in with: crew login $name gh (or box shell $name)"
+    echo "  $name: REFUSED — not logged in to GitHub (an $RESET_LABEL checkpoint of a box without credentials restores to a box that cannot work); log it in with: crew login $name gh (or $(box_shell_hint "$name"))"
     return 1
   fi
   stamp="$(hired_at "$name")"
@@ -3828,7 +3841,7 @@ cut_box() { # NAME
     return 1
   fi
   if ! vendor_probe "$name" "$agent"; then
-    echo "  $name: REFUSED — its $agent CLI is not logged in (an $RESET_LABEL checkpoint of a box that cannot reach its model restores to a box that cannot work); log it in with: crew login $name agent (or box shell $name)"
+    echo "  $name: REFUSED — its $agent CLI is not logged in (an $RESET_LABEL checkpoint of a box that cannot reach its model restores to a box that cannot work); log it in with: crew login $name agent (or $(box_shell_hint "$name"))"
     return 1
   fi
   # AN UNPARSEABLE STAMP IS NOT A VERSION TO RECORD. This coerced to the
@@ -3926,7 +3939,7 @@ cut_box() { # NAME
     return 1
   fi
   bxn "$name" 'rm -f ~/duty/.memory-pending' >/dev/null 2>&1 \
-    || echo "  $name: NOTE — .memory-pending is still set on the live box; remove it with: box exec $name -- rm -f duty/.memory-pending"
+    || echo "  $name: NOTE — .memory-pending is still set on the live box; remove it with: $(box_shell_hint "$name"), then rm -f duty/.memory-pending"
   if ! checkpoint_record "$name" "$ver"; then
     echo "  $name: FAILED — $RESET_LABEL was cut but its version could not be recorded at $(checkpoint_file "$name"); re-cut once the path is writable"
     return 1
@@ -4073,7 +4086,7 @@ restore_box() { # NAME
     return 1
   fi
   if ! wait_box_free_kb "$name" >/dev/null; then
-    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: box shell $name${creds_lost} — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
+    echo "  $name: FAILED — restored and started, but its guest stayed unreachable after $RESTART_READY_ATTEMPTS probes; inspect with: $(box_shell_hint "$name")${creds_lost} — and the store HOLDS its memory until a reset writes it back (its pulls land only the log meanwhile): re-run crew reset $name"
     return 1
   fi
   if [ "$creds_read" -eq 1 ] && [ -n "$creds" ]; then
@@ -5001,7 +5014,7 @@ cmd_login() {
     case "$(bxn "$b" 'if test -r ~/duty/conf/instance.conf; then echo hired; else echo unhired; fi' 2>/dev/null | tr -d '\r' | tail -1)" in
       hired) ;;
       unhired) die "$b is not hired yet — its agent credential is set against the profile hire installs: crew hire $b, then crew login $b agent" ;;
-      *) die "$b did not answer — nothing set (is its guest up? box shell $b)" ;;
+      *) die "$b did not answer — nothing set (is its guest up? $(box_shell_hint "$b"))" ;;
     esac
   fi
   verdict="$(bxpipe "$b" "$(host_credentials_set_sh)" "$(printf '%s %s\n%s\n' "$svc" "$kind" "$secret")" 2>&1 \

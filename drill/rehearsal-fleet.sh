@@ -61,6 +61,16 @@ for box_name in $BOXES; do
 done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$ROOT/shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+fi
 # The suite drives the whole leg with a stub `crew` and a stub `box`; a real
 # round never sets this.
 CREW="${REHEARSAL_FLEET_CREW:-$ROOT/cli/crew}"
@@ -79,7 +89,7 @@ fail() { echo "FAIL $1${2:+  — $2}"; FAILS+=("$1"); VERDICTS="$VERDICTS
 FAIL $1${2:+ — $2}"; }
 skip() { echo "skip $1${2:+  — $2}"; VERDICTS="$VERDICTS
 skip $1${2:+ — $2}"; }
-bx()   { box exec "$1" -- bash -lc "$2" </dev/null; }
+bx()   { box_in "$1" -- bash -lc "$2" </dev/null; }
 # box_state_of NAME — running · stopped · unknown, read the way cli/crew's own
 # box_state reads it (`box info --json`, either shape).
 box_state_of() {

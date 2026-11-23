@@ -24,6 +24,7 @@ from floor.inflight import INFLIGHT
 from floor import front
 from floor.fleets import valid_id
 from floor.jobs import Jobs
+from floor.boxentry import box_exec, require_entry_mode
 
 # --------------------------------------------------------------------------
 # HTTP
@@ -251,8 +252,8 @@ class Handler(BaseHTTPRequestHandler):
         if name and not re.fullmatch(r"[A-Za-z0-9._@#-]{1,120}", name):
             return self.send_bytes(400, "text/plain; charset=utf-8", b"bad log name\n")
         target = ('"$HOME/duty/logs/%s"' % name) if name else '"$HOME/duty/duty.log"'
-        rc, out, err = run(["box", "exec", box, "--", "bash", "-lc",
-                            "tail -n 500 %s 2>/dev/null" % target], 30)
+        rc, out, err = run(box_exec(box, "bash", "-lc",
+                                    "tail -n 500 %s 2>/dev/null" % target), 30)
         payload = out if rc == 0 else "unreadable: %s" % (err.strip() or "rc %d" % rc)
         return self.send_bytes(200, "text/plain; charset=utf-8",
                                payload.encode("utf-8", "replace"))
@@ -384,6 +385,9 @@ def main():
     # unconfigured host must get the config answer, not a missing-password or
     # missing-build one — the same order cmd_floor uses.
     require_operator_config()
+    # The door into every box depends on box's version (#792): an unreadable
+    # one refuses here, as the CLI's need_box does, rather than guessing.
+    require_entry_mode()
     ap_port = int(os.environ.get("CREW_FLOOR_PORT", "8420"))
     ap_bind = os.environ.get("CREW_FLOOR_BIND", "0.0.0.0")
     ap_user = os.environ.get("CREW_FLOOR_USER", "operator")

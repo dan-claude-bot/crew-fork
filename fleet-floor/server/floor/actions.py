@@ -16,6 +16,7 @@ from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_
 from floor.credentials import credentials_set
 from floor.pool import ACTIONS as POOL_ACTIONS, pool_command
 from floor.inflight import INFLIGHT, busy_reply
+from floor.boxentry import box_exec
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -406,7 +407,7 @@ def _do_command(fleet, body, actor=""):
         return row
 
     def in_box(name, script, stdin_data=None, step=None):
-        return one(name, ["box", "exec", name, "--", "bash", "-lc", script],
+        return one(name, box_exec(name, "bash", "-lc", script),
                    stdin_data=stdin_data, step=step)
 
     def operator_conf_for(name):
@@ -479,7 +480,7 @@ def _do_command(fleet, body, actor=""):
         INFLIGHT.step(name, "ready", action)
         deadline = time.time() + WAKE_READY_S
         while time.time() < deadline:
-            rc, out, _err = run(["box", "exec", name, "--", "bash", "-lc", READY_SH], 15)
+            rc, out, _err = run(box_exec(name, "bash", "-lc", READY_SH), 15)
             if rc == 0 and "floor-ready" in (out or ""):
                 break
             time.sleep(3)
@@ -520,8 +521,8 @@ def _do_command(fleet, body, actor=""):
         # rapid messages to the same box raced and a session could run the
         # OTHER request's prompt.
         token = uuid.uuid4().hex
-        w = one(box, ["box", "exec", box, "--", "bash", "-lc",
-                      'mkdir -p "$HOME/duty" && cat > "$HOME/duty/.floor-prompt.%s"' % token],
+        w = one(box, box_exec(box, "bash", "-lc",
+                             'mkdir -p "$HOME/duty" && cat > "$HOME/duty/.floor-prompt.%s"' % token),
                 stdin_data=prompt)
         if not w["ok"]:
             results.append(w)

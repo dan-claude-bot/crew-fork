@@ -7208,7 +7208,10 @@ if(_railL)_railL.addEventListener("click",function(e){
   else if(b.id==="ac-term"){
     /* A browser cannot open a shell into a box. Hand over the command the
        operator would type instead of pretending otherwise. */
-    var c="box shell "+box;
+    /* The collector's own line (#792): `box shell --user <agent> <box>` on
+       box 0.11.0 and later, where a bare `box shell` would enter as root. */
+    var lu=((LIVEMETA&&LIVEMETA.units)||[]).filter(function(x){return x.box===box;})[0];
+    var c=(lu&&lu.shell)||("box shell "+box);
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(c).then(function(){setStatus("copied: "+c,false);},function(){setStatus(c,false);});
     else setStatus(c,false);
   }

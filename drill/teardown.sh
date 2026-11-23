@@ -54,6 +54,16 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The one door into a box (#792): box_in enters as the agent on box 0.11.0 and
+# later. A copy of this script with no shared/lib beside it (a test harness)
+# keeps today's door.
+if [ -r "$ROOT/shared/lib/box-entry.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/shared/lib/box-entry.sh"
+else
+  # shellcheck disable=SC2317  # reached only without shared/lib
+  box_in() { local b="$1"; shift; box exec "$b" "$@"; }
+fi
 
 # The roles the rehearsal knows, which is what `crew-drill-<role>` can expand
 # to. rehearsal.sh validates --role against this same set.
@@ -369,7 +379,7 @@ if case " $ROLES " in *" builder "*) true ;; *) false ;; esac \
       # The box's exit status is kept: a failed read is no identity at all,
       # whatever it printed, and the fork is held back below (#769).
       builder_box_owner="$(gh_login_from \
-        "$(box exec crew-drill-builder -- bash -lc 'gh api user --jq .login' 2>/dev/null)")" \
+        "$(box_in crew-drill-builder -- bash -lc 'gh api user --jq .login' 2>/dev/null)")" \
         || builder_box_owner=""
     fi
     if [ -z "$builder_box_owner" ]; then
@@ -587,7 +597,7 @@ BUILDER_FORK_DELETE_FAILED=0
 for fork_record in ${DOOMED_BUILDER_FORKS[@]+"${DOOMED_BUILDER_FORKS[@]}"}; do
   fork_box="${fork_record%%|*}"
   fork_repo="${fork_record##*|}"
-  if box exec "$fork_box" -- bash -lc "gh repo delete '$fork_repo' --yes"; then
+  if box_in "$fork_box" -- bash -lc "gh repo delete '$fork_repo' --yes"; then
     echo "ok   deleted builder fork $fork_repo"
   else
     echo "FAIL could not delete builder fork $fork_repo through $fork_box" >&2
