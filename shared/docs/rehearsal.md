@@ -872,9 +872,11 @@ entry, one `crew --fleet prov tick`, and the row's removal.
   hired and logged in from the floor, one job at a time)`, `FAIL (…)`,
   `INCOMPLETE (…)`, `SKIPPED (…)`, or `skip (--no-floor-provision-drill)` /
   `skip (--fast: mints a box of its own)`.
-- **Its box** is removed by the leg unless the round runs with `--keep`; a kept
-  one is cleared with `drill/teardown.sh --box crew-drill-floor --yes`, and the
-  round refuses to start while it stands, as it does for the role boxes (#806).
+- **Its box** is removed by the leg unless the round runs with `--keep`. A kept
+  one is cleared with `drill/teardown.sh --box crew-drill-floor --yes`, which
+  the round's closing teardown line includes whenever the box still stands
+  (#818). The round refuses to start while it stands, as it does for the role
+  boxes (#806).
 - **A failure means** a fleet cannot be stood up from the floor: a button that
   runs something other than its verb, a plan that is skipped or names another
   fleet's box, two jobs at once, or a member that does not come out hired.

@@ -151,9 +151,13 @@ chmod +x "$HARNESS/install-drill.sh"
 cat >"$HARNESS/box" <<'BOX'
 #!/usr/bin/env bash
 # #806: `box list --json` answers the boxes a test says are standing.
+# #818: the floor-provision stub leaves a mark when it "kept" its box, and from
+# then on the box is listed as standing.
 if [ "${1:-}" = list ]; then
-  [ -n "${DRILL_EXISTING_BOXES:-}" ] || exit 1
-  printf '%s\n' $DRILL_EXISTING_BOXES | jq -R '{name: .}' | jq -s .
+  standing="${DRILL_EXISTING_BOXES:-}"
+  [ ! -f "${DRILL_FLOOR_MARK:-/nonexistent}" ] || standing="$standing crew-drill-floor"
+  [ -n "${standing// /}" ] || exit 1
+  printf '%s\n' $standing | jq -R '{name: .}' | jq -s .
   exit 0
 fi
 [ "${1:-}" = exec ] || exit 1
@@ -211,6 +215,7 @@ v="${DRILL_WS_VERDICT:-ok two fleets}"; [ "$v" = - ] && v=""
 [ -z "${REHEARSAL_WORKSPACES_STATUS:-}" ] || [ -z "$v" ] || printf '%s\n' "$v" >>"$REHEARSAL_WORKSPACES_STATUS"
 v="${DRILL_PV_VERDICT:-ok a floor-built fleet}"; [ "$v" = - ] && v=""
 [ -z "${REHEARSAL_PROVISION_STATUS:-}" ] || [ -z "$v" ] || printf '%s\n' "$v" >>"$REHEARSAL_PROVISION_STATUS"
+[ -z "${DRILL_FLOOR_MARK:-}" ] || : >"$DRILL_FLOOR_MARK"
 exit "${DRILL_WS_RC:-0}"
 WORKSPACES
 chmod +x "$HARNESS/rehearsal-workspaces.sh"
@@ -5290,5 +5295,21 @@ t w815-teardown-still-refuses-a-near-miss 1 \
 t w814-the-leg-refuses-a-non-drill-box 1 \
   "$(bash "$ROOT/drill/rehearsal-workspaces.sh" --boxes 'claude-builder' 2>&1 | grep -c "refusing non-drill box 'claude-builder'")"
 t w814-the-leg-is-documented 2 "$(runbook_documented_legs | grep -cxE 'workspaces|floor-provision')"
+
+# --- #818: the closing teardown hint names the floor-provision leg's box -----
+W818_MARK="$TMP/w818-floor-kept"
+rm -f "$W818_MARK"
+w818_out="$(DRILL_FLOOR_MARK="$W818_MARK" ws_round)"
+t w818-a-kept-floor-box-is-in-the-hint 1 \
+  "$(grep -c '^## When you are done with them:  drill/teardown.sh --roles "reviewer" --box crew-drill-floor$' <<<"$w818_out")"
+rm -f "$W818_MARK"
+w818_out="$(ws_round)"
+t w818-no-floor-box-no-box-flag 1 \
+  "$(grep -c '^## When you are done with them:  drill/teardown.sh --roles "reviewer"$' <<<"$w818_out")"
+rm -f "$W818_MARK"
+w818_out="$(DRILL_FLOOR_MARK="$W818_MARK" ws_round --no-floor-provision-drill)"
+t w818-without-the-leg-the-hint-is-the-roles 1 \
+  "$(grep -c '^## When you are done with them:  drill/teardown.sh --roles "reviewer"$' <<<"$w818_out")"
+rm -f "$W818_MARK"
 
 suite_finish
