@@ -1228,6 +1228,17 @@ done
 # the round whose boxes an operator needs standing to find out why. So it
 # keeps them, like a failure does.
 TEARDOWN_HINT="drill/teardown.sh --roles \"$ROLES\""
+# The floor-provision leg's own box (#815) is the one the role list cannot
+# name. The leg removes it unless the round keeps its boxes, or the removal
+# failed; either way, if it still stands, the line the operator copies clears
+# it too, so the next round is not refused for it (#806, #818).
+if [ "$PROVISION_DRILL" -eq 1 ]; then
+  floor_boxes="$(box list --json 2>/dev/null | jq -r '.[]?.name // empty' 2>/dev/null)" \
+    || floor_boxes="" # Decision-path empty fallback: the next round's up-front check still names it
+  case $'\n'"$floor_boxes"$'\n' in
+    *$'\n'"crew-drill-floor"$'\n'*) TEARDOWN_HINT="$TEARDOWN_HINT --box crew-drill-floor" ;;
+  esac
+fi
 if [ "$KEEP" -eq 1 ] && [ -n "$LEGS" ]; then
   SUMMARY+=("keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)")
 elif [ "$KEEP" -eq 1 ]; then
