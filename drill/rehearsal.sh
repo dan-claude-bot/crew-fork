@@ -683,7 +683,7 @@ if [ "$GH_AUTHED" -eq 1 ]; then
     || { echo "cannot isolate repos.txt — refusing before any authenticated tick"; exit 1; }
 fi
 
-bx "~/duty/bin/tick.sh" || true
+rehearsal_tick || true
 check "tick evidence: run start"   bx "grep -q 'duty run start' ~/duty/duty.log"
 check "tick evidence: run end"     bx "grep -q 'duty run end' ~/duty/duty.log"
 check "boot check ran"             bx "test -s ~/duty/boot-check.log"
@@ -984,7 +984,7 @@ else
   # -- attention wake --
   # Its fixture is `$inum`, minted above the census for the page-boundary
   # reason given there. The tick is what the wake rows are about.
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   if ! rehearsal_fast_skip "attention: the wake's pickup comment and its ack"; then
   wait_for 900 "attention: 📌 pickup comment" bash -c \
     "out=\$(gh api 'repos/$SANDBOX/issues/$inum/comments' --jq '[.[] | select(.user.login == \"$ME2\")] | length'); grep -qE '^[1-9][0-9]*$' <<<\"\$out\""
@@ -1041,7 +1041,7 @@ else
     -f body="Drill fixture: an unlabelled open issue. Rule on it — leave one short ruling comment and put it in exactly one of $REHEARSAL_LABEL_READY/$REHEARSAL_LABEL_CLAIMED/$REHEARSAL_LABEL_BLOCKED (or $REHEARSAL_LABEL_EPIC). Do not open PRs." \
     --jq .number)"
   rehearsal_fixture_record_issue "$SANDBOX" "$tnum"
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   wait_for 900 "triage: stray drew a ruling comment" bash -c \
     "out=\$(gh api 'repos/$SANDBOX/issues/$tnum/comments' --jq '[.[] | select(.user.login == \"$ME2\")] | length'); grep -qE '^[1-9][0-9]*$' <<<\"\$out\""
   # The board invariant: no open issue may remain queue-unlabelled. The set is
@@ -1053,7 +1053,7 @@ else
     rehearsal_stray_left_the_queue "$SANDBOX" "$tnum"
   # Same tick, second time: triage must not re-rule a settled issue.
   TCOMMENTS="$(gh api "repos/$SANDBOX/issues/$tnum/comments" --jq 'length')"
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   sleep 20
   check "triage: no second ruling on re-tick" bash -c \
     "[ \"\$(gh api 'repos/$SANDBOX/issues/$tnum/comments' --jq 'length')\" = '$TCOMMENTS' ]"
@@ -1063,7 +1063,7 @@ else
   # complete tick spends no session. Read off the tick that follows the
   # re-tick above, on the same board.
   DUTY_LOG_LINES="$(bx "wc -l < ~/duty/duty.log")"
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   sleep 20
   check "triage: quiet-board tick launched no session" bx \
     "out=\$(tail -n +$((DUTY_LOG_LINES + 1)) ~/duty/duty.log); grep -Fq '$SANDBOX: quiet — no mentions, no triage signals, no session launched' <<<\"\$out\""
@@ -1125,7 +1125,7 @@ else
     rehearsal_fixture_record_builder_issue "$SANDBOX" "$ME2" "$bnum"
     check "builder fixture is unassigned (ready+assigned is not pickable)" bash -c \
       "out=\$(gh api 'repos/$SANDBOX/issues/$bnum' --jq '.assignees | length'); grep -qx 0 <<<\"\$out\""
-    bx "~/duty/bin/tick.sh" || true
+    rehearsal_tick || true
     wait_for 1800 "builder: opened a PR for the ready issue" \
       rehearsal_builder_pr_for_issue "$SANDBOX" "$ME2" "$bnum"
     bpr="$(rehearsal_builder_pr_for_issue "$SANDBOX" "$ME2" "$bnum" 2>/dev/null || echo '')"
@@ -1143,7 +1143,7 @@ else
       rehearsal_builder_left_the_queue "$SANDBOX" "$bnum"
     # Re-tick must not phantom-rebuild: this issue still resolves to one PR.
     BPR="$bpr"
-    bx "~/duty/bin/tick.sh" || true
+    rehearsal_tick || true
     sleep 20
     if [ -n "$BPR" ] && \
         retry_bpr="$(rehearsal_builder_pr_for_issue "$SANDBOX" "$ME2" "$bnum")" && \
@@ -1200,7 +1200,7 @@ else
             "$SANDBOX" "$builder_head" "$builder_check_context" success \
             "drill releases the settled-head panel request"; then
           ok "builder: settled head status established"
-          bx "~/duty/bin/tick.sh" || true
+          rehearsal_tick || true
           wait_for 300 "builder: panel request issued after head settles" \
             rehearsal_builder_requested "$SANDBOX" "$bpr" "$HOST_ME"
         else
@@ -1249,7 +1249,7 @@ else
   rehearsal_fixture_record_pr "$SANDBOX" "$pr"
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
   head_sha="$(gh api "repos/$SANDBOX/pulls/$pr" --jq .head.sha)"
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   wait_for 900 "review: 🔎 announce at head" bash -c \
     "out=\$(gh api 'repos/$SANDBOX/issues/$pr/comments' --jq '.[] | select(.user.login == \"$ME2\") | .body'); grep -q '🔎 reviewing head $head_sha' <<<\"\$out\""
   verdicts() { gh api "repos/$SANDBOX/pulls/$pr/reviews" --paginate | jq -s --arg m "$ME2" --arg h "$head_sha" \
@@ -1262,7 +1262,7 @@ else
     rehearsal_review_announce_precedes_verdict "$SANDBOX" "$pr" "$ME2" "$head_sha"
 
   VREF="$(verdicts)"
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   sleep 20
   check "dedup: no second verdict on re-tick" verdicts_unchanged
   # The announce is the other half of dedup and the half a user would see.
@@ -1299,7 +1299,7 @@ else
   bx "printf 'AUTO_APPROVE_REREQUEST=0\n' >> ~/duty/conf/instance.conf"
   VREF="$(verdicts)"
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   wait_for_after "review: verdict pinned to head" \
     1200 "re-request rule: auto off queues a real re-review" verdicts_grew
   # ...and it is a considered verdict, not the auto-approval under another
@@ -1313,7 +1313,7 @@ else
 
   # -- re-request at unchanged head -> auto-approve through the gate --
   gh api "repos/$SANDBOX/pulls/$pr/requested_reviewers" -f "reviewers[]=$ME2" >/dev/null
-  bx "~/duty/bin/tick.sh" || true
+  rehearsal_tick || true
   wait_for_after "review: verdict pinned to head" 300 "re-request: auto-approved (supersede)" bash -c \
     "gh api 'repos/$SANDBOX/pulls/$pr/reviews' --paginate | jq -se --arg m \"$ME2\" \
       '[add[] | select(.user.login == \$m) | .body] | any(contains(\"re-request rule\"))'"

@@ -1236,6 +1236,35 @@ _session_tree_hwm() {
   printf '%s' "$hwm"
 }
 
+# _session_watch_arm / _session_watch_sleep SECONDS — the watchers' sleep, and
+# the TERM that ends it WITH them (#809).
+#
+# Both watchers are background subshells of the duty run, so each inherits the
+# duty lock's descriptor (flock's command form hands it to every child), and so
+# does every `sleep` they start. Their stops send TERM to the subshell — and a
+# plain foreground `sleep` is not the subshell: bash dies at the signal and the
+# sleep, orphaned, runs out its interval holding that descriptor. The run had
+# exited; the lock had not. On the rc6 round that refused the drill's next tick
+# 2 s after `duty run end`, and in production it skips any cron boundary that
+# lands in the interval after a run.
+#
+# So the sleep is a child the subshell WAITS on, and the subshell's TERM trap
+# kills it before exiting: `wait` returns at the signal, the trap runs, the
+# sleep goes with it. Nothing the watcher started outlives its stop.
+_session_watch_arm() {
+  _SESSION_WATCH_SLEEP=""
+  # shellcheck disable=SC2154  # set by _session_watch_sleep in this subshell
+  trap '[ -z "${_SESSION_WATCH_SLEEP:-}" ] || kill "$_SESSION_WATCH_SLEEP" 2>/dev/null; exit 0' TERM
+}
+_session_watch_sleep() {
+  local rc=0
+  sleep "$1" &
+  _SESSION_WATCH_SLEEP=$!
+  wait "$_SESSION_WATCH_SLEEP" || rc=$?
+  _SESSION_WATCH_SLEEP=""
+  return "$rc"
+}
+
 # _session_peak_rss_watch ROOT FILE — hold FILE at the largest VmHWM seen in
 # the process tree rooted at ROOT, for as long as ROOT lives. ROOT is the
 # dispatch's own subshell, so what is measured is the session and nothing the
@@ -1252,13 +1281,14 @@ _session_tree_hwm() {
 # sides of it.
 _session_peak_rss_watch() {
   local root="$1" out="$2" hwm=0 v
+  _session_watch_arm
   while kill -0 "$root" 2>/dev/null; do
     # `|| return 0` and not a bare `sleep`: an interval this cannot sleep on
     # ends the watcher instead of spinning the loop hot on /proc for as long
     # as the session runs. Under the engine's `set -e` a failed sleep would
     # end it anyway — the explicit exit is what makes that true everywhere,
     # rather than a property of the caller's shell options.
-    sleep "$SESSION_PEAK_POLL_S" || return 0
+    _session_watch_sleep "$SESSION_PEAK_POLL_S" || return 0
     v="$(_session_tree_hwm "$root")"
     if [ -n "$v" ] && [ "$v" -gt "$hwm" ]; then
       hwm="$v"
@@ -1651,8 +1681,9 @@ _session_mem_terminate() {
 # above it.
 _session_mem_watch() {
   local peak="$1" mark="$2" root="$3" kind="$4" ceil="$5" v
+  _session_watch_arm
   while kill -0 "$root" 2>/dev/null; do
-    sleep "$SESSION_PEAK_POLL_S" || return 0
+    _session_watch_sleep "$SESSION_PEAK_POLL_S" || return 0
     v="$(session_peak_rss "$peak")"
     [ -n "$v" ] || continue
     [ "$v" -gt "$ceil" ] || continue

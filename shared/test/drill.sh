@@ -1449,6 +1449,62 @@ t drill-mint-sequence-emits-no-template 0 \
 t drill-mint-sequence-bootstrap-names-no-user 0 \
   "$(grep -c -- '--user' "$MINT_STATE/script-crew-drill-reviewer" || true)"
 
+# --- #810: a tick the duty lock refuses is re-fired, not waited on ---------
+#
+# A stub box: bx runs its command with HOME at a fake guest, and the guest's
+# tick.sh writes either a refusal or a run to duty.log from a scripted
+# sequence, one word per tick. The helper must re-tick past refusals, return
+# on the first tick that ran, and say so loudly when the bound is spent.
+W810="$TMP/w810"
+mkdir -p "$W810/duty/bin"
+cat >"$W810/duty/bin/tick.sh" <<'TICK'
+#!/usr/bin/env bash
+seq_file="$HOME/seq"; n="$(cat "$HOME/n" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$HOME/n"
+word="$(sed -n "${n}p" "$seq_file")"
+case "$word" in
+  dead) echo "T duty tick skipped: lock held with no live holder — the previous run exited; its descriptor was inherited by a process it left behind" >>"$HOME/duty/duty.log" ;;
+  live) echo "T duty tick skipped: previous run still holds the lock (running 3s)" >>"$HOME/duty/duty.log" ;;
+  *) printf 'T duty run start\nT duty run end\n' >>"$HOME/duty/duty.log" ;;
+esac
+TICK
+chmod +x "$W810/duty/bin/tick.sh"
+w810_run() { # w810_run SEQ… — the helper's output, then "rc=N ticks=N"
+  printf '%s\n' "$@" >"$W810/seq"; rm -f "$W810/n"; printf 'T earlier run end\n' >"$W810/duty/duty.log"
+  (
+    # shellcheck source=drill/rehearsal-safety.sh
+    . "$ROOT/drill/rehearsal-safety.sh"
+    bx() { HOME="$W810" bash -c "$1"; }
+    # shellcheck disable=SC2030  # deliberately local to this subshell
+    REHEARSAL_TICK_RETRY_S=0 REHEARSAL_TICK_TRIES=3
+    rc=0; rehearsal_tick || rc=$?
+    printf 'rc=%s ticks=%s\n' "$rc" "$(cat "$W810/n")"
+  ) 2>&1
+}
+w810_out="$(w810_run ran)"
+t w810-a-tick-that-ran-is-not-retried 'rc=0 ticks=1' "$(tail -1 <<<"$w810_out")"
+w810_out="$(w810_run dead ran)"
+t w810-a-refused-tick-is-re-fired 'rc=0 ticks=2' "$(tail -1 <<<"$w810_out")"
+t w810-the-re-fire-names-the-refusal 1 "$(grep -c 're-ticking in 0s (1 of 3)' <<<"$w810_out")"
+w810_out="$(w810_run live dead ran)"
+t w810-both-refusal-wordings-are-re-fired 'rc=0 ticks=3' "$(tail -1 <<<"$w810_out")"
+w810_out="$(w810_run dead dead dead ran)"
+t w810-a-held-lock-is-said-after-the-bound 'rc=1 ticks=3' "$(tail -1 <<<"$w810_out")"
+t w810-a-held-lock-says-the-rows-read-nothing 1 "$(grep -c 'tick refused 3 times in a row — the duty lock is held' <<<"$w810_out")"
+# An earlier refusal already in the log is not this tick's.
+printf 'ran\n' >"$W810/seq"; rm -f "$W810/n"
+printf 'T duty tick skipped: lock held with no live holder — x\n' >"$W810/duty/duty.log"
+w810_out="$(
+  # shellcheck source=drill/rehearsal-safety.sh
+  . "$ROOT/drill/rehearsal-safety.sh"
+  bx() { HOME="$W810" bash -c "$1"; }
+  rc=0; REHEARSAL_TICK_RETRY_S=0 rehearsal_tick || rc=$?
+  printf 'rc=%s ticks=%s\n' "$rc" "$(cat "$W810/n")" 2>&1)"
+t w810-an-earlier-refusal-is-not-this-ticks 'rc=0 ticks=1' "$(tail -1 <<<"$w810_out")"
+# Every single-tick site in the role drill goes through it; the one tick run
+# in the background (observed while alive) is the only direct call left.
+t w810-every-single-tick-site-re-fires 12 "$(grep -c '^\s*rehearsal_tick || true$' "$ROOT/drill/rehearsal.sh")"
+t w810-only-the-background-tick-is-direct 1 "$(grep -c 'bx "~/duty/bin/tick.sh"' "$ROOT/drill/rehearsal.sh")"
+
 # --- #729: phase 2 needs a counterparty for builder and reviewer ------------
 #
 # The comparison is a pure pre-fixture guard so CI drives both sides without

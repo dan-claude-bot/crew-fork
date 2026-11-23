@@ -57,10 +57,20 @@ GH_CALLS="$TMP/gh-calls"
 gh() {
   printf 'GH %s\n' "$*" >>"$GH_CALLS"
   case "$*" in
+    # #811: a label-filtered listing is GitHub's search index, which lags —
+    # GH_PRS_INDEXED is what the index has caught up to (all of GH_PRS unless
+    # a case says otherwise). The unfiltered listing is the repository's own,
+    # current, and carries each PR's labels: a fourth field, comma-separated,
+    # `release` when omitted, `-` for none.
+    "pr list"*"--label"*"--jq"*)
+      printf '%s\n' "${GH_PRS_INDEXED-${GH_PRS:-}}" | awk 'NF && $4 != "-"' | cut -d' ' -f1-3 ;;
+    "pr list"*"--label"*)
+      printf '%s\n' "${GH_PRS_INDEXED-${GH_PRS:-}}" | awk 'NF && $4 != "-"' | jq -Rn '[inputs | split(" ") | {number: (.[0]|tonumber), author: {login: .[1]}, headRefName: .[2]}]' ;;
     "pr list"*"--jq"*)
       printf '%s\n' "${GH_PRS:-}" | awk 'NF' ;;
     "pr list"*)
-      printf '%s\n' "${GH_PRS:-}" | awk 'NF' | jq -Rn '[inputs | split(" ") | {number: (.[0]|tonumber), author: {login: .[1]}, headRefName: .[2]}]' ;;
+      printf '%s\n' "${GH_PRS:-}" | awk 'NF' | jq -Rn '[inputs | split(" ") | {number: (.[0]|tonumber), author: {login: .[1]}, headRefName: .[2],
+        labels: ((.[3] // "release") | if . == "-" then [] else split(",") | map({name: .}) end)}]' ;;
     "pr view"*"--json state,mergedAt"*)
       printf '%s\n' "${GH_PR_STATE:-OPEN }" ;;
     "api graphql"*"commits(first:100)"*)
@@ -424,6 +434,26 @@ t read-commits-leave-no-memory 0 "$(cuts)"
 rel_reset
 printf 's\n' >"$ORIGIN/apps/site/s.txt"; gq add -A; gq commit -q -m "feat(site): s (#7)"
 HEAD7="$(git -C "$ORIGIN" rev-parse HEAD)"
+# #811: the session's release PR is open, labelled and on its branch, but the
+# search index has not caught up — the rc6 round's reading. The cut must read
+# the repository's own listing, find it, and count no try.
+rel_reset
+OUT="$(SIM_PR_AFTER="91 dan-claude-bot release/site-2.1.46" GH_PRS_INDEXED="" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t w811-a-pr-the-index-has-not-caught-up-to-is-found 0 "$(grep -c 'ended without opening' <<<"$OUT")"
+w811_tried=0; for f in "$DUTY_DIR"/.release-tried-*; do [ -e "$f" ] && w811_tried=$((w811_tried + 1)); done
+t w811-the-cut-is-ledgered-not-retried 0 "$w811_tried"
+t w811-no-label-filtered-listing-is-asked 0 "$(grep -c '^GH pr list.*--label' "$GH_CALLS" || true)"
+# …and the label is still checked, by the engine: an unlabelled PR on the
+# branch is not the cut.
+rel_reset
+OUT="$(SIM_PR_AFTER="91 dan-claude-bot release/site-2.1.46 -" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t w811-an-unlabelled-pr-is-not-the-cut 1 "$(grep -c 'ended without opening release/site-2.1.46 (try 1 of 2)' <<<"$OUT")"
+# The hold reads the same listing: an open labelled cut the index has not
+# indexed still holds the track, and launches no session.
+rel_reset
+OUT="$(GH_PRS="95 dan-claude-bot release/site-2.1.46" GH_PRS_INDEXED="" GH_PR_STATE="OPEN " RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
+t w811-an-unindexed-open-cut-holds-the-track 0 "$(sessions)"
+rel_reset
 OUT="$(SIM_PR_AFTER="" GH_PRS="" RELEASE_QUIET_S=0 RELEASE_TRACKS="$SITE_TRACK" rel_run)"
 t a-session-without-a-pr-warns-with-its-try 1 "$(grep -c "WARN: release: acme/site — the session ended without opening release/site-2.1.46 (try 1 of 2); the track at ${HEAD7:0:7} is cut again next tick" <<<"$OUT")"
 t a-session-without-a-pr-earns-no-row 0 "$([ -f "$DUTY_DIR/.seen-release" ] && grep -c . "$DUTY_DIR/.seen-release" || echo 0)"

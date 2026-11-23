@@ -1865,6 +1865,32 @@ t peak-watcher-is-reaped-with-the-session reaped "$r1"
 t peak-watcher-pid-is-cleared '' "$_SESSION_PEAK_PID"
 SESSION_PEAK_POLL_S=5
 
+# #809: nothing a stopped watcher started may outlive it holding the duty
+# lock. The run holds the lock in flock's command form, as tick.sh does, so
+# every child inherits the descriptor; each watcher is started on a live root
+# and stopped mid-interval, the run exits, and the lock must be free at once.
+# Before the fix the orphaned `sleep` held it for the rest of its interval.
+w809_lock="$TMP/w809.lock"
+w809_held() { # w809_held WATCHER — run under the lock, stop WATCHER, exit; "free" or "held"
+  # shellcheck disable=SC2016  # the program is expanded by the child bash
+  flock -n "$w809_lock" bash -c '
+    source "$1/lib/common.sh"
+    SESSION_PEAK_POLL_S=30
+    sleep 31 & root=$!
+    case "$2" in
+      peak) _session_peak_rss_start "$3/w809.peak" "$root"; sleep 0.3; _session_peak_rss_stop ;;
+      mem)  _session_mem_watch "$3/w809.peak" "$3/w809.mark" "$root" build 2147483647 & _SESSION_MEM_PID=$!
+            sleep 0.3; _session_mem_watch_stop "$3/w809.mark" ;;
+    esac
+    kill "$root" 2>/dev/null; wait "$root" 2>/dev/null
+    exit 0' _ "$SHARED" "$1" "$TMP" >/dev/null 2>&1
+  if flock -n "$w809_lock" true; then printf free; else printf held; fi
+}
+t w809-stopped-peak-watcher-releases-the-lock-with-the-run free "$(w809_held peak)"
+t w809-stopped-mem-watchdog-releases-the-lock-with-the-run free "$(w809_held mem)"
+t w809-no-watcher-sleep-survives-its-stop 0 \
+  "$(for p in $(pgrep -x sleep); do ls -l "/proc/$p/fd" 2>/dev/null; done | grep -cF "$w809_lock" || true)"
+
 # D2's absence, and the rule that makes it mean one thing: a session that does
 # not outlive one interval is not measured. The rest of the line is untouched
 # — an unmeasured session is not a failed one.
