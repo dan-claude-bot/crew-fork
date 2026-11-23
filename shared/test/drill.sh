@@ -150,6 +150,12 @@ INSTALL
 chmod +x "$HARNESS/install-drill.sh"
 cat >"$HARNESS/box" <<'BOX'
 #!/usr/bin/env bash
+# #806: `box list --json` answers the boxes a test says are standing.
+if [ "${1:-}" = list ]; then
+  [ -n "${DRILL_EXISTING_BOXES:-}" ] || exit 1
+  printf '%s\n' $DRILL_EXISTING_BOXES | jq -R '{name: .}' | jq -s .
+  exit 0
+fi
 [ "${1:-}" = exec ] || exit 1
 [ "${DRILL_SECTION_A_UNREADABLE:-0}" -eq 0 ] || exit 2
 if [ "${DRILL_SECTION_A_ARMED:-0}" -eq 1 ]; then
@@ -416,6 +422,41 @@ w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG")"
 t w776-only-failed-not-a-summary-is-refused 1 "$(grep -c "carries no '## leg …' block — not a round summary" <<<"$w776_out")"
 w776_out="$(w776_round --roles reviewer --only-failed "$W776_LOG" --legs hygiene)"
 t w776-only-failed-and-legs-are-exclusive 1 "$(grep -c -- '--legs and --only-failed are exclusive' <<<"$w776_out")"
+
+# #806: a box an earlier --keep round left standing is refused before
+# anything runs, with the teardown that clears it — not three role FAILs.
+cat >"$W776_LOG" <<'PREV'
+## declared leg states:
+## leg executed hygiene  (ok; preservation + refusal)
+## leg not-executed browser  (INCOMPLETE; not executed: playwright-core not installed)
+PREV
+: >"$ROLE_LOG"
+w806_out="$(DRILL_EXISTING_BOXES='crew-drill-triage crew-drill-reviewer other-box' \
+  w776_round --roles 'triage builder reviewer' --only-failed "$W776_LOG")"
+t w806-standing-boxes-are-named 1 \
+  "$(grep -c '^drill/rehearsal-all.sh: drill boxes from an earlier round still exist: crew-drill-triage crew-drill-reviewer$' <<<"$w806_out")"
+t w806-standing-boxes-name-the-teardown 1 \
+  "$(grep -c 'drill/teardown.sh --roles "triage reviewer" --yes$' <<<"$w806_out")"
+t w806-standing-boxes-run-no-role 0 "$(grep -c . "$ROLE_LOG")"
+t w806-standing-boxes-are-rc-1 1 "$(grep -cx 'rc=1' <<<"$w806_out")"
+t w806-standing-boxes-print-no-summary 0 "$(grep -c 'fleet rehearsal summary' <<<"$w806_out")"
+# A whole round is refused the same way, up front.
+w806_out="$(DRILL_EXISTING_BOXES='crew-drill-builder' w776_round --roles builder --keep)"
+t w806-full-round-refused-up-front 1 "$(grep -c 'still exist: crew-drill-builder$' <<<"$w806_out")"
+t w806-full-round-runs-no-role 0 "$(grep -c . "$ROLE_LOG")"
+# --reuse is the operator's recorded exception: passed through, not refused.
+w806_out="$(DRILL_EXISTING_BOXES='crew-drill-reviewer' w776_round --roles reviewer --reuse --keep \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w806-reuse-is-not-refused 0 "$(grep -c 'still exist' <<<"$w806_out")"
+t w806-reuse-runs-the-role 1 "$(grep -c . "$ROLE_LOG")"
+# A box that is not this round's drill box, or no box at all, refuses nothing.
+: >"$ROLE_LOG"
+w806_out="$(DRILL_EXISTING_BOXES='crew-drill-triage' w776_round --roles reviewer --keep \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill)"
+t w806-another-roles-box-refuses-nothing 0 "$(grep -c 'still exist' <<<"$w806_out")"
+t w806-another-roles-box-runs-the-role 1 "$(grep -c . "$ROLE_LOG")"
 
 # --- #774: --creds hands the round the operator's pool, checked first --------
 W774_POOL="$TMP/w774-pool"
@@ -1038,6 +1079,21 @@ t drill-report-exit-round-incomplete-names-target 1 \
     <<<"$(footer round-incomplete "$TARGET")")"
 t drill-report-exit-round-incomplete-no-target-drops-instruction 1 \
   "$(grep -cF 'before reporting anything.' <<<"$(footer round-incomplete '')")"
+# #805: exit 2 covers every INCOMPLETE row, so the footer names them, and
+# sends the operator into a box only when a role is among them.
+w805_leg="$(rehearsal_report_footer round-incomplete "$TARGET" browser)"
+t w805-leg-only-footer-names-the-leg 1 "$(grep -c '(INCOMPLETE: browser): every role reached phase 2' <<<"$w805_leg")"
+t w805-leg-only-footer-blames-no-role 0 "$(grep -c 'never reached' <<<"$w805_leg")"
+t w805-leg-only-footer-sends-no-one-into-a-box 0 "$(grep -c 'Log those boxes in' <<<"$w805_leg")"
+t w805-leg-only-footer-names-the-rerun 1 "$(grep -c -- '--only-failed' <<<"$w805_leg")"
+t w805-leg-only-footer-says-teardown-first 1 "$(grep -c 'drill/teardown.sh' <<<"$w805_leg")"
+t w805-leg-only-footer-names-target 1 "$(grep -cF "before reporting anything on $TARGET." <<<"$w805_leg")"
+w805_role="$(rehearsal_report_footer round-incomplete '' 'builder resume attention')"
+t w805-role-footer-lists-every-row 1 "$(grep -c '(INCOMPLETE: builder, resume, attention): at least one role never reached' <<<"$w805_role")"
+t w805-role-footer-sends-the-operator-to-the-box 1 "$(grep -c 'Log those boxes in and re-run before reporting anything.$' <<<"$w805_role")"
+w805_none="$(rehearsal_report_footer round-incomplete '')"
+t w805-no-rows-footer-blames-no-role 0 "$(grep -c 'never reached' <<<"$w805_none")"
+t w805-no-rows-footer-is-still-not-a-pass 1 "$(grep -c '^## NOT a pass' <<<"$w805_none")"
 # The footer that routes to a box keeps the box either way: what is dropped is
 # the target, never the evidence the operator has to collect.
 t drill-report-exit-fail-keeps-box-either-way 2 \
@@ -1094,7 +1150,7 @@ if pull_out="$(DRILL_ROLE_RC=2 round_run "$HARNESS/rehearsal-all.sh" reviewer \
     refs/pull/450/head)"; then pull_rc=0; else pull_rc=$?; fi
 t drill-report-pull-round-is-incomplete 2 "$pull_rc"
 t drill-report-pull-round-names-target 1 \
-  "$(grep -cF '## in and re-run before reporting anything on PR #450.' \
+  "$(grep -cF 'Log those boxes in and re-run before reporting anything on PR #450.' \
     <<<"$pull_out")"
 t drill-report-pull-round-passes-source-ref refs/pull/450/head \
   "$(awk '{print $5}' "$ROLE_LOG")"
@@ -1109,7 +1165,7 @@ git --git-dir="$REMOTE" update-ref refs/heads/main "$FIRST"
 if main_out="$(DRILL_ROLE_RC=2 round_run "$HARNESS/rehearsal-all.sh" reviewer \
     main)"; then :; fi
 t drill-report-branch-round-drops-instruction 1 \
-  "$(grep -cF '## in and re-run before reporting anything.' <<<"$main_out")"
+  "$(grep -cF 'Log those boxes in and re-run before reporting anything.' <<<"$main_out")"
 t drill-report-branch-round-names-no-pr 0 \
   "$(grep -cE 'PR #[0-9]' <<<"$main_out" || true)"
 t drill-report-branch-round-passes-no-source-ref '-' \

@@ -28,6 +28,9 @@
 #   --legs a,b,…        run only these legs (the role sections always run)
 #   --only-failed LOG   run only the legs LOG read FAIL or INCOMPLETE, and
 #                       print the rest of LOG's leg states beside the result
+#
+# Both re-run the role sections on fresh boxes: a box an earlier --keep round
+# left standing is refused before anything runs, with its teardown (#806).
 set -uo pipefail
 
 ROLES="triage builder reviewer"
@@ -248,6 +251,37 @@ if [ -n "$CREDS" ]; then
   export CREW_CREDENTIALS_DIR
   echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
 fi
+# Every role section mints a fresh box and phase 0 refuses one that already
+# exists (#116), so a box a `--keep` round left behind fails its role a minute
+# in, as a FAIL that names the role rather than the box. --legs and
+# --only-failed re-run the role sections too: the obvious follow-up to a kept
+# round could never work, and the rc5 round read three role FAILs that way
+# (#806). Said here, before anything runs, with the one command that clears
+# them. --reuse is the operator's recorded exception and is passed through.
+# An unreadable `box list` says nothing: phase 0 still decides per role.
+case " ${PASSTHRU[*]-} " in
+  *" --reuse "*) ;;
+  *)
+    existing_boxes="$(box list --json 2>/dev/null | jq -r '.[]?.name // empty' 2>/dev/null)" \
+      || existing_boxes="" # Decision-path empty fallback: phase 0 still refuses per role
+    standing_roles="" standing_boxes=""
+    for role in $ROLES; do
+      case $'\n'"$existing_boxes"$'\n' in
+        *$'\n'"crew-drill-$role"$'\n'*)
+          standing_roles="$standing_roles${standing_roles:+ }$role"
+          standing_boxes="$standing_boxes${standing_boxes:+ }crew-drill-$role" ;;
+      esac
+    done
+    if [ -n "$standing_roles" ]; then
+      echo "drill/rehearsal-all.sh: drill boxes from an earlier round still exist: $standing_boxes" >&2
+      echo "         every role section mints a fresh box and refuses an existing one (#116);" >&2
+      echo "         --legs and --only-failed re-run the role sections too. Clear them first:" >&2
+      echo "           drill/teardown.sh --roles \"$standing_roles\" --yes" >&2
+      echo "         then re-run this command. Nothing has run." >&2
+      exit 1
+    fi
+    ;;
+esac
 # --fast (#776): the roles in parallel; no app or browser pass; and the legs
 # whose every reading is a real agent session's output — the release cut, the
 # resume wake, the attention dispatch — left out by name. Inside each role the
@@ -1255,6 +1289,15 @@ if [ "$KEEP" -eq 1 ] || [ "$overall" -ne 0 ]; then
   echo "## When you are done with them:  $TEARDOWN_HINT"
 fi
 if [ "$overall" -eq 2 ]; then
-  rehearsal_report_footer round-incomplete "$REPORT_TARGET"
+  # The footer names what read INCOMPLETE (#805), from the summary itself.
+  incomplete_rows=""
+  for summary_row in "${SUMMARY[@]}"; do
+    case "$summary_row" in
+      INCOMPLETE\ *)
+        read -r _state row_leg _detail <<<"$summary_row"
+        incomplete_rows="$incomplete_rows${incomplete_rows:+ }$row_leg" ;;
+    esac
+  done
+  rehearsal_report_footer round-incomplete "$REPORT_TARGET" "$incomplete_rows"
 fi
 exit "$overall"

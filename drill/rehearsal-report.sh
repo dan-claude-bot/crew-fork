@@ -63,7 +63,8 @@ rehearsal_report_target() {
 # rehearsal_report_footer KIND TARGET [ROLE] [BOX]
 # Print the exit footer for KIND — `fail`, `incomplete` or `pass` for a role
 # round, `round-incomplete` for the orchestrator's summary — with an empty
-# TARGET meaning no instruction. Return 1 for an unknown KIND.
+# TARGET meaning no instruction. For `round-incomplete` the third argument is
+# the summary's INCOMPLETE rows, space-separated. Return 1 for an unknown KIND.
 #
 # The four live here rather than beside their exits so that a fixture can drive
 # every one of them: the exits themselves are the far end of a round on a real
@@ -107,8 +108,26 @@ rehearsal_report_footer() {
       fi
       ;;
     round-incomplete)
-      printf '## NOT a pass: at least one role never reached phase 2. Log those boxes\n'
-      printf '## in and re-run before reporting anything%s.\n' "$on"
+      # ROLE here is the summary's INCOMPLETE rows, space-separated. Exit 2
+      # covers every one of them, not only a role that skipped phase 2, so the
+      # footer names them and only sends the operator into a box when a role
+      # is among them (#805): the rc5 round's only gap was the browser leg, and
+      # this footer told the operator to log in boxes that were fine.
+      local rows="$role" row role_row=0
+      for row in $rows; do
+        case "$row" in triage|builder|reviewer) role_row=1 ;; esac
+      done
+      if [ -z "$rows" ]; then
+        printf '## NOT a pass: at least one section read INCOMPLETE. Re-run it\n'
+        printf '## before reporting anything%s.\n' "$on"
+      elif [ "$role_row" -eq 1 ]; then
+        printf '## NOT a pass (INCOMPLETE: %s): at least one role never reached\n' "${rows// /, }"
+        printf '## phase 2. Log those boxes in and re-run before reporting anything%s.\n' "$on"
+      else
+        printf '## NOT a pass (INCOMPLETE: %s): every role reached phase 2. Re-run the\n' "${rows// /, }"
+        printf '## incomplete legs with --only-failed <this round'"'"'s log> once the kept boxes\n'
+        printf '## are torn down (drill/teardown.sh), before reporting anything%s.\n' "$on"
+      fi
       ;;
     *) return 1 ;;
   esac
