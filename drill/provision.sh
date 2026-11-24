@@ -55,7 +55,10 @@ provision_die() { echo "provision: $*" >&2; exit 2; }
 provision_chrome_present() {
   local c
   [ -n "${PW_CHROME:-}" ] && [ -x "$PW_CHROME" ] && return 0
-  for c in "${DRILL_CHROME_CANDIDATES[@]}"; do [ -x "$c" ] && return 0; done
+  # DRILL_CHROME_SEARCH (space-separated) replaces the list: a test seam.
+  # shellcheck disable=SC2206
+  local -a cands=(${DRILL_CHROME_SEARCH:-${DRILL_CHROME_CANDIDATES[*]}})
+  for c in "${cands[@]}"; do [ -x "$c" ] && return 0; done
   return 1
 }
 

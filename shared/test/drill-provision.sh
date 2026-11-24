@@ -13,6 +13,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/lib.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+unset CREW_CONFIG_DIR CREW_EXPECT_OPERATOR_CONFIG
+export XDG_CONFIG_HOME="$TMP/xdg-empty"
 PROV="$ROOT/drill/provision.sh"
 PIN="$(sed -n 's/^DRILL_BOX_REF="\(.*\)"$/\1/p' "$PROV")"
 
@@ -85,7 +87,7 @@ drop() { local c; for c in "$@"; do rm -f "$F/bin/$c"; done; }
 # run [VAR=val…] — provision_round as the round calls it; sets OUT and RC.
 run() {
   OUT="$(cd "$F/root" && env -i HOME="$F/home" PATH="$F/bin:$CORE" LOG="$LOG" \
-    PW_CHROME="$F/tools/chrome" DRILL_BOX_MARKER="$F/no-marker" "$@" \
+    PW_CHROME="$F/tools/chrome" DRILL_CHROME_SEARCH="$F/no-chrome" DRILL_BOX_MARKER="$F/no-marker" "$@" \
     bash -c '. "$1"; provision_round "$2" "$3" --parallel "a b"' _ "$PROV" "$F/root" "$F/self.sh" 2>&1)"
   RC=$?
 }
