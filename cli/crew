@@ -3253,7 +3253,7 @@ cycle_box() {
       echo "  restart FAILED on $name — could not clear stale duty snapshots"
       return 1
     }
-    if ! box down "$name" </dev/null; then
+    if ! box_down_settled "$name"; then
       echo "  restart FAILED on $name — stop command failed"
       return 1
     fi
@@ -3609,8 +3609,8 @@ cmd_down() {
       box down "$name" --force </dev/null || stop_failed=1
     else
       # This roster loop reads through a FIFO; a stdin-inheriting box command
-      # would drain later roster rows (#48).
-      box down "$name" </dev/null || stop_failed=1
+      # would drain later roster rows (#48). Settled first (#839).
+      box_down_settled "$name" </dev/null || stop_failed=1
     fi
     if [ "$stop_failed" -eq 0 ]; then state="$(box_state "$name")"; else state=""; fi
     if [ "$state" = stopped ]; then
@@ -4225,7 +4225,7 @@ restore_box() { # NAME
     esac
     return 0
   fi
-  if ! reset_settle_down "$name"; then
+  if ! box_down_settled "$name"; then
     case "$why" in
       # A paused box is the host's to keep down and the host tick never
       # touches it: a stop that did not take is the operator's to repeat.
@@ -4247,15 +4247,17 @@ restore_box() { # NAME
   esac
 }
 
-# reset_settle_down NAME — the settle's stop, given the guest's boot a chance
-# to finish first (#786). A stop sent to a guest still starting its units can
-# be ignored until systemd is up, and `box down` then gives up on its own
-# deadline; the restore has just booted this guest. So: wait (bounded) for
-# systemd to call the boot done, stop, and on a refusal wait once more and
-# retry. rc 0 when the box went down.
+# box_down_settled NAME — a graceful stop, given the guest's boot a chance to
+# finish first (#786). A stop sent to a guest still starting its units can be
+# ignored until systemd is up, and `box down` then gives up on its own
+# deadline. So: wait (bounded) for systemd to call the boot done, stop, and on
+# a refusal wait once more and retry. rc 0 when the box went down. reset's
+# settle found it; restart and down stop a just-started box too (the rc12
+# round: `crew down` right after a restart hung on its deadline, #839). On a
+# booted guest the wait answers at once.
 RESET_SETTLE_BOOT_S="${CREW_RESET_SETTLE_BOOT_S:-90}"
 RESET_STOP_RETRY_S="${CREW_RESET_STOP_RETRY_S:-15}"
-reset_settle_down() {
+box_down_settled() {
   local name="$1"
   # `--wait` blocks until the boot transaction ends, whatever it ends in;
   # its answer is not graded here — `degraded` is a booted guest too.

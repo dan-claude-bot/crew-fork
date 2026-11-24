@@ -129,6 +129,7 @@ LEGS=""
 ONLY_FAILED=""
 # #774: the pool entries the round logs its boxes in with — gh:<name>,agent:<name>.
 CREDS=""
+CREDS_BOX="" CREDS_ROUND_GH=""
 # #776: the fast tier — plumbing only, never a promotion reading.
 FAST=0
 
@@ -171,7 +172,7 @@ while [ $# -gt 0 ]; do
     --only-failed) ONLY_FAILED="$2"; shift 2 ;;
     *) echo "usage: drill/rehearsal-all.sh [--agent <name>] [--roles \"triage builder reviewer\"] [--tree <path>] [--remote <url>] [--ref <git-ref>] [--quick]"
        echo "         [--reuse] [--keep] [--no-app] [--no-config-drill] [--no-install-drill] [--no-resume-drill] [--no-attention-drill] [--no-attention-audit-drill] [--no-release-drill] [--no-hygiene-drill] [--no-notify-drill] [--no-breaker-drill] [--no-fleet-drill] [--no-workspaces-drill] [--no-floor-provision-drill] [--no-service-drill] [--app-boxes \"a b\"] [--app-allow-control]"
-       echo "         [--app-roster <path>] [--no-app-armed-self] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>[,tg:<name>]]"; exit 1 ;;
+       echo "         [--app-roster <path>] [--no-app-armed-self] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>[,gh:<name>],agent:<name>[,tg:<name>]]"; exit 1 ;;
   esac
 done
 
@@ -255,9 +256,21 @@ if [ -n "$CREDS" ]; then
   for creds_entry in ${CREDS//,/ }; do
     [[ "$creds_entry" =~ ^(gh|agent|tg):[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] \
       || { echo "drill/rehearsal-all.sh: --creds: '$creds_entry' is not gh:<name>, agent:<name> or tg:<name>" >&2; exit 1; }
+    # Two gh entries are two credentials the round uses by case (#835): the
+    # first logs the boxes in, the other makes the round's own GitHub calls —
+    # the sandboxes' owner, the side that opens what the box works on.
+    case "$creds_entry:$creds_seen " in
+      gh:*" gh "*)
+        if [ -z "$CREDS_ROUND_GH" ]; then
+          case ",$CREDS_BOX," in *",$creds_entry,"*)
+            echo "drill/rehearsal-all.sh: --creds: $creds_entry is named twice" >&2; exit 1 ;; esac
+          CREDS_ROUND_GH="${creds_entry#gh:}"; continue
+        fi ;;
+    esac
     case " $creds_seen " in *" ${creds_entry%%:*} "*)
-      echo "drill/rehearsal-all.sh: --creds: one gh, one agent and one tg entry at most" >&2; exit 1 ;; esac
+      echo "drill/rehearsal-all.sh: --creds: two gh, one agent and one tg entry at most" >&2; exit 1 ;; esac
     creds_seen="$creds_seen ${creds_entry%%:*}"
+    CREDS_BOX="${CREDS_BOX:+$CREDS_BOX,}$creds_entry"
   done
   CREDS_LIB="$(dirname "$ROUND_SELF")/creds.sh"
   if [ -r "$CREDS_LIB" ]; then
@@ -293,18 +306,41 @@ if [ -n "$CREDS" ]; then
     fi
   done
   export CREW_CREDENTIALS_DIR
-  echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
-  # #828: no separate `gh auth login` on a drill host — the round's own GitHub
-  # calls use the gh entry's token when the host's gh is not logged in.
-  creds_gh="$(tr ',' '\n' <<<"$CREDS" | sed -n 's/^gh://p' | head -1)"
-  if [ -n "$creds_gh" ] && [ -z "${GH_TOKEN:-}" ] && ! gh auth status >/dev/null 2>&1; then
-    GH_TOKEN="$(cat "$CREW_CREDENTIALS_DIR/entries/gh--$creds_gh/secret" 2>/dev/null)" || GH_TOKEN=""
-    if [ -n "$GH_TOKEN" ]; then
-      export GH_TOKEN
-      echo "== host gh: not logged in — the round's own GitHub calls use the gh:$creds_gh pool entry"
-    else
-      unset GH_TOKEN
+  echo "== --creds: the round logs its boxes in from the pool ($CREDS_BOX, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
+  # The box and the round are two GitHub accounts (#835): the round owns the
+  # sandboxes and opens what the box works on; the box forks, pushes and
+  # reviews. GitHub refuses a review of one's own pull request, so one account
+  # on both sides fails builder and reviewer twenty minutes in. With two gh
+  # entries the round's calls use the second; with one, the host's own gh
+  # login, if it has one. Both accounts are read here, before anything is
+  # minted.
+  creds_gh="$(tr ',' '\n' <<<"$CREDS_BOX" | sed -n 's/^gh://p' | head -1)"
+  if [ -n "$CREDS_ROUND_GH" ]; then
+    GH_TOKEN="$(cat "$CREW_CREDENTIALS_DIR/entries/gh--$CREDS_ROUND_GH/secret" 2>/dev/null)" || GH_TOKEN=""
+    export GH_TOKEN
+    round_from="gh:$CREDS_ROUND_GH"
+  else
+    round_from="this host's gh login"
+  fi
+  if [ -n "$creds_gh" ]; then
+    round_login="$(gh api user --jq .login 2>/dev/null | tr -d '\r')" || round_login=""
+    if [ -z "$round_login" ]; then
+      if [ -n "$CREDS_ROUND_GH" ]; then
+        echo "drill/rehearsal-all.sh: --creds: GitHub answered no account for gh:$CREDS_ROUND_GH — replace its token: crew creds add gh $CREDS_ROUND_GH" >&2
+      else
+        echo "drill/rehearsal-all.sh: --creds: the round's own GitHub calls need a second account, another from the box's gh:$creds_gh — add a second gh entry: --creds gh:$creds_gh,gh:<name>,… (asked for with the rest)" >&2
+      fi
+      exit 1
     fi
+    box_login="$(GH_TOKEN="$(cat "$CREW_CREDENTIALS_DIR/entries/gh--$creds_gh/secret" 2>/dev/null)" gh api user --jq .login 2>/dev/null | tr -d '\r')" || box_login=""
+    case " $ROLES " in
+      *" builder "*|*" reviewer "*)
+        if [ -n "$box_login" ] && [ "$box_login" = "$round_login" ]; then
+          echo "drill/rehearsal-all.sh: --creds: the round's calls ($round_from) and the boxes (gh:$creds_gh) are both GitHub account '$round_login' — builder and reviewer need two (GitHub refuses a review of one's own pull request)" >&2
+          exit 1
+        fi ;;
+    esac
+    echo "== gh: the boxes log in as ${box_login:-unread} (gh:$creds_gh); the round's own calls are $round_login ($round_from)"
   fi
 fi
 # Every role section mints a fresh box and phase 0 refuses one that already
@@ -650,7 +686,7 @@ role_invoke() {
   REHEARSAL_BREAKER_REASON_FILE="${ROLE_BREAKER_REASON_FILE[$role]}" \
   REHEARSAL_NOTIFY_DRILL="$NOTIFY_DRILL" \
   REHEARSAL_NOTIFY_STATUS="$NOTIFY_STATUS" \
-  REHEARSAL_CREDS="$CREDS" \
+  REHEARSAL_CREDS="$CREDS_BOX" \
   REHEARSAL_FAST="$FAST" \
   REHEARSAL_SIBLING_ROLES="$(role_siblings "$role")" \
   REHEARSAL_SECTION_STATUS="${ROLE_SECTION_FILE[$role]}" \
@@ -1105,14 +1141,15 @@ elif [ "$APP" -eq 1 ] && [ "$ARMED_SELF" -eq 1 ] && [ "$GENERATED_APP" -eq 1 ]; 
   echo "############################################################"
   echo "## fleet app — armed comparison on the round's own box ($ARMED_SELF_BOX)"
   echo "############################################################"
-  ARMED_SELF_ROSTER="$(mktemp)"
-  printf '%s %s %s\n' "$ARMED_SELF_BOX" "$AGENT" "$ARMED_SELF_ROLE" >"$ARMED_SELF_ROSTER"
   # In THIS shell, not `$(…)`: the stage it reaches is what the restore undoes.
   if armed_self_prepare "$ARMED_SELF_BOX"; then
     echo "== $ARMED_SELF_WHY"
     : >"$APP_AGREEMENT_STATUS"
+    # --drill-roles, not --roster (#838): the generated pass serves a fleet
+    # definition of its own (#800). A bare --roster fell back to the drill
+    # host's own config, which a fresh drill host does not have.
     REHEARSAL_AGREEMENT_STATUS="$APP_AGREEMENT_STATUS" \
-      "$HERE/rehearsal-app.sh" --roster "$ARMED_SELF_ROSTER" --no-browser
+      "$HERE/rehearsal-app.sh" --drill-roles "$ARMED_SELF_ROLE" --agent "$AGENT" --no-browser
     rc=$?
     app_agreement="$(cat "$APP_AGREEMENT_STATUS" 2>/dev/null || true)"
   else
@@ -1121,7 +1158,6 @@ elif [ "$APP" -eq 1 ] && [ "$ARMED_SELF" -eq 1 ] && [ "$GENERATED_APP" -eq 1 ]; 
   fi
   armed_self_back="$(armed_self_restore "$ARMED_SELF_BOX")"; armed_self_back_rc=$?
   echo "== $armed_self_back"
-  rm -f -- "$ARMED_SELF_ROSTER"
   if [ "$armed_self_back_rc" -ne 0 ]; then
     # A box left armed or skewed is a box the rest of the round (and the
     # operator) reads wrong: that outranks whatever the pass said.
@@ -1250,7 +1286,7 @@ elif [ -n "$WS_LEGS" ]; then
   for drilled_role in $DRILLED; do WS_BOXES="$WS_BOXES crew-drill-$drilled_role"; done
   : >"$WORKSPACES_STATUS"; : >"$PROVISION_STATUS"
   REHEARSAL_WORKSPACES_STATUS="$WORKSPACES_STATUS" REHEARSAL_PROVISION_STATUS="$PROVISION_STATUS" \
-  REHEARSAL_KEEP="$KEEP" REHEARSAL_CREDS="$CREDS" \
+  REHEARSAL_KEEP="$KEEP" REHEARSAL_CREDS="$CREDS_BOX" \
     "$HERE/rehearsal-workspaces.sh" --boxes "${WS_BOXES# }" --agent "$AGENT" --legs "$WS_LEGS"
   rc=$?
   [ "$WORKSPACES_DRILL" -eq 0 ] || workspaces_row workspaces "$WORKSPACES_STATUS" "$rc" \

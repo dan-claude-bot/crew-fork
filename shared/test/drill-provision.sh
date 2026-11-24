@@ -25,7 +25,7 @@ done
 
 # fixture STATE — a fresh host: HOME, the checkout the round runs from, stubs.
 fixture() {
-  F="$TMP/$1"; rm -rf "$F"; mkdir -p "$F/home" "$F/root" "$F/bin" "$F/tools"
+  F="$TMP/$1"; rm -rf "$F"; mkdir -p "$F/home" "$F/root" "$F/bin" "$F/tools" "$F/sysbin"
   export LOG="$F/calls"; : >"$LOG"
   cat >"$F/bin/box" <<'EOF'
 #!/usr/bin/env bash
@@ -38,6 +38,7 @@ EOF
 echo "sudo $*" >>"$LOG"
 [ "${1:-}" = -n ] && shift
 [ "${1:-}" = true ] && exit "${SUDO_RC:-0}"
+export AS_ROOT=1 SUDO_USER=op
 exec "$@"
 EOF
   cat >"$F/bin/apt-get" <<'EOF'
@@ -48,10 +49,10 @@ EOF
 #!/usr/bin/env bash
 echo "curl $*" >>"$LOG"
 cat <<'INSTALLER'
-echo "installer BOX_REF=$BOX_REF BOX_YES=$BOX_YES" >>"$LOG"
-mkdir -p "$HOME/.local/bin"
-printf '#!/usr/bin/env bash\necho "box $*" >>"$LOG"\n[ "${1:-}" = --version ] && echo "box %s (x)"\nexit 0\n' "${INSTALLED_V:-$BOX_REF}" >"$HOME/.local/bin/box"
-chmod +x "$HOME/.local/bin/box"
+echo "installer BOX_REF=$BOX_REF BOX_YES=$BOX_YES root=${AS_ROOT:-0} for=${SUDO_USER:-}" >>"$LOG"
+dest="$SYSBIN"; [ "${AS_ROOT:-0}" = 1 ] || { dest="$HOME/.local/bin"; mkdir -p "$dest"; }
+printf '#!/usr/bin/env bash\necho "box $*" >>"$LOG"\n[ "${1:-}" = --version ] && echo "box %s (x)"\nexit 0\n' "${INSTALLED_V:-$BOX_REF}" >"$dest/box"
+chmod +x "$dest/box"
 INSTALLER
 EOF
   cat >"$F/bin/npm" <<'EOF'
@@ -86,7 +87,7 @@ EOF
 drop() { local c; for c in "$@"; do rm -f "$F/bin/$c"; done; }
 # run [VAR=val…] — provision_round as the round calls it; sets OUT and RC.
 run() {
-  OUT="$(cd "$F/root" && env -i HOME="$F/home" PATH="$F/bin:$CORE" LOG="$LOG" \
+  OUT="$(cd "$F/root" && env -i HOME="$F/home" PATH="${RUN_PATH_HEAD:-}$F/bin:$F/sysbin:$CORE" LOG="$LOG" SYSBIN="$F/sysbin" \
     PW_CHROME="$F/tools/chrome" DRILL_CHROME_SEARCH="$F/no-chrome" DRILL_BOX_MARKER="$F/no-marker" "$@" \
     bash -c '. "$1"; provision_round "$2" "$3" --parallel "a b"' _ "$PROV" "$F/root" "$F/self.sh" 2>&1)"
   RC=$?
@@ -114,6 +115,16 @@ fixture blank; run BOX_V=
 t prov-unreadable-box-refused 2 "$RC"
 t prov-unreadable-box-says-so 1 "$(has "gives no version")"
 
+# --- a per-user box serves no service account (#837) ---------------------------------------
+fixture peruser; drop box; mkdir -p "$F/home/.local/bin"
+printf '#!/usr/bin/env bash\n[ "${1:-}" = --version ] && echo "box %s (x)"\nexit 0\n' "$PIN" >"$F/home/.local/bin/box"
+chmod +x "$F/home/.local/bin/box"
+run RUN_PATH_HEAD="$F/home/.local/bin:"
+t prov-per-user-box-refused 2 "$RC"
+t prov-per-user-box-says-why 1 "$(has "box is a per-user install ($F/home/.local/bin/box) — root and a crew service account cannot run it")"
+t prov-per-user-box-names-the-system-install 1 "$(has "| sudo BOX_REF=$PIN bash")"
+t prov-per-user-box-installs-nothing 0 "$(logged '^curl\|^installer')"
+
 # --- never inside a box -------------------------------------------------------------------
 fixture inbox; drop box jq; touch "$F/marker"; run DRILL_BOX_MARKER="$F/marker"
 t prov-inside-box-refused 2 "$RC"
@@ -137,7 +148,8 @@ t prov-bare-apt-packages 1 "$(logged '^apt-get install -y -qq jq gh cron util-li
 t prov-bare-apt-through-sudo 1 "$(logged '^sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install')"
 t prov-bare-playwright-in-root 1 "$(logged "^npm i --no-save --no-audit --no-fund playwright-core in $F/root")"
 t prov-bare-installer-at-pin 1 "$(logged "^curl -fsSL https://raw.githubusercontent.com/heavy-duty/box/$PIN/install.sh")"
-t prov-bare-installer-env 1 "$(logged "^installer BOX_REF=$PIN BOX_YES=1")"
+t prov-bare-installer-env 1 "$(logged "^installer BOX_REF=$PIN BOX_YES=1 root=1 for=op$")"
+t prov-bare-box-is-system-wide 1 "$([ -x "$F/sysbin/box" ] && [ ! -e "$F/home/.local/bin/box" ] && echo 1)"
 t prov-bare-done 1 "$(has "provision: done — box $PIN")"
 fixture wrongv; drop box; run INSTALLED_V=0.9.0
 t prov-installer-wrong-version-refused 2 "$RC"

@@ -180,6 +180,8 @@ case "$cmd" in
       # The stub stands at the box transport boundary, so it returns what the
       # complete remote pipeline prints, not df's intermediate table.
       printf '%s\n' "$free"
+    elif [[ "$script" == *'systemctl is-system-running --wait'* ]]; then
+      printf 'settle %s\n' "$name" >>"$calls"
     elif [[ "$script" == *'duty-snapshot.*'* ]]; then
       printf 'cleanup %s\n' "$name" >>"$calls"
     elif [[ "$script" == *'/etc/rig/manifest'* ]]; then
@@ -228,6 +230,9 @@ case "$cmd" in
     name="$1"; shift || true
     printf 'down %s%s\n' "$name" "${1:+ $1}" >>"$calls"
     if [ "$name" = "${LIFE_DOWN_FAIL:-}" ]; then exit 1; fi
+    if [ "$name" = "${LIFE_DOWN_FAIL_ONCE:-}" ] && [ ! -e "$state_dir/down-failed-once-$name" ]; then
+      : >"$state_dir/down-failed-once-$name"; exit 1
+    fi
     if [ "$name" != "${LIFE_STOP_NOT_TAKE:-}" ]; then printf 'stopped\n' >"$state_dir/state-$name"; fi
     ;;
   start)
@@ -320,7 +325,8 @@ run_crew() {
     LIFE_STATE="$STATE" \
     LIFE_PROBE_DEFAULT="${LIFE_PROBE_DEFAULT:-idle:0}" \
     LIFE_FORCE_HELP="${LIFE_FORCE_HELP:-yes}" \
-    LIFE_DOWN_FAIL="${LIFE_DOWN_FAIL:-}" \
+    LIFE_DOWN_FAIL="${LIFE_DOWN_FAIL:-}" LIFE_DOWN_FAIL_ONCE="${LIFE_DOWN_FAIL_ONCE:-}" \
+    CREW_RESET_STOP_RETRY_S=0 \
     LIFE_STOP_NOT_TAKE="${LIFE_STOP_NOT_TAKE:-}" \
     LIFE_READY_FAILS="${LIFE_READY_FAILS:-0}" \
     LIFE_CLONE_SIZING="${LIFE_CLONE_SIZING:-yes}" \
@@ -511,6 +517,24 @@ t lifecycle-partial-down-is-named named "$r1"
 case "$OUT" in *'(state: failed)'*) r1="$OUT" ;; *) r1=hidden ;; esac
 t lifecycle-partial-down-hides-internal-sentinel hidden "$r1"
 unset LIFE_DOWN_FAIL
+
+# #839: down and restart stop a box the way reset's settle does — the guest's
+# boot is let finish first, and a stop it ignored is retried once.
+reset_case
+capture down
+t lifecycle-down-settles-before-each-stop "settle alpha|down alpha|settle beta|down beta" \
+  "$(grep -E '^(settle|down) ' "$STATE/calls" | paste -sd'|')"
+reset_case
+LIFE_DOWN_FAIL_ONCE=alpha capture down
+t lifecycle-down-retries-an-ignored-stop 0 "$RC"
+t lifecycle-...and-says-so 1 "$(grep -c '^  alpha: the stop did not take; retrying once in 0s$' <<<"$OUT")"
+t lifecycle-...and-reads-it-stopped 1 "$(grep -c '^  alpha: stopped$' <<<"$OUT")"
+reset_case
+LIFE_DOWN_FAIL_ONCE=alpha capture restart alpha
+t lifecycle-restart-retries-an-ignored-stop 0 "$RC"
+t lifecycle-...settling-first "settle alpha|down alpha|down alpha" \
+  "$(grep -E '^(settle|down) ' "$STATE/calls" | paste -sd'|')"
+unset LIFE_DOWN_FAIL_ONCE
 
 # --- #590: the host schedule, its lock, its log and its exit statuses --------
 #

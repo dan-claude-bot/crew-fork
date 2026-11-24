@@ -134,6 +134,8 @@ service_write_if_changed() { # DEST MODE — body on stdin; prints "changed" or 
   install -m "$mode" "$tmp" "$dest" && rm -f "$tmp" && echo changed
 }
 
+# The PATH systemd gives a unit that sets none (systemd.exec(5)).
+SERVICE_UNIT_PATH="${CREW_SERVICE_UNIT_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] [--port N] [--bind A] [--instances N] [--memory SIZE] [--cpu N] [--pool NAME --pool-size SIZE] [--no-caps] [--no-start]
   local user=crew group=crew cli="" prefix=crew port=8420 bind=0.0.0.0
   local caps="" nocaps=0 nostart=0 etc="$CREW_ETC_DIR" data="$CREW_DATA_DIR" u body pass sud
@@ -163,6 +165,11 @@ service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] 
   for u in systemctl visudo useradd groupadd install getent; do
     command -v "$u" >/dev/null 2>&1 || die "crew service setup needs '$u' on this host"
   done
+  # The units run with systemd's own PATH, as the account (#837): a box only
+  # on the operator's PATH (a per-user install under a home directory) is one
+  # neither root under sudo nor the service can run.
+  PATH="$SERVICE_UNIT_PATH" command -v box >/dev/null 2>&1 ||
+    die "crew service setup needs box installed system-wide, on the PATH its units run with ($SERVICE_UNIT_PATH) — box's installer run as root puts it in /usr/local/bin; a per-user box under a home directory is one the service account cannot run"
   need_box
   [ "$BOX_ENTRY_MODE_CACHED" = user ] ||
     die "crew service setup needs box 0.11.0 or later (its service grants, box#281); this host's box is older"

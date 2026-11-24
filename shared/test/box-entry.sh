@@ -27,7 +27,9 @@ case "${1:-}" in
   exec)
     case "$*" in
       *"/etc/passwd"*)
-        # A box whose agent is not answering yet: BE_SILENT reads fail, then it answers.
+        # A box whose agent is not answering yet: BE_SILENT reads fail, then it
+        # answers; BE_SILENT=never never does (a count raced a fast runner's clock).
+        if [ "${BE_SILENT:-}" = never ]; then echo "Error: VM agent isn't currently running" >&2; exit 1; fi
         if [ -n "${BE_SILENT:-}" ]; then
           n="$(cat "$BE_STATE/silent" 2>/dev/null || echo 0)"
           if [ "$n" -lt "$BE_SILENT" ]; then echo $((n + 1)) >"$BE_STATE/silent"; echo "Error: VM agent isn't currently running" >&2; exit 1; fi
@@ -85,7 +87,7 @@ out="$(BE_CMD='box_in b1 -- true' be BE_VERSION=0.11.0 BE_USERS=claude BE_SILENT
 t silent-then-answering-resolves "0 exec --user claude b1 -- true" "$rc $(grep '^exec --user' "$BE_LOG")"
 t silent-then-answering-read-three-times 3 "$(grep -c '/etc/passwd' "$BE_LOG")"
 reset_calls; rm -f "$BE_STATE/silent"
-out="$(BE_CMD='box_in b1 -- touch x' be BE_VERSION=0.11.0 BE_USERS=claude BE_SILENT=99 BOX_ENTRY_ANSWER_S=1 BOX_ENTRY_ANSWER_POLL_S=0 2>&1)"; rc=$?
+out="$(BE_CMD='box_in b1 -- touch x' be BE_VERSION=0.11.0 BE_USERS=claude BE_SILENT=never BOX_ENTRY_ANSWER_S=1 BOX_ENTRY_ANSWER_POLL_S=0 2>&1)"; rc=$?
 t never-answering-is-refused-3 3 "$rc"
 t never-answering-says-so-with-boxs-words 1 "$(grep -c "b1 is not answering (box exec as root failed, rc 1: Error: VM agent isn't currently running" <<<"$out")"
 t never-answering-is-not-called-unconverged 0 "$(grep -c 'no regular user' <<<"$out" || true)"

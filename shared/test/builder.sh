@@ -710,6 +710,21 @@ t p728-registry-pulls-page-still-read 1 \
   "$(grep -c '^GH api repos/heavy-duty/crew/pulls' "$P728_CALLS" || true)"
 t p728-acts-only-on-registry-repos 'REPO heavy-duty/crew' \
   "$(printf '%s\n' "$P728_TICK" | grep '^REPO ' || true)"
+# #836: a failed pulls call still prints its error body. The discovery reads
+# only an answer: no jq error reaches the tick's output, and the repo is not
+# counted as one carrying this box's pull request.
+p836_discover() {
+  local REPOS_FILE=unused ME=danmt REVIEW_MY_PR_REPOS="" OPERATING_LIMIT_GITHUB_REST_PAGE=100
+  # shellcheck disable=SC2317  # invoked indirectly by _discover_my_pr_repos
+  read_repo_list() { printf 'heavy-duty/crew\n'; }
+  # shellcheck disable=SC2317  # invoked indirectly by _discover_my_pr_repos
+  has_role() { return 1; }
+  # shellcheck disable=SC2317  # invoked indirectly by _discover_my_pr_repos
+  gh() { printf '{"message":"Not Found","documentation_url":"x","status":"404"}\n'; return "${P836_GH_RC:-1}"; }
+  _discover_my_pr_repos 2>&1
+}
+t p836-an-error-body-is-no-answer '' "$(p836_discover)"
+t p836-an-error-body-on-rc-0-is-no-list-either '' "$(P836_GH_RC=0 p836_discover)"
 # Source invariant, because a future re-introduction would pass every row above
 # by being spelled differently: the module makes no search-index call at all.
 t p728-module-has-no-search-call 0 "$(grep -c 'gh search' "$BUILDER_MOD" || true)"
