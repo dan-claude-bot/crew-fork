@@ -72,8 +72,15 @@ t "fleets: the second fleet's roster is its own" "$WS_SECOND ws-two" \
   "$(wsbody GET /f/second/api/roster | jqf "d['config_dir']+' '+' '.join(m['box'] for m in d['members'])")"
 t "fleets: the unscoped API answers the home fleet" "$WS_DEF" "$(wsbody GET /api/roster | jqf "d['config_dir']")"
 t "fleets: /f/<home>/ is the unscoped API" "$(wsbody GET /api/roster | jqf "d['etag']")" "$(wsbody GET /f/default/api/roster | jqf "d['etag']")"
-t "fleets: the second fleet's snapshot holds only its members" "ws-two" \
-  "$(wsbody GET /f/second/api/fleet | jqf "' '.join(u['box'] for u in d['units'])")"
+# A child floor answers before its first poll lands (an empty snapshot, the
+# page's "reading the fleet…"), so read it once it has polled, not at once.
+WS_UNITS=""
+for _ in $(seq 1 60); do
+  WS_UNITS="$(wsbody GET /f/second/api/fleet | jqf "' '.join(u['box'] for u in d['units'])")"
+  [ -z "$WS_UNITS" ] || break
+  sleep 0.5
+done
+t "fleets: the second fleet's snapshot holds only its members" "ws-two" "$WS_UNITS"
 t "fleets: the home snapshot holds none of the second's" 0 \
   "$(wsbody GET /api/fleet | jqf "len([u for u in d['units'] if u['box']=='ws-two'])")"
 t "fleets: an unknown fleet is 404 on the API" 404 "$(wsstatus GET /f/nope/api/fleet)"

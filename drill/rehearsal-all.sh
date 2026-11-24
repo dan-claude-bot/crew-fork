@@ -244,10 +244,12 @@ if [ -n "$LEGS" ]; then
     esac
   done
 fi
-# --creds: the operator's pool, found the way the operator's own `crew creds`
-# finds it, and every named entry checked to be there before any role starts
-# (#774). The round never writes the pool and never assigns an entry: the
-# boxes are off every roster, so each role pushes the entries by name.
+# --creds: the drill's own pool (#828: ~/.config/crew-drill/credentials, or
+# CREW_CREDENTIALS_DIR), every named entry checked to be there before any role
+# starts (#774). What it lacks is asked for on the terminal (drill/creds.sh);
+# without one, the round refuses and prints the command that fills it. The
+# round never assigns an entry: the boxes are off every roster, so each role
+# pushes the entries by name.
 if [ -n "$CREDS" ]; then
   creds_seen=""
   for creds_entry in ${CREDS//,/ }; do
@@ -257,12 +259,28 @@ if [ -n "$CREDS" ]; then
       echo "drill/rehearsal-all.sh: --creds: one gh, one agent and one tg entry at most" >&2; exit 1 ;; esac
     creds_seen="$creds_seen ${creds_entry%%:*}"
   done
-  if [ -z "${CREW_CREDENTIALS_DIR:-}" ]; then
-    CREW_CREDENTIALS_DIR="$("$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cli/crew" creds list 2>/dev/null \
-      | sed -n 's/^credential pool: \(.*\) (write-only.*/\1/p' | head -1)"
+  CREDS_LIB="$(dirname "$ROUND_SELF")/creds.sh"
+  if [ -r "$CREDS_LIB" ]; then
+    # shellcheck source=drill/creds.sh
+    . "$CREDS_LIB"
+    CREW_CREDENTIALS_DIR="$(drill_creds_dir)"
+    creds_missing="$(drill_creds_missing "$CREDS")"
+    if [ -n "$creds_missing" ] && drill_creds_have_tty; then
+      echo "== --creds: the drill's pool ($CREW_CREDENTIALS_DIR) lacks: $(paste -sd' ' <<<"$creds_missing") — asking"
+      drill_creds_ensure "$(cd "$(dirname "$ROUND_SELF")/.." && pwd)/cli/crew" "$AGENT" "$CREDS" \
+        || { echo "drill/rehearsal-all.sh: --creds: the pool is still missing entries — nothing ran" >&2; exit 1; }
+    elif [ -n "$creds_missing" ]; then
+      while IFS= read -r m; do
+        [ "$m" = tg-chat ] || echo "drill/rehearsal-all.sh: --creds: no pool entry $m in $CREW_CREDENTIALS_DIR" >&2
+      done <<<"$creds_missing"
+      if [ "$(grep -cvx tg-chat <<<"$creds_missing")" -gt 0 ]; then
+        echo "drill/rehearsal-all.sh: --creds: no terminal to ask on — add them once, on this host: $(drill_creds_hint "$AGENT" "$CREDS")" >&2
+        exit 1
+      fi
+    fi
   fi
-  if [ -z "$CREW_CREDENTIALS_DIR" ] || [ ! -d "$CREW_CREDENTIALS_DIR/entries" ]; then
-    echo "drill/rehearsal-all.sh: --creds: no credential pool found (set one up with crew creds add, or point CREW_CREDENTIALS_DIR at it)" >&2
+  if [ -z "${CREW_CREDENTIALS_DIR:-}" ] || [ ! -d "$CREW_CREDENTIALS_DIR/entries" ]; then
+    echo "drill/rehearsal-all.sh: --creds: no credential pool found (drill/creds.sh fills the drill's own, or point CREW_CREDENTIALS_DIR at one)" >&2
     exit 1
   fi
   for creds_entry in ${CREDS//,/ }; do
@@ -271,11 +289,23 @@ if [ -n "$CREDS" ]; then
     # A bot without the fleet's group chat reaches no box (#788): refused
     # here, before an hour of round, not at the push.
     if [ "${creds_entry%%:*}" = tg ] && [ ! -s "$CREW_CREDENTIALS_DIR/tg-chat" ]; then
-      echo "drill/rehearsal-all.sh: --creds: $creds_entry needs the fleet's Telegram group chat — set it first: crew creds chat <chat-id>" >&2; exit 1
+      echo "drill/rehearsal-all.sh: --creds: $creds_entry needs the fleet's Telegram group chat — set it first: crew creds chat <chat-id> (or drill/creds.sh asks for it)" >&2; exit 1
     fi
   done
   export CREW_CREDENTIALS_DIR
   echo "== --creds: the round logs its boxes in from the pool ($CREDS, $CREW_CREDENTIALS_DIR); no box is logged in by hand"
+  # #828: no separate `gh auth login` on a drill host — the round's own GitHub
+  # calls use the gh entry's token when the host's gh is not logged in.
+  creds_gh="$(tr ',' '\n' <<<"$CREDS" | sed -n 's/^gh://p' | head -1)"
+  if [ -n "$creds_gh" ] && [ -z "${GH_TOKEN:-}" ] && ! gh auth status >/dev/null 2>&1; then
+    GH_TOKEN="$(cat "$CREW_CREDENTIALS_DIR/entries/gh--$creds_gh/secret" 2>/dev/null)" || GH_TOKEN=""
+    if [ -n "$GH_TOKEN" ]; then
+      export GH_TOKEN
+      echo "== host gh: not logged in — the round's own GitHub calls use the gh:$creds_gh pool entry"
+    else
+      unset GH_TOKEN
+    fi
+  fi
 fi
 # Every role section mints a fresh box and phase 0 refuses one that already
 # exists (#116), so a box a `--keep` round left behind fails its role a minute
