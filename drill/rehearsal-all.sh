@@ -750,8 +750,33 @@ role_collect() {
   esac
 }
 
+# warm_incus_remotes — one call per image remote, before the roles mint at
+# once (#842). incus's client makes its per-remote cache directory
+# (~/.cache/incus/<sha256 of the remote URL>) with a check-then-mkdir
+# (lxc/incus client/connection.go), so the first concurrent calls to one
+# remote race and the loser's `incus launch` dies with `mkdir …: file exists`
+# before any instance exists: the rc13 round's builder. A drill host is cold
+# after every reset. Once the directory exists, launches share it.
+warm_incus_remotes() {
+  command -v incus >/dev/null 2>&1 || return 0
+  local remotes r
+  remotes="$(incus remote list --format json </dev/null 2>/dev/null | python3 -c '
+import json, sys
+for name, r in json.load(sys.stdin).items():
+    if (r.get("Protocol") or r.get("protocol")) == "simplestreams":
+        print(name)' 2>/dev/null)" || remotes=""
+  for r in $remotes; do
+    if incus image list "$r:" no-such-image-crew-drill-warm --format csv -c f </dev/null >/dev/null 2>&1; then
+      echo "== --parallel: incus's $r: image cache is warm (#842)"
+    else
+      echo "== --parallel: could not warm incus's $r: image cache — parallel mints may race on it (#842)"
+    fi
+  done
+}
+
 if [ "$PARALLEL" -eq 1 ] && [ "$(wc -w <<<"$ROLES")" -gt 1 ]; then
   echo
+  warm_incus_remotes
   echo "== --parallel: running $ROLES at once (#776); each role's transcript is printed whole, in role order, once all of them end"
   for role in $ROLES; do
     role_prepare "$role"
