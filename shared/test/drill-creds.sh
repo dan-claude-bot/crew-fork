@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016  # the single-quoted programs run in the shells they are handed to
+# shellcheck disable=SC2016,SC2030,SC2031  # programs run in the shells they are handed to; per-row env prefixes are meant to stay local
 # shared/test/drill-creds.sh — the drill's own credential pool (#828), offline.
 #
 # drill/creds.sh against a stub `crew` that logs every call (argv, the fleet
