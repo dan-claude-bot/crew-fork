@@ -465,10 +465,14 @@ and `curl`, is the usual one. The round provisions itself first
 
 - **box at the drill's pin**, `DRILL_BOX_REF` in `drill/provision.sh`. That is
   the box this crew is drilled against, and it moves with the drill; nobody
-  passes it. A missing box is installed for the operator with box's own
-  installer at that tag, which runs `box setup-host`. An installed box is
-  never replaced: below the pin the round refuses and names the upgrade,
-  above it the round notes it and runs.
+  passes it. A missing box is installed system-wide, with box's own
+  installer at that tag run as root (`/opt/box`, `/usr/local/bin`), which
+  runs `box setup-host` and adds the operator to incus-admin. System-wide
+  because the `service` leg runs box as root and as a service account (#837);
+  a per-user box under the operator's home is refused, with the command that
+  installs it system-wide. An installed box is never replaced: below the pin
+  the round refuses and names the upgrade, above it the round notes it and
+  runs.
 - **the host tools** the legs call (`jq`, `gh`, `python3`, `crontab`,
   `flock`, …) and **the browser leg's** node, npm and Chromium, from apt;
   `playwright-core` in the checkout.
@@ -488,9 +492,18 @@ service. Whatever the named entries lack is asked for on the terminal before
 any role starts: each secret through crew's own `crew creds add` (never
 echoed, never shown again), and the Telegram group chat when a `tg:` entry is
 named. With no terminal, the round refuses and prints the one command that
-fills the pool on that host, `drill/creds.sh gh:…,agent:…,tg:…`. When the
-host's `gh` is not logged in, the round's own GitHub calls use the `gh:`
-entry's token, so the drill host needs no `gh auth login` either.
+fills the pool on that host, `drill/creds.sh gh:…,agent:…,tg:…`.
+
+**Two GitHub accounts (#835).** The host and the box are counterparties: the
+host owns the sandboxes, opens the issues and pull requests, and deletes the
+sandboxes at teardown (`delete_repo`); the box forks, pushes and reviews.
+GitHub refuses a review of one's own pull request, so they are two accounts.
+The box's is the `--creds` `gh:` entry; the host's is a second `gh:` entry in
+the same pool, named with `--host-gh <name>` and asked for with the rest. The
+round's own GitHub calls use its token. Without `--host-gh`, the host's own
+`gh` login serves, if it has one. Both accounts are read before anything is
+minted: neither one, or one account on both sides with builder or reviewer in
+the round, is refused there.
 
 On infra's drill host, from a local checkout pushed into the VM (nothing is
 cloned inside it), the whole round is:
@@ -498,9 +511,9 @@ cloned inside it), the whole round is:
     git -C ~/work/crew checkout X.Y.Z-rcN
     runbooks/drill-host/drillhost.sh reset      # or `up`, the first time
     runbooks/drill-host/drillhost.sh run crew --from ~/work/crew -- \
-      --parallel --creds gh:<name>,agent:<name>,tg:<name>
+      --parallel --creds gh:<name>,agent:<name>,tg:<name> --host-gh <name>
 
-The round installs what it needs, asks for the three secrets once (drillhost
+The round installs what it needs, asks for the four secrets once (drillhost
 gives it the terminal, heavy-duty/infra#130), and runs. drillhost runs it
 with `--tree <pushed checkout>`; a checkout exactly at the tag drills the tag,
 and the record names the commit. A `reset` restores the VM's clean snapshot,

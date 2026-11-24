@@ -352,11 +352,13 @@ _discover_my_pr_repos() {
     printf '%s\n' $REVIEW_MY_PR_REPOS
     return 0
   fi
-  local SR
+  local SR pulls
   while IFS= read -r SR; do
     [ -n "$SR" ] || continue
-    if gh api "repos/$SR/pulls?state=open&per_page=$OPERATING_LIMIT_GITHUB_REST_PAGE" --paginate 2>/dev/null \
-      | jq -se --arg me "$ME" '[add[] | select(.user.login == $me)] | length > 0' >/dev/null; then
+    # A failed call still prints its error body; read only an answer (#836).
+    pulls="$(gh api "repos/$SR/pulls?state=open&per_page=$OPERATING_LIMIT_GITHUB_REST_PAGE" --paginate 2>/dev/null)" || continue
+    if jq -se --arg me "$ME" '[add | arrays | .[] | objects | select(.user.login == $me)] | length > 0' \
+      <<<"$pulls" >/dev/null 2>&1; then
       printf '%s\n' "$SR"
     fi
   done < <(read_repo_list "$REPOS_FILE")

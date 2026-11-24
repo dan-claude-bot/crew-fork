@@ -85,8 +85,15 @@ provision_round() {
     if [ -z "$box_v" ]; then
       provision_die "box is installed but 'box --version' gives no version — fix box first; this round drills against box $DRILL_BOX_REF"
     elif platform_below_floor "$box_v" "$DRILL_BOX_REF"; then
-      provision_die "this round drills against box $DRILL_BOX_REF and this host has box $box_v — the round never replaces an installed box; upgrade it: curl -fsSL $DRILL_BOX_INSTALLER | BOX_REF=$DRILL_BOX_REF bash, then box setup-host"
+      provision_die "this round drills against box $DRILL_BOX_REF and this host has box $box_v — the round never replaces an installed box; upgrade it: curl -fsSL $DRILL_BOX_INSTALLER | sudo BOX_REF=$DRILL_BOX_REF bash, then sudo box setup-host"
     fi
+    # The service leg runs box as root and as a service account (#837): a
+    # per-user install under a home directory is on neither one's PATH.
+    box_at="$(readlink -f "$(command -v box)" 2>/dev/null || command -v box)"
+    case "$box_at" in
+      /root/*|"$HOME"/*)
+        provision_die "box is a per-user install ($box_at) — root and a crew service account cannot run it, and the round's service leg needs both; install it system-wide: curl -fsSL $DRILL_BOX_INSTALLER | sudo BOX_REF=$DRILL_BOX_REF bash" ;;
+    esac
   else
     need_box=1; missing+=("box@$DRILL_BOX_REF")
   fi
@@ -122,11 +129,14 @@ provision_round() {
       provision_die "npm i --no-save playwright-core failed in $root"
   fi
   if [ "$need_box" -eq 1 ]; then
-    provision_say "box $DRILL_BOX_REF, with box's installer, and box setup-host"
-    curl -fsSL "$DRILL_BOX_INSTALLER" </dev/null | BOX_REF="$DRILL_BOX_REF" BOX_YES=1 bash ||
+    # As root (#837): box lands in /opt/box with its command in /usr/local/bin,
+    # where root and a crew service account find it too; setup-host adds the
+    # operator (SUDO_USER) to incus-admin.
+    provision_say "box $DRILL_BOX_REF, system-wide, with box's installer as root, and box setup-host"
+    # shellcheck disable=SC2086  # DRILL_SUDO is a prefix of words on purpose
+    curl -fsSL "$DRILL_BOX_INSTALLER" </dev/null | $DRILL_SUDO env BOX_REF="$DRILL_BOX_REF" BOX_YES=1 bash ||
       provision_die "box's installer failed (BOX_REF=$DRILL_BOX_REF)"
-    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
-    export PATH; hash -r
+    hash -r
     box_v="$(platform_version_of "$(box --version 2>/dev/null </dev/null | head -1)")"
     [ "$box_v" = "$DRILL_BOX_REF" ] ||
       provision_die "box's installer ran but 'box --version' reads '${box_v:-nothing}', not $DRILL_BOX_REF"

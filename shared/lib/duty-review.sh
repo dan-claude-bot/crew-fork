@@ -589,8 +589,11 @@ duty_review() {
   # pulls page per carried repo, never the lagging search index.
   while IFS= read -r SR; do
     [ -n "$SR" ] || continue
-    page="$(gh api "repos/$SR/pulls?state=open&per_page=100" --paginate 2>/dev/null | jq -cs 'add // []')" \
-      || { warn "review: pulls fetch failed for $SR; skipping repo this tick"; sweep_complete=0; continue; }
+    # A failed call still prints its error body, which is not a list (#836).
+    if ! page="$(gh api "repos/$SR/pulls?state=open&per_page=100" --paginate 2>/dev/null)" \
+      || ! page="$(jq -cs 'add // [] | if type == "array" then . else error("not a list") end' <<<"$page" 2>/dev/null)"; then
+      warn "review: pulls fetch failed for $SR; skipping repo this tick"; sweep_complete=0; continue
+    fi
     candidates="$candidates
 $(printf '%s' "$page" | jq -r --arg me "$ME" --arg sr "$SR" \
       '.[] | select(.draft | not) | select([.requested_reviewers[].login] | index($me)) | "\(.created_at) \(.updated_at) \($sr) \(.number)"')"

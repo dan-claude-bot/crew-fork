@@ -78,7 +78,13 @@ PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));prin
 # --- setup and check -------------------------------------------------------------------------
 aroot "$CLI" service setup --user "$U" --group "$G" --unit-prefix "$PREFIX" --cli "$CLI" \
   --port "$PORT" --bind 127.0.0.1 --instances 2 </dev/null >"$TMP/setup.out" 2>&1
-t "service: setup converges the scratch service" 0 "$?"
+SETUP_RC=$?
+t "service: setup converges the scratch service" 0 "$SETUP_RC"
+if [ "$SETUP_RC" -ne 0 ]; then
+  # Every reading below stands on the setup: print what it said, and stop (#837).
+  sed 's/^/  setup: /' "$TMP/setup.out"
+  exit 0
+fi
 t "service: ...with no fleet (#831)" 0 "$(sudo -n find "$DATA/fleets" -mindepth 1 2>/dev/null | grep -c . || true)"
 aroot "$CLI" service setup --user "$U" --group "$G" --unit-prefix "$PREFIX" --cli "$CLI" \
   --port "$PORT" --bind 127.0.0.1 --instances 2 </dev/null >"$TMP/setup2.out" 2>&1

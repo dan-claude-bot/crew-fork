@@ -66,6 +66,7 @@ export SV_ME="$u"
 exec "$@"'
 stub sudo "$log"
 export PATH="$TMP/bin:$PATH"
+export CREW_SERVICE_UNIT_PATH="$TMP/bin:/usr/bin:/bin"
 calls() { grep -c -- "$1" "$SV_LOG" || true; }
 crew() { bash "$CLI" "$@"; }
 capture() { OUT="$(crew "$@" 2>&1)"; RC=$?; }
@@ -74,6 +75,11 @@ capture() { OUT="$(crew "$@" 2>&1)"; RC=$?; }
 capture service setup
 t setup-refuses-a-non-root-caller 1 "$RC"
 t setup-says-as-root 1 "$(grep -c 'crew service setup runs as root' <<<"$OUT")"
+# #837: a box the units cannot find (a per-user install) is named, not met later.
+OUT="$(CREW_SERVICE_ASSUME_ROOT=1 CREW_SERVICE_UNIT_PATH=/nonexistent bash "$CLI" service setup 2>&1)"; RC=$?
+t setup-refuses-a-box-off-the-units-path 1 "$RC"
+t setup-...naming-a-system-wide-install 1 "$(grep -c 'needs box installed system-wide, on the PATH its units run with (/nonexistent)' <<<"$OUT")"
+t setup-...before-any-account 0 "$(calls '^useradd\|^groupadd')"
 OUT="$(CREW_SERVICE_ASSUME_ROOT=1 SV_BOX=0.10.0 bash "$CLI" service setup 2>&1)"; RC=$?
 t setup-refuses-box-below-0.11 1 "$RC"
 t setup-names-the-grant-it-needs 1 "$(grep -c 'needs box 0.11.0 or later (its service grants' <<<"$OUT")"

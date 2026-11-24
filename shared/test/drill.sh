@@ -189,7 +189,7 @@ printf 'app\n' >>"$DRILL_SECTION_LOG"
 [ -z "${DRILL_APP_LOG:-}" ] || printf '%s\n' "$*" >>"$DRILL_APP_LOG"
 [ -z "${REHEARSAL_AGREEMENT_STATUS:-}" ] || {
   case " $* " in
-    *" --roster "*)
+    *" --no-browser "*)
       case "${DRILL_APP_ROSTER_STATUS:-compared}" in
         missing) : ;;
         *) printf '%s\n' "${DRILL_APP_ROSTER_STATUS:-compared}" >"$REHEARSAL_AGREEMENT_STATUS" ;;
@@ -499,7 +499,21 @@ W774_POOL="$TMP/w774-pool"
 mkdir -p "$W774_POOL/entries/gh--bot" "$W774_POOL/entries/agent--max"
 printf 'x' >"$W774_POOL/entries/gh--bot/secret"; printf 'x' >"$W774_POOL/entries/agent--max/secret"
 W774_LOG="$TMP/w774-creds.log"
-w774_round() { : >"$W774_LOG"; CREW_CREDENTIALS_DIR="$W774_POOL" DRILL_CREDS_LOG="$W774_LOG" w776_round --roles 'triage builder' --keep \
+# A gh that answers `api user` from its token (#835): ghp_<login> is <login>,
+# and no token is the host's own login, W828_HOST_LOGIN (none: not logged in).
+W828_BIN="$TMP/w828-bin"; mkdir -p "$W828_BIN"
+cat >"$W828_BIN/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1 $2" = "api user" ]; then
+  if [ -n "${GH_TOKEN:-}" ]; then printf '%s\n' "${GH_TOKEN#ghp_}"; exit 0; fi
+  [ -n "${W828_HOST_LOGIN:-}" ] || exit 1
+  printf '%s\n' "$W828_HOST_LOGIN"; exit 0
+fi
+exit 0
+GH
+chmod +x "$W828_BIN/gh"
+w774_round() { : >"$W774_LOG"; CREW_CREDENTIALS_DIR="$W774_POOL" DRILL_CREDS_LOG="$W774_LOG" \
+  PATH="$W828_BIN:$PATH" W828_HOST_LOGIN="${W828_HOST_LOGIN-operator}" w776_round --roles 'triage builder' --keep \
   --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
   --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill "$@"; }
 w774_out="$(w774_round --creds gh:bot,agent:max)"
@@ -527,14 +541,11 @@ rm -rf "$W774_POOL/entries/tg--alerts" "$W774_POOL/tg-chat"
 
 # --- #828: the drill's own pool, and the gh entry standing in for a gh login --
 W828_HOME="$TMP/w828-home"
-W828_BIN="$TMP/w828-bin"; mkdir -p "$W828_BIN"
-# shellcheck disable=SC2016  # the stub's own program
-printf '#!/usr/bin/env bash\n[ "$1 $2" = "auth status" ] && exit "${W828_GH_RC:-1}"\nexit 0\n' >"$W828_BIN/gh"
-chmod +x "$W828_BIN/gh"
 w828_round() {
   : >"$W774_LOG"
   local out rc=0
   out="$(env -u CREW_CREDENTIALS_DIR -u GH_TOKEN DRILL_POOL_HOME="$W828_HOME" PATH="$W828_BIN:$PATH" \
+    W828_HOST_LOGIN="${W828_HOST_LOGIN-}" \
     DRILL_CREDS_LOG="$W774_LOG" DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
     REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 \
     bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --no-config-drill --no-install-drill --no-app \
@@ -551,12 +562,33 @@ w828_out="$(w828_round --agent grok --creds gh:bot)"
 t w828-hint-names-a-non-default-agent 1 "$(grep -c 'drill/creds.sh --agent grok gh:bot$' <<<"$w828_out")"
 mkdir -p "$W828_HOME/credentials/entries/gh--bot" "$W828_HOME/credentials/entries/agent--max"
 printf 'ghp_w828' >"$W828_HOME/credentials/entries/gh--bot/secret"; printf 'x' >"$W828_HOME/credentials/entries/agent--max/secret"
-w828_out="$(w828_round --creds gh:bot,agent:max)"
+w828_out="$(W828_HOST_LOGIN=operator w828_round --creds gh:bot,agent:max)"
 t w828-the-drills-pool-is-the-default "triage gh:bot,agent:max $W828_HOME/credentials" "$(paste -sd'|' "$W774_LOG")"
-t w828-gh-entry-stands-in-for-a-gh-login 1 \
-  "$(grep -c '^== host gh: not logged in — the round.s own GitHub calls use the gh:bot pool entry$' <<<"$w828_out")"
-w828_out="$(W828_GH_RC=0 w828_round --creds gh:bot,agent:max)"
-t w828-a-logged-in-gh-is-kept 0 "$(grep -c '^== host gh: not logged in' <<<"$w828_out")"
+# #835: the host is a second GitHub account, never the box's entry standing in.
+w828_out="$(w828_round --creds gh:bot,agent:max)"
+t w835-no-host-account-is-refused 1 \
+  "$(grep -c 'need a host GitHub account, a different one from the box.s gh:bot — name its pool entry: --host-gh <name>' <<<"$w828_out")"
+t w835-no-host-account-runs-no-role 0 "$(grep -c . "$W774_LOG")"
+w828_out="$(W828_HOST_LOGIN=operator w828_round --creds gh:bot,agent:max)"
+t w835-a-logged-in-host-gh-serves "triage gh:bot,agent:max $W828_HOME/credentials" "$(paste -sd'|' "$W774_LOG")"
+t w835-...naming-both-accounts 1 "$(grep -c "^== host gh: operator (this host's gh login, owns the sandboxes); box gh: w828 (gh:bot)$" <<<"$w828_out")"
+w828_out="$(w828_round --creds gh:bot,agent:max --host-gh op)"
+t w835-a-missing-host-entry-is-asked-for-with-the-rest 1 "$(grep -c "no pool entry gh:op in $W828_HOME/credentials" <<<"$w828_out")"
+t w835-...and-its-hint-carries-it 1 "$(grep -c 'drill/creds.sh gh:bot,agent:max,gh:op$' <<<"$w828_out")"
+mkdir -p "$W828_HOME/credentials/entries/gh--op"; printf 'ghp_op' >"$W828_HOME/credentials/entries/gh--op/secret"
+w828_out="$(w828_round --creds gh:bot,agent:max --host-gh op)"
+t w835-the-host-entry-serves-the-rounds-calls 1 "$(grep -c '^== host gh: op (gh:op, owns the sandboxes); box gh: w828 (gh:bot)$' <<<"$w828_out")"
+t w835-...and-the-boxes-get-only-theirs "triage gh:bot,agent:max $W828_HOME/credentials" "$(paste -sd'|' "$W774_LOG")"
+printf 'ghp_w828' >"$W828_HOME/credentials/entries/gh--op/secret"
+w828_out="$(w828_round --creds gh:bot,agent:max --host-gh op --roles 'triage builder')"
+t w835-one-account-on-both-sides-is-refused 1 "$(grep -c "the host (gh:op) and the box (gh:bot) are both GitHub account 'w828'" <<<"$w828_out")"
+t w835-...before-any-role 0 "$(grep -c . "$W774_LOG")"
+w828_out="$(w828_round --creds gh:bot,agent:max --host-gh op)"
+t w835-triage-alone-may-share-one-account 1 "$(grep -c '^triage ' "$W774_LOG")"
+w828_out="$(w828_round --creds gh:bot,agent:max --host-gh bot)"
+t w835-the-boxs-own-entry-is-not-a-host-entry 1 "$(grep -c "gh:bot is the box's entry — the host needs another account's" <<<"$w828_out")"
+w828_out="$(w828_round --host-gh op)"
+t w835-host-gh-needs-the-pool 1 "$(grep -c -- '--host-gh names an entry in the round.s pool, which --creds opens' <<<"$w828_out")"
 w774_out="$(w774_round)"
 t w774-no-creds-hands-the-roles-nothing "triage - -|builder - -" "$(sed "s|$W774_POOL|-|" "$W774_LOG" | paste -sd'|')"
 # The push sits after the creds-free rows and before phase 2 decides.
@@ -888,7 +920,7 @@ t w789-the-generated-pass-hands-over-to-it 1 \
 t w789-the-first-drilled-box-is-the-one-armed 1 \
   "$(grep -c "^## fleet app — armed comparison on the round's own box (crew-drill-reviewer)$" <<<"$w789_out")"
 t w789-the-second-pass-is-named-and-read-only 1 \
-  "$(sed -n '2p' "$APP_LOG" | grep -cE -- '^--roster [^ ]+ --no-browser$')"
+  "$(sed -n '2p' "$APP_LOG" | grep -cFx -- '--drill-roles reviewer --agent claude --no-browser')"
 t w789-the-tick-ran-armed-and-skewed "tick offset=120 armed=1" "$(cat "$ARMED_STATE/ticks")"
 t w789-the-box-ends-disarmed absent "$([ -e "$ARMED_STATE/armed" ] && echo present || echo absent)"
 t w789-the-box-ends-on-the-host-clock 0 "$(cat "$ARMED_STATE/offset")"

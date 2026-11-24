@@ -46,7 +46,10 @@ vendor it did not invent.
 crew is **one service per machine** (#822). Every channel runs the same
 `install.sh` as root, which lays `crew` out under `/opt/crew/versions/<version>/`,
 points `current` at one, and links `/usr/local/bin/crew` through it, so releases
-coexist and `crew use` switches between them. Then, once per machine:
+coexist and `crew use` switches between them. box must be installed the same
+way, system-wide (box's installer run as root: `/usr/local/bin/box`), because
+the `crew` account and its units run it too; setup refuses a box that is only
+on your own PATH (#837). Then, once per machine:
 
 ```sh
 sudo crew service setup               # the crew account and group, its box grant
