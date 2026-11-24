@@ -32,6 +32,10 @@
 # Both re-run the role sections on fresh boxes: a box an earlier --keep round
 # left standing is refused before anything runs, with its teardown (#806).
 set -uo pipefail
+# #825: the round's own arguments and path, for the one restart provisioning
+# may need (drill/provision.sh) once box setup-host has added the group.
+ROUND_ARGS=("$@")
+ROUND_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 ROLES="triage builder reviewer"
 PASSTHRU=()
@@ -170,6 +174,17 @@ while [ $# -gt 0 ]; do
        echo "         [--app-roster <path>] [--no-app-armed-self] [--app-shots <dir>] [--parallel] [--fast] [--legs a,b,...] [--only-failed <log>] [--creds gh:<name>,agent:<name>[,tg:<name>]]"; exit 1 ;;
   esac
 done
+
+# #825: the host brings nothing but sudo; the round installs what it needs —
+# box at the drill's own pin, the host tools, the browser leg's — before
+# anything below reads the host. A copy with no provision.sh beside it (a test
+# harness) and DRILL_NO_PROVISION=1 skip it.
+if [ -z "${DRILL_NO_PROVISION:-}" ] && [ -r "$(dirname "$ROUND_SELF")/provision.sh" ]; then
+  # shellcheck source=drill/provision.sh
+  . "$(dirname "$ROUND_SELF")/provision.sh"
+  provision_round "$(cd "$(dirname "$ROUND_SELF")/.." && pwd)" "$ROUND_SELF" ${ROUND_ARGS[@]+"${ROUND_ARGS[@]}"}
+  ROUND_BOX="$(platform_version_of "$(box --version 2>/dev/null </dev/null | head -1)")"
+fi
 
 # Validate operator input before source acquisition and the role round. The
 # named pass runs last; discovering a typo there would otherwise waste the
@@ -1320,6 +1335,7 @@ echo "## fleet rehearsal summary ($AGENT)"
 if [ -n "$RESOLVED_REF" ]; then
   echo "## drilled source: $RESOLVED_REF ($SOURCE_RECORD)"
 fi
+[ -z "${ROUND_BOX:-}" ] || echo "## drill host: box $ROUND_BOX (the drill's pin: ${DRILL_BOX_REF:-unset})"
 # The door this round used into every box (#792): the record says which box
 # the host ran and whether crew entered as the agent with `--user` (box 0.11.0
 # and later) or as the box's stamped user (before it).
