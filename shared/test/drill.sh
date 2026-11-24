@@ -55,6 +55,8 @@ cp "$ROOT/drill/rehearsal-all.sh" "$ROOT/drill/rehearsal-notify.sh" \
 # fixture (#656).
 cp "$ROOT/drill/fleet-lifecycle.sh" "$HARNESS/"
 cp "$ROOT/drill/rehearsal-report.sh" "$HARNESS/"
+# #845: the memory budget the orchestrator sources.
+cp "$ROOT/drill/memory-budget.sh" "$HARNESS/"
 # #828: the drill's own pool and its prompts. No terminal in this suite, ever:
 # a row that wants the prompt path drives drill/creds.sh in its own suite.
 cp "$ROOT/drill/creds.sh" "$HARNESS/"
@@ -425,6 +427,7 @@ t w842-a-failed-warm-is-said-and-the-round-runs 1 \
   "$(grep -c "^== --parallel: could not warm incus's images: image cache — parallel mints may race on it (#842)$" <<<"$w842_out")"
 w842_out="$(w842_round)"
 t w842-a-serial-round-calls-no-incus 0 "$(grep -c . "$W842_LOG")"
+
 t w776-parallel-heartbeat-names-who-is-still-running 1 \
   "$(grep -c '^== --parallel: still running: triage' <<<"$w776_out" | awk '{print ($1 >= 1)}')"
 t w776-parallel-wall-time-line 1 \
@@ -443,6 +446,114 @@ t w776-sequential-keeps-role-order "triage builder" "$(awk '{print $1}' "$ROLE_L
 t w783-sequential-roles-have-no-siblings "builder:|triage:" "$(sort "$W783_SIBS" | paste -sd'|' -)"
 t w776-sequential-wall-time-line 1 \
   "$(grep -cE '^## wall time: triage [0-9]+m[0-9]{2}s · builder [0-9]+m[0-9]{2}s · workspaces [0-9]+m[0-9]{2}s · service [0-9]+m[0-9]{2}s · total [0-9]+m[0-9]{2}s$' <<<"$w776_out")"
+
+# #845: the host's memory, read before boxes are minted on it. The functions
+# first, driven directly…
+# shellcheck source=drill/memory-budget.sh
+. "$HARNESS/memory-budget.sh"
+t p845-mem-to-mib "4096 8192 512 1536" \
+  "$(printf '%s ' "$(mem_to_mib 4GiB)" "$(mem_to_mib 8G)" "$(mem_to_mib 512MiB)" "$(mem_to_mib 1536M)" | sed 's/ $//')"
+t p845-mem-to-mib-refuses-a-bare-number "" "$(mem_to_mib 4096)"
+t p845-mib-human "4GiB 1.5GiB 512MiB" "$(printf '%s ' "$(mib_human 4096)" "$(mib_human 1536)" "$(mib_human 512)" | sed 's/ $//')"
+t p845-waves-everything-fits-one "triage builder reviewer" \
+  "$(parallel_waves 24576 triage:4096 builder:8192 reviewer:8192 | paste -sd'|' -)"
+# The rc14 host: 12GiB less 2GiB headroom holds no two of them but triage alone.
+t p845-waves-rc14-host-runs-them-one-by-one "triage|builder|reviewer" \
+  "$(parallel_waves 12288 triage:4096 builder:8192 reviewer:8192 | paste -sd'|' -)"
+t p845-waves-16gib-host-pairs-what-fits "triage builder|reviewer" \
+  "$(parallel_waves 16384 triage:4096 builder:8192 reviewer:8192 | paste -sd'|' -)"
+t p845-waves-first-fit-backfills-an-earlier-wave "builder triage|reviewer" \
+  "$(parallel_waves 16384 builder:8192 reviewer:8192 triage:4096 | paste -sd'|' -)"
+t p845-waves-a-role-too-big-for-the-host-runs-alone "triage|reviewer" \
+  "$(parallel_waves 8192 triage:4096 reviewer:8192 | paste -sd'|' -)"
+t p845-waves-an-unknown-size-is-one-unbudgeted-wave "triage builder" \
+  "$(parallel_waves 12288 triage:4096 'builder:?' | paste -sd'|' -)"
+t p845-waves-an-unknown-host-is-one-unbudgeted-wave "triage builder" \
+  "$(parallel_waves '' triage:4096 builder:8192 | paste -sd'|' -)"
+t p845-headroom-is-a-knob "triage builder" \
+  "$(REHEARSAL_HOST_HEADROOM_MIB=0 parallel_waves 12288 triage:4096 builder:8192 | paste -sd'|' -)"
+t p845-short-host-says-the-numbers "host memory: 3GiB free, the box needs 4GiB plus 2GiB headroom" \
+  "$(REHEARSAL_HOST_AVAIL_MIB=3072 mem_short_for 4096)"
+p845_rc=0; REHEARSAL_HOST_AVAIL_MIB=8192 mem_short_for 4096 >/dev/null || p845_rc=$?
+t p845-a-host-with-room-is-not-short 1 "$p845_rc"
+p845_rc=0; REHEARSAL_HOST_AVAIL_MIB=nonsense mem_short_for 4096 >/dev/null || p845_rc=$?
+t p845-an-unreadable-host-is-not-short 1 "$p845_rc"
+P845_BIN="$TMP/p845-bin"; mkdir -p "$P845_BIN"
+cat >"$P845_BIN/journalctl" <<'JCTL'
+#!/usr/bin/env bash
+[ -z "${P845_JCTL_LOG:-}" ] || printf '%s\n' "$*" >>"$P845_JCTL_LOG"
+[ "${P845_JCTL_RC:-0}" -eq 0 ] || exit "$P845_JCTL_RC"
+printf '%s\n' "${P845_KLOG-}"
+JCTL
+chmod +x "$P845_BIN/journalctl"
+P845_KILL='Nov 24 18:18:10 drillhost kernel: Out of memory: Killed process 21702 (qemu-system-x86) total-vm:11179192kB, anon-rss:257584kB'
+P845_KLOG="Nov 24 18:18:10 drillhost kernel: qemu-system-x86 invoked oom-killer: gfp_mask=0x140cca
+$P845_KILL
+Nov 24 18:20:00 drillhost kernel: Out of memory: Killed process 99 (python3) total-vm:1kB"
+t p845-oom-reads-only-qemu-kills "$P845_KILL" \
+  "$(P845_KLOG="$P845_KLOG" PATH="$P845_BIN:$PATH" oom_kills_since 1700000000)"
+P845_JCTL_LOG="$TMP/p845-jctl.log"; : >"$P845_JCTL_LOG"
+P845_JCTL_LOG="$P845_JCTL_LOG" P845_KLOG='' PATH="$P845_BIN:$PATH" oom_kills_since 1700000000 >/dev/null
+t p845-oom-reads-the-kernel-log-since-the-round-began "-k -q --no-pager --since @1700000000" "$(head -1 "$P845_JCTL_LOG")"
+t p845-oom-an-unreadable-kernel-log-says-nothing "" \
+  "$(P845_JCTL_RC=1 PATH="$P845_BIN:/usr/bin/false-dir" oom_kills_since 1700000000 2>/dev/null)"
+
+# …then the round, on a source that sizes its roles as crew does.
+W845_SOURCE="$TMP/w845-source"
+git clone -q "$SOURCE" "$W845_SOURCE"
+git -C "$W845_SOURCE" config user.name fixture
+git -C "$W845_SOURCE" config user.email fixture@example.invalid
+mkdir -p "$W845_SOURCE/shared/conf/roles"
+printf 'BOX_CPU="2"\nBOX_MEMORY="4GiB"\nBOX_DISK="30GiB"\n' >"$W845_SOURCE/shared/conf/roles/triage.conf"
+printf 'BOX_CPU="4"\nBOX_MEMORY="8GiB"\nBOX_DISK="60GiB"\n' >"$W845_SOURCE/shared/conf/roles/builder.conf"
+printf 'BOX_CPU="4"\nBOX_MEMORY="8GiB"\nBOX_DISK="60GiB"\n' >"$W845_SOURCE/shared/conf/roles/reviewer.conf"
+git -C "$W845_SOURCE" add shared/conf
+git -C "$W845_SOURCE" commit -qm "role sizes"
+w845_round() { # a parallel round of all three roles on the sized source
+  DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
+    REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 P845_KLOG="${P845_KLOG_ROUND-}" PATH="$P845_BIN:$PATH" \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$W845_SOURCE" --no-config-drill --no-install-drill \
+      --no-app --roles 'triage builder reviewer' --keep --parallel \
+      --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+      --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill 2>&1
+  echo "rc=$?"
+}
+: >"$ROLE_LOG"; : >"$W783_SIBS"
+w845_out="$(DRILL_SIBLINGS_LOG="$W783_SIBS" DRILL_SLEEP_triage=0.6 DRILL_SLEEP_builder=0.3 \
+  REHEARSAL_HOST_MEM_MIB=16384 w845_round)"
+t w845-a-16gib-host-says-the-plan 1 \
+  "$(grep -cx '== --parallel: triage 4GiB + builder 8GiB + reviewer 8GiB + 2GiB headroom is more than this host.s 16GiB — running in waves: triage builder, then reviewer (#845)' <<<"$w845_out")"
+t w845-each-wave-is-announced 2 "$(grep -c '^== --parallel: wave [12] of 2: running ' <<<"$w845_out")"
+# reviewer has no sleep and still ends last: it waited for the first wave.
+t w845-the-second-wave-starts-after-the-first-ends "builder triage reviewer" \
+  "$(awk '{print $1}' "$ROLE_LOG" | paste -sd' ' -)"
+t w845-siblings-are-the-wave-only "builder:triage|reviewer:|triage:builder" \
+  "$(sort "$W783_SIBS" | paste -sd'|' -)"
+t w845-a-role-alone-in-its-wave-says-so 1 \
+  "$(grep -cx '## (ran alone: its wave held no other role — #845)' <<<"$w845_out")"
+t w845-transcripts-stay-in-role-order "triage builder reviewer" \
+  "$(sed -n 's/^## \([a-z]*\) — box crew-drill-.*/\1/p' <<<"$w845_out" | paste -sd' ' -)"
+t w845-the-waved-round-is-green 1 "$(grep -cx 'rc=0' <<<"$w845_out")"
+: >"$ROLE_LOG"
+w845_out="$(REHEARSAL_HOST_MEM_MIB=24576 w845_round)"
+t w845-a-24gib-host-runs-them-at-once 1 \
+  "$(grep -cx '== --parallel: triage 4GiB + builder 8GiB + reviewer 8GiB + 2GiB headroom fits this host.s 24GiB (#845)' <<<"$w845_out")"
+t w845-...in-one-wave 1 "$(grep -c '^== --parallel: running triage builder reviewer at once (#776)' <<<"$w845_out")"
+# The later legs that mint a box read what is free first.
+w845_out="$(REHEARSAL_HOST_MEM_MIB=24576 REHEARSAL_HOST_AVAIL_MIB=3072 w845_round)"
+t w845-a-short-host-does-not-run-floor-provision 1 \
+  "$(grep -cx '##   INCOMPLETE floor-provision  (not run — host memory: 3GiB free, the box needs 4GiB plus 2GiB headroom, #845)' <<<"$w845_out")"
+t w845-...nor-service 1 \
+  "$(grep -cx '##   INCOMPLETE service  (not run — host memory: 3GiB free, the box needs 4GiB plus 2GiB headroom, #845)' <<<"$w845_out")"
+t w845-...and-the-round-is-not-green 0 "$(grep -cx 'rc=0' <<<"$w845_out")"
+t w845-workspaces-still-runs-on-a-short-host 1 "$(grep -c '^##   ok         workspaces' <<<"$w845_out")"
+# A qemu the kernel killed is named in the summary.
+w845_out="$(REHEARSAL_HOST_MEM_MIB=24576 P845_KLOG_ROUND="$P845_KLOG" w845_round)"
+t w845-an-oom-kill-is-named-in-the-summary 1 \
+  "$(grep -c '^## HOST OUT OF MEMORY: the kernel OOM-killed qemu 1 time(s) during this round' <<<"$w845_out")"
+t w845-...quoting-the-kernel 1 "$(grep -cF "##   $P845_KILL" <<<"$w845_out")"
+w845_out="$(REHEARSAL_HOST_MEM_MIB=24576 w845_round)"
+t w845-no-kill-no-line 0 "$(grep -c 'HOST OUT OF MEMORY' <<<"$w845_out")"
 
 # --legs: only the named legs run; every other leg says it was not selected.
 : >"$ROLE_LOG"
