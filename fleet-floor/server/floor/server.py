@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from floor import INDEX
+from floor import HERE, INDEX
 from floor.actions import do_command
 from floor.alerts import alert_command_from_config
 from floor.fleet import Fleet
@@ -43,6 +43,10 @@ class Handler(BaseHTTPRequestHandler):
     jobs = None
     children = None
     home_fid = "default"
+    # #831: a host with no fleets yet. The floor serves no fleet itself: `/`
+    # is the lobby (New fleet) until one exists, then the first fleet's page,
+    # and every fleet-scoped API answers 404.
+    empty = False
     # WHO, for the registry journal (#488 D5). The floor authenticates one
     # operator identity, so this is the whole of what the process knows about
     # the hand behind a write — and naming it beats recording every registry
@@ -169,6 +173,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         qs = parse_qs(urlparse(self.path).query)
 
+        if self.empty:
+            return self.empty_route(path)
+
         if path in ("/", "/index.html"):
             try:
                 with open(INDEX, "rb") as f:
@@ -242,6 +249,34 @@ class Handler(BaseHTTPRequestHandler):
 
         return self.send_bytes(404, "text/plain; charset=utf-8", b"not found\n")
 
+    def empty_route(self, path):
+        """GET on a floor that serves no fleet (#831)."""
+        if path in ("/", "/index.html"):
+            fleets = self.children.fleets()
+            if fleets:
+                self.send_response(302)
+                self.send_header("Location", "/f/%s/" % fleets[0][0])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            try:
+                with open(LOBBY, "rb") as f:
+                    return self.send_bytes(200, "text/html; charset=utf-8", f.read())
+            except OSError as e:
+                return self.send_bytes(500, "text/plain; charset=utf-8",
+                                       ("cannot read %s: %s\n" % (LOBBY, e)).encode())
+        if path == "/healthz":
+            return self.send_bytes(200, "text/plain; charset=utf-8", b"ok\n")
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        return self.no_fleet()
+
+    def no_fleet(self):
+        return self.send_json(404, {"ok": False, "error": NO_FLEET})
+
     def serve_log(self, qs):
         box = (qs.get("box") or [""])[0]
         name = (qs.get("file") or [""])[0]
@@ -285,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.deny()
         if self.fleet_route("POST"):
             return
+        if self.empty:
+            return self.no_fleet()
         path = urlparse(self.path).path
         if path == "/api/jobs":
             body = self.read_json_body()
@@ -305,6 +342,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(status, result)
 
 
+LOBBY = os.path.join(HERE, "floor", "lobby.html")
+NO_FLEET = ("no fleet on this host yet — create one: the floor's New fleet, "
+            "or crew init --fleet <id>")
+
+
+def floor_is_empty():
+    """#831: this floor serves no fleet — the CLI said so (CREW_FLOOR_EMPTY=1,
+    a host whose fleet index is empty), and this is not a fleet's child."""
+    return os.environ.get("CREW_FLOOR_EMPTY") == "1" and not os.environ.get("CREW_FLOOR_CHILD")
+
+
 def serve(bind, port, user, password, interval):
     if not os.path.exists(INDEX):
         # Named for both trees this runs in: a checkout, where build.sh is the
@@ -318,20 +366,28 @@ def serve(bind, port, user, password, interval):
                  "in a repository checkout, or reinstall (an installed tree "
                  "carries the built page, not the builder)" % INDEX)
 
-    alert_command, alert_error = alert_command_from_config(CONFIG_DIR)
-    if alert_error:
-        log(alert_error)
-    fleet = Fleet(interval, alert_command)
-    Handler.fleet = fleet
+    empty = floor_is_empty()
     Handler.auth_token = base64.b64encode(("%s:%s" % (user, password)).encode()).decode()
     Handler.auth_user = user
-    Handler.home_fid = front.home_id(CONFIG_DIR)
-    Handler.jobs = Jobs(Handler.home_fid)
+    fleet = None
+    if empty:
+        # #831: no fleet on the host yet — no poller, no jobs of its own; the
+        # first fleet made from the lobby is served as a child, like any other.
+        Handler.empty = True
+        Handler.home_fid = None
+    else:
+        alert_command, alert_error = alert_command_from_config(CONFIG_DIR)
+        if alert_error:
+            log(alert_error)
+        fleet = Fleet(interval, alert_command)
+        Handler.fleet = fleet
+        Handler.home_fid = front.home_id(CONFIG_DIR)
+        Handler.jobs = Jobs(Handler.home_fid)
     children = None
     if not os.environ.get("CREW_FLOOR_CHILD"):
         # The process that owns the port also fronts every other fleet on the
         # host (#814); a fleet's child answers its own fleet and nothing else.
-        children = front.Children(CONFIG_DIR, interval)
+        children = front.Children(None if empty else CONFIG_DIR, interval)
         Handler.children = children
         threading.Thread(target=children.start_all, daemon=True).start()
 
@@ -354,9 +410,10 @@ def serve(bind, port, user, password, interval):
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM, _term)
 
-    threading.Thread(target=fleet.loop, daemon=True).start()
-    if PING_INTERVAL_S > 0:
-        threading.Thread(target=fleet.ping_loop, daemon=True).start()
+    if fleet is not None:
+        threading.Thread(target=fleet.loop, daemon=True).start()
+        if PING_INTERVAL_S > 0:
+            threading.Thread(target=fleet.ping_loop, daemon=True).start()
 
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.daemon_threads = True
@@ -368,8 +425,11 @@ def serve(bind, port, user, password, interval):
         with open(port_file + ".tmp", "w", encoding="utf-8") as f:
             f.write("%d\n" % port)
         os.replace(port_file + ".tmp", port_file)
-    log("serving fleet-floor on http://%s:%d/ (evidence every %ds, ping every %ds)"
-        % (bind, port, interval, PING_INTERVAL_S))
+    if empty:
+        log("serving fleet-floor on http://%s:%d/ with no fleet yet — the page offers New fleet" % (bind, port))
+    else:
+        log("serving fleet-floor on http://%s:%d/ (evidence every %ds, ping every %ds)"
+            % (bind, port, interval, PING_INTERVAL_S))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -384,7 +444,8 @@ def main():
     # First, and before the auth and index preconditions below: an
     # unconfigured host must get the config answer, not a missing-password or
     # missing-build one — the same order cmd_floor uses.
-    require_operator_config()
+    if not floor_is_empty():
+        require_operator_config()
     # The door into every box depends on box's version (#792): an unreadable
     # one refuses here, as the CLI's need_box does, rather than guessing.
     require_entry_mode()

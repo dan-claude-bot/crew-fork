@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Floor · no fleet yet</title>
+<!-- The floor on a host with no fleets (#831): a crew server starts empty. You
+     create a fleet here, then its members in that fleet's Roster. Served at /
+     only while the host has no fleet; once one exists, / opens it. -->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: #0d1117; color: #c9d1d9; font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  main { width: min(34rem, 92vw); padding: 2rem; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
+  h1 { margin: 0 0 .25rem; font-size: 1.1rem; letter-spacing: .08em; }
+  h1 b { color: #f0b429; }
+  p { margin: .75rem 0; color: #8b949e; }
+  form { display: flex; gap: .5rem; margin-top: 1.25rem; }
+  input { flex: 1; padding: .55rem .7rem; border: 1px solid #30363d; border-radius: 6px; background: #0d1117;
+          color: #c9d1d9; font: inherit; }
+  input:focus { outline: 2px solid #f0b429; outline-offset: 1px; }
+  button { padding: .55rem 1rem; border: 0; border-radius: 6px; background: #f0b429; color: #0d1117;
+           font: inherit; font-weight: 700; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: progress; }
+  #msg { min-height: 1.5em; margin-top: .75rem; }
+  #msg.err { color: #f85149; }
+</style>
+</head>
+<body>
+<main>
+  <h1><b>◆</b> FLEET FLOOR</h1>
+  <p id="lead">No fleets on this host yet.</p>
+  <p>Create a fleet, then add its members in its Roster and Create each one.</p>
+  <form id="new" autocomplete="off">
+    <label for="fid" style="position:absolute;left:-9999px">New fleet id</label>
+    <input id="fid" name="id" required pattern="[a-z][a-z0-9\-]{0,29}" maxlength="30"
+           placeholder="fleet id, e.g. la-familia" aria-describedby="hint">
+    <button id="go" type="submit">New fleet</button>
+  </form>
+  <p id="hint">Lower case letters, digits and '-', a letter first, at most 30.</p>
+  <div id="msg" role="status" aria-live="polite"></div>
+</main>
+<script>
+(function () {
+  var form = document.getElementById("new"), input = document.getElementById("fid"),
+      go = document.getElementById("go"), msg = document.getElementById("msg");
+  function say(text, err) { msg.textContent = text; msg.className = err ? "err" : ""; }
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var id = input.value.trim();
+    if (!id) return;
+    go.disabled = true;
+    say("creating fleet " + id + "…", false);
+    fetch("/api/fleets", { method: "POST", headers: { "Content-Type": "application/json" },
+                           body: JSON.stringify({ id: id }) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, error: "HTTP " + r.status }; }); })
+      .then(function (r) {
+        if (r && r.ok && r.url) { location.href = r.url; return; }
+        go.disabled = false;
+        say("new fleet refused: " + ((r && r.error) || "no answer"), true);
+      })
+      .catch(function (err) { go.disabled = false; say("new fleet failed: " + err.message, true); });
+  });
+  input.focus();
+})();
+</script>
+</body>
+</html>

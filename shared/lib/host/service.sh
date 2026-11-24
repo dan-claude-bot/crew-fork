@@ -17,8 +17,10 @@
 #   6. systemd units: <prefix>-floor.service, and <prefix>-tick, -restart and
 #      -reset as oneshot services on timers — the schedule of the old
 #      host-crontab.example, with Persistent= so a run missed while the host
-#      was down runs at boot;
-#   7. a first fleet, when the index has none, so the floor has one to serve.
+#      was down runs at boot.
+#
+# NO FLEET (#831): a crew server starts with none. The floor serves its lobby,
+# whose one action is New fleet, and members are added in that fleet's Roster.
 #
 # Every step is idempotent: setup on a set-up host converges it and changes
 # nothing that is already right. `check` reads every step back, read-only, and
@@ -132,15 +134,14 @@ service_write_if_changed() { # DEST MODE — body on stdin; prints "changed" or 
   install -m "$mode" "$tmp" "$dest" && rm -f "$tmp" && echo changed
 }
 
-service_setup() { # args: [--user U] [--group G] [--fleet ID] [--cli PATH] [--unit-prefix P] [--port N] [--bind A] [--instances N] [--memory SIZE] [--cpu N] [--pool NAME --pool-size SIZE] [--no-caps] [--no-start]
-  local user=crew group=crew fleet=main cli="" prefix=crew port=8420 bind=0.0.0.0
+service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] [--port N] [--bind A] [--instances N] [--memory SIZE] [--cpu N] [--pool NAME --pool-size SIZE] [--no-caps] [--no-start]
+  local user=crew group=crew cli="" prefix=crew port=8420 bind=0.0.0.0
   local caps="" nocaps=0 nostart=0 etc="$CREW_ETC_DIR" data="$CREW_DATA_DIR" u body pass sud
   local -a grant_caps=() userset=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --user) need_value "$@"; user="$2"; shift 2 ;;
       --group) need_value "$@"; group="$2"; shift 2 ;;
-      --fleet) need_value "$@"; fleet="$2"; shift 2 ;;
       --cli) need_value "$@"; cli="$2"; shift 2 ;;
       --unit-prefix) need_value "$@"; prefix="$2"; shift 2 ;;
       --port) need_value "$@"; port="$2"; shift 2 ;;
@@ -154,7 +155,6 @@ service_setup() { # args: [--user U] [--group G] [--fleet ID] [--cli PATH] [--un
   for u in "$user" "$group" "$prefix"; do
     case "$u" in ''|*[!a-z0-9_-]*|[!a-z]*) usage_error "'$u' is not a valid account, group or unit name" ;; esac
   done
-  valid_fleet_id "$fleet" || usage_error "'$fleet' is not a fleet id"
   case "$port" in ''|*[!0-9]*) usage_error "--port takes a number" ;; esac
   [ -n "$cli" ] || cli="$(command -v crew 2>/dev/null || true)"
   [ -n "$cli" ] || cli="/usr/local/bin/crew"
@@ -217,11 +217,9 @@ service_setup() { # args: [--user U] [--group G] [--fleet ID] [--cli PATH] [--un
     echo "  unit $u: $(printf '%s\n' "$body" | service_write_if_changed "$SERVICE_SYSTEMD_DIR/$u" 0644)"
   done < <(service_units "$prefix")
   systemctl daemon-reload || die "systemctl daemon-reload failed"
-  # 7. a first fleet, so the floor has one to serve
+  # No fleet is made (#831): the floor's New fleet makes the first one.
   if [ -z "$(CREW_FLEETS_DIR="$data/fleets" fleet_dirs)" ]; then
-    runuser -u "$user" -- env HOME="$data" CREW_ETC_DIR="$etc" "$cli" init --fleet "$fleet" </dev/null >/dev/null ||
-      die "the first fleet '$fleet' could not be made as $user"
-    echo "  fleet $fleet: created (empty — add members in the floor's Roster)"
+    echo "  fleets: none yet — the floor's New fleet makes the first"
   else
     echo "  fleets: $(CREW_FLEETS_DIR="$data/fleets" fleet_dirs | cut -f1 | paste -sd' ' -)"
   fi
@@ -237,6 +235,7 @@ service_setup() { # args: [--user U] [--group G] [--fleet ID] [--cli PATH] [--un
   echo "  sudo usermod -aG $group <you>        # then log in again: crew runs as $user for you"
   echo "  sudo -u $user -H gh auth login       # the host's own gh login, which the tick reads boards with"
   echo "  the floor: http://<this host>:$port/ — user and password in $etc/floor.env"
+  echo "  then, in the floor: New fleet, its members in its Roster, and Create each one"
 }
 
 service_check() { # [--unit-prefix P] — read-only; exit 1 on drift

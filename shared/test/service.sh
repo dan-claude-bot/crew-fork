@@ -107,8 +107,11 @@ t unit-skips-and-nothing-are-not-failures 3 "$(cat "$CREW_SYSTEMD_DIR"/crew-{tic
 t unit-floor-reads-floor-env 1 "$(grep -cx "EnvironmentFile=$CREW_ETC_DIR/floor.env" "$CREW_SYSTEMD_DIR/crew-floor.service")"
 t unit-floor-runs-as-the-account 1 "$(grep -cx 'User=crew' "$CREW_SYSTEMD_DIR/crew-floor.service")"
 t setup-reloads-and-starts "systemctl daemon-reload|systemctl enable --now crew-floor.service crew-tick.timer crew-restart.timer crew-reset.timer" "$(grep '^systemctl' "$SV_LOG" | paste -sd'|' -)"
-t setup-makes-a-first-fleet-as-the-account 1 "$(grep -c "^runuser -u crew -- env HOME=$CREW_DATA_DIR CREW_ETC_DIR=$CREW_ETC_DIR $CLI init --fleet main" "$SV_LOG")"
-t setup-first-fleet-exists 1 "$([ -f "$CREW_DATA_DIR/fleets/main/fleet.roster" ] && echo 1 || echo 0)"
+# #831: a crew server starts with no fleets — the floor's New fleet makes the first.
+t setup-makes-no-fleet 0 "$(calls 'init --fleet')"
+t setup-leaves-the-index-empty 0 "$(find "$CREW_DATA_DIR/fleets" -mindepth 1 | grep -c . || true)"
+t setup-says-there-is-no-fleet-yet 1 "$(grep -c "^  fleets: none yet — the floor's New fleet makes the first$" <<<"$OUT")"
+t setup-points-at-new-fleet 1 "$(grep -c 'then, in the floor: New fleet, its members in its Roster' <<<"$OUT")"
 t setup-tells-the-next-steps 1 "$(grep -c 'sudo -u crew -H gh auth login' <<<"$OUT")"
 PASS1="$(grep '^CREW_FLOOR_PASS=' "$CREW_ETC_DIR/floor.env")"
 
@@ -119,7 +122,10 @@ t setup-again-exits-0 0 "$RC"
 t setup-again-creates-no-account 0 "$(calls '^useradd\|^groupadd')"
 t setup-again-keeps-the-password "$PASS1" "$(grep '^CREW_FLOOR_PASS=' "$CREW_ETC_DIR/floor.env")"
 t setup-again-changes-no-unit 7 "$(grep -c '  unit crew-.*: same$' <<<"$OUT")"
-t setup-again-makes-no-second-fleet 0 "$(calls 'init --fleet')"
+t setup-again-makes-no-fleet 0 "$(calls 'init --fleet')"
+OUT="$(CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" --fleet main 2>&1)"; RC=$?
+t setup-with-a-fleet-is-refused 1 "$RC"
+t setup-with-a-fleet-makes-none 0 "$(find "$CREW_DATA_DIR/fleets" -mindepth 1 | grep -c . || true)"
 : >"$SV_LOG"
 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" --instances 3 --memory 4GiB >/dev/null 2>&1
 t setup-caps-are-flags "box grant --service crew --share crew --instances 3 --memory 4GiB" "$(grep '^box grant' "$SV_LOG")"
@@ -161,6 +167,23 @@ t help-teaches-the-service 1 "$(grep -c 'sudo crew service setup' <<<"$OUT")"
 : >"$SV_LOG"
 OUT="$(SV_ME=crew bash "$CLI" up --dry-run 2>&1)"; RC=$?
 t as-the-account-it-runs-here 0 "$(calls '^sudo\|^runuser')"
+# #831: no fleet yet — nothing to plan, never the examples' members.
+t no-fleet-up-dry-run-is-0 0 "$RC"
+t no-fleet-up-dry-run-says-so 1 "$(grep -c "no fleet on this host yet — create one: the floor's New fleet, or crew init --fleet <id>" <<<"$OUT")"
+t no-fleet-up-dry-run-plans-nothing 0 "$(grep -c 'would be created' <<<"$OUT" || true)"
+OUT="$(SV_ME=crew bash "$CLI" tick 2>&1)"; RC=$?
+t no-fleet-the-tick-has-nothing-to-do 4 "$RC"
+t no-fleet-the-tick-says-so 1 "$(grep -c '^tick: no fleet on this host yet — nothing to walk' <<<"$OUT")"
+OUT="$(SV_ME=crew bash "$CLI" hire x 2>&1)"; RC=$?
+t no-fleet-an-acting-verb-refuses 1 "$RC"
+t no-fleet-an-acting-verb-names-new-fleet 1 "$(grep -c "no fleet on this host yet — create one" <<<"$OUT")"
+t no-fleet-never-the-examples-refusal 0 "$(grep -c 'shipped example' <<<"$OUT" || true)"
+OUT="$(SV_ME=crew bash "$CLI" status 2>&1)"; RC=$?
+t no-fleet-status-is-0 0 "$RC"
+t no-fleet-status-reads-no-examples 0 "$(grep -c 'examples' <<<"$OUT" || true)"
+SV_ME=crew bash "$CLI" init --fleet main >/dev/null 2>&1
+t the-account-makes-the-first-fleet 1 "$([ -f "$CREW_DATA_DIR/fleets/main/fleet.roster" ] && echo 1 || echo 0)"
+OUT="$(SV_ME=crew bash "$CLI" up --dry-run 2>&1)"; RC=$?
 t as-the-account-it-reads-the-service-index 1 "$(grep -c '^up --dry-run: 0 would be created' <<<"$OUT")"
 
 # --- teardown -------------------------------------------------------------------------------

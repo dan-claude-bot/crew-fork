@@ -563,8 +563,18 @@ box_entry_agent_of() { roster_line "$1" | awk '{print $1}'; }
 # no — so it exits 1, and every call site sits after that verb's argument
 # parsing (and after resolve_engine, which is where a bad --ref earns its 2)
 # and before that verb's first mutation.
+# no_fleet_yet — #831: a crew host whose fleet index is empty. A crew server
+# starts with no fleets; the first is made from the floor (New fleet) or with
+# `crew init --fleet <id>`. The examples are never read for it.
+no_fleet_yet() {
+  [ "$CONFIG_IS_OPERATOR" -eq 0 ] && { [ "$SERVICE_ON" -eq 1 ] || [ -n "${CREW_FLEETS_DIR:-}" ]; }
+}
+
 require_operator_config() { # VERB
   if [ "$CONFIG_IS_OPERATOR" -eq 1 ]; then return 0; fi
+  if no_fleet_yet; then
+    die "$1: no fleet on this host yet — create one: the floor's New fleet, or crew init --fleet <id>"
+  fi
   die "$1 refuses under the shipped example fleet definition at $CONFIG_DIR.
   Nobody configured this host, so there is nothing here to create or arm: the
   examples are a scaffold to read, not a fleet to run. crew runs as a system
@@ -585,6 +595,10 @@ require_operator_config() { # VERB
 # terminal shows both; a pipe keeps the rows it asked for.
 fallback_banner() {
   if [ "$CONFIG_IS_OPERATOR" -eq 1 ]; then return 0; fi
+  if no_fleet_yet; then
+    echo "crew: no fleet on this host yet — create one: the floor's New fleet, or crew init --fleet <id>" >&2
+    return 0
+  fi
   echo "crew: NOTE this host has NO operator fleet definition." >&2
   echo "crew: reading the shipped examples at $CONFIG_DIR — a scaffold, not an operator definition." >&2
   echo "crew: 'sudo crew service setup' sets this host up; until then no verb here will create a box or arm cron." >&2
@@ -834,7 +848,8 @@ ONE SERVICE PER MACHINE (#822)
   and everything a fleet owns belongs to the 'crew' account — definitions and
   stores under /var/lib/crew, boxes in its box project, the floor and the
   schedule as systemd units. Once per machine, as root:
-      sudo crew service setup         account, group, box grant, units, a first fleet
+      sudo crew service setup         account, group, box grant, units — no fleet:
+                                      the floor's New fleet makes the first (#831)
       sudo crew service check         read it back; exit 1 on drift
       sudo crew service teardown      units, rule and grant gone; data kept
   Members of the 'crew' group run crew as the service (it re-runs itself via
@@ -3013,6 +3028,8 @@ cmd_up() {
   # no configuration yet, so it keeps working and carries the banner. The
   # converging form creates boxes and arms cron, so it refuses.
   if [ "$dry" -eq 1 ]; then fallback_banner; else require_operator_config "crew up"; fi
+  # #831: no fleet, nothing to plan — never the examples' members.
+  if no_fleet_yet; then return 0; fi
   # The fleet's store exists from the first converge (#758): created here if
   # absent, never on a dry run, and never a reason for `up` to stop.
   [ "$dry" -eq 1 ] || store_init
@@ -5450,6 +5467,8 @@ cmd_status() {
   max_args status 1 "$@"
   need_box
   fallback_banner
+  # #831: a host with no fleet has no members to read — not the examples'.
+  if no_fleet_yet; then return 0; fi
   if [ -n "${1:-}" ]; then
     local b="$1" engine
     # A box that does not exist is a FAILURE, not an empty report (#97). The
@@ -6241,7 +6260,10 @@ cmd_floor() {
   # file while fleet.conf and the agent profiles still come from the resolved
   # config dir, so serving a console over a definition that is not the
   # resolved one is CREW_CONFIG_DIR's job.
-  require_operator_config "crew floor"
+  # #831: a host with no fleet yet serves the floor's lobby, whose one action
+  # is New fleet — the way a crew server starts.
+  local empty=0
+  if no_fleet_yet; then empty=1; else require_operator_config "crew floor"; fi
 
   command -v python3 >/dev/null \
     || die "python3 is required for 'crew floor' (stdlib only, nothing to install)"
@@ -6250,7 +6272,7 @@ cmd_floor() {
   # Named at startup rather than surfaced as an empty fleet on first poll: a
   # typo'd --roster otherwise renders a console with nothing on it, which reads
   # exactly like a dead host.
-  [ -f "$roster" ] || die "no roster at '$roster' (--roster / CREW_FLOOR_ROSTER)"
+  [ "$empty" -eq 1 ] || [ -f "$roster" ] || die "no roster at '$roster' (--roster / CREW_FLOOR_ROSTER)"
 
   if [ -z "$pass" ]; then
     pass="$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)"
@@ -6275,18 +6297,28 @@ cmd_floor() {
   else
     echo "  password  (from --pass/CREW_FLOOR_PASS)"
   fi
-  echo "  polling   every ${interval}s over 'box exec' — nothing runs inside the boxes"
-  # Always printed, not only when overridden: which boxes the console is
-  # watching is the first thing to check when it shows something surprising.
-  echo "  roster    $roster"
-  # The host's other fleets (#814), each at /f/<id>/ behind this one port.
-  local fleet_ids
-  fleet_ids="$(fleet_dirs | awk -F '\t' -v d="$CONFIG_DIR" '$2 != d {printf "%s%s", sep, $1; sep=", "}')"
-  [ -z "$fleet_ids" ] || echo "  fleets    this one ($(this_fleet_id)) at /, and $fleet_ids at /f/<id>/ — the page's switcher lists them"
+  if [ "$empty" -eq 1 ]; then
+    echo "  fleets    none yet — the page's one action is New fleet; then add its members in its Roster"
+  else
+    echo "  polling   every ${interval}s over 'box exec' — nothing runs inside the boxes"
+    # Always printed, not only when overridden: which boxes the console is
+    # watching is the first thing to check when it shows something surprising.
+    echo "  roster    $roster"
+    # The host's other fleets (#814), each at /f/<id>/ behind this one port.
+    local fleet_ids
+    fleet_ids="$(fleet_dirs | awk -F '\t' -v d="$CONFIG_DIR" '$2 != d {printf "%s%s", sep, $1; sep=", "}')"
+    [ -z "$fleet_ids" ] || echo "  fleets    this one ($(this_fleet_id)) at /, and $fleet_ids at /f/<id>/ — the page's switcher lists them"
+  fi
   [ "$bind" = "127.0.0.1" ] \
     || echo "  NOTE      plain HTTP: the password crosses the network in the clear."
   echo
 
+  if [ "$empty" -eq 1 ]; then
+    CREW_FLOOR_PORT="$port" CREW_FLOOR_BIND="$bind" CREW_FLOOR_USER="$user" \
+    CREW_FLOOR_PASS="$pass" CREW_FLOOR_INTERVAL="$interval" \
+    CREW_FLOOR_VERSION="$(version)" CREW_FLEETS_DIR="$(fleets_dir)" CREW_FLOOR_EMPTY=1 \
+      exec python3 "$CREW_ROOT/fleet-floor/server/floor.py"
+  fi
   CREW_FLOOR_PORT="$port" CREW_FLOOR_BIND="$bind" CREW_FLOOR_USER="$user" \
   CREW_FLOOR_PASS="$pass" CREW_FLOOR_INTERVAL="$interval" \
   CREW_FLOOR_ROSTER="$roster" CREW_FLOOR_VERSION="$(version)" \
@@ -6398,7 +6430,8 @@ fleet_walk_applies() { # VERB ARGS...
     restart|reset) [ "$all" -eq 1 ] || return 1 ;;
     *) return 1 ;;
   esac
-  [ -n "$(fleet_dirs)" ]
+  # #831: on a host with no fleet yet the schedule still runs, and walks none.
+  [ -n "$(fleet_dirs)" ] || no_fleet_yet
 }
 fleet_walk() { # VERB ARGS...
   local verb="$1" id dir rc worst="" n=0; shift
@@ -6424,7 +6457,13 @@ fleet_walk() { # VERB ARGS...
       *) worst="$rc" ;;
     esac
   done < <(fleet_dirs)
-  [ "$n" -gt 0 ] || die "$verb: no fleet definition on this host"
+  if [ "$n" -eq 0 ]; then
+    # A crew server starts with no fleets (#831): the timers fire anyway, and
+    # "nothing to do" is what they report, not a unit failure.
+    no_fleet_yet || die "$verb: no fleet definition on this host"
+    echo "$verb: no fleet on this host yet — nothing to walk (the floor's New fleet makes the first)"
+    return "$EXIT_NOTHING_TO_DO"
+  fi
   return "${worst:-$EXIT_NOTHING_TO_DO}"
 }
 

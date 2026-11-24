@@ -51,10 +51,16 @@ coexist and `crew use` switches between them. Then, once per machine:
 ```sh
 sudo crew service setup               # the crew account and group, its box grant
                                       # (box 0.11.0), /var/lib/crew, the floor and
-                                      # the schedule as systemd units, a first fleet
+                                      # the schedule as systemd units — no fleet
 sudo usermod -aG crew <you>           # then log in again
 sudo -u crew -H gh auth login         # the host's own gh login, for the tick
 ```
+
+A crew server starts with **no fleets** (#831). Open the floor (the address and
+password are in `/etc/crew/floor.env`): its one action is **New fleet**. Make
+one, add its members in its Roster, and Create each. `crew init --fleet <id>`
+does the same from a shell. Until a fleet exists, a verb that needs one says so
+and names both ways.
 
 Everything a fleet owns belongs to the `crew` account: the definitions, stores
 and credentials under `/var/lib/crew`, the boxes in its own box project, the

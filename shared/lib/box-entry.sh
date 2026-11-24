@@ -70,14 +70,30 @@ box_entry_resolve_user() { # BOX
   u="${BOX_IN_USER:-}"
   if [ -z "$u" ] && declare -F box_entry_agent_of >/dev/null; then u="$(box_entry_agent_of "$box" 2>/dev/null || true)"; fi
   if [ -z "$u" ]; then
-    # Root, on purpose: this is the read that finds who else is there.
-    # shellcheck disable=SC2016  # the awk program is the guest's, not this shell's
-    users="$(box exec "$box" -- awk -F: '$3 >= 1000 && $3 < 60000 {print $1}' /etc/passwd </dev/null 2>/dev/null)" ||
-      users="" # Decision-path empty fallback: an unreadable box refuses below as unconverged
+    # Root, on purpose: this is the read that finds who else is there. A box
+    # that does not answer (its agent restarting just after a converge, the
+    # rc11 round's three role boxes) is not a box with no user: the read is
+    # retried for BOX_ENTRY_ANSWER_S, and a box still silent after that is
+    # named as not answering, with box's own words — never as unconverged.
+    local err rc deadline=$((SECONDS + ${BOX_ENTRY_ANSWER_S:-90}))
+    err="$(mktemp)"
+    while :; do
+      rc=0
+      # shellcheck disable=SC2016  # the awk program is the guest's, not this shell's
+      users="$(box exec "$box" -- awk -F: '$3 >= 1000 && $3 < 60000 {print $1}' /etc/passwd </dev/null 2>"$err")" || rc=$?
+      if [ "$rc" -eq 0 ] || [ "$SECONDS" -ge "$deadline" ]; then break; fi
+      sleep "${BOX_ENTRY_ANSWER_POLL_S:-3}"
+    done
+    if [ "$rc" -ne 0 ]; then
+      echo "crew: $box is not answering (box exec as root failed, rc $rc: $(tr '\n' ' ' <"$err" | cut -c1-200)) — nothing was run" >&2
+      rm -f "$err"
+      return 3
+    fi
+    rm -f "$err"
     n="$(grep -c . <<<"$users" || true)"
     case "$n" in
       1) u="$users" ;;
-      0) echo "crew: $box has no regular user to enter as — not converged yet, or not answering (on box 0.11.0 rig creates the agent's user); nothing was run as root" >&2; return 3 ;;
+      0) echo "crew: $box has no regular user to enter as — not converged yet (on box 0.11.0 rig creates the agent's user); nothing was run as root" >&2; return 3 ;;
       *) echo "crew: $box has $n regular users ($(paste -sd' ' - <<<"$users")) — cannot tell which is the agent; nothing was run as root" >&2; return 3 ;;
     esac
   fi

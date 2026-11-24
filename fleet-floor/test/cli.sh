@@ -3389,17 +3389,17 @@ t "floor: --help still exits 0 with an operator config dir" 0 "$CL_RC"
 
 # #822: $PWD is no longer a resolution hop. crew is one service per machine and
 # its fleets are the service's index; a config directory you stand in is not
-# one of them. Both processes agree: the CLI resolves the shipped examples and
-# refuses to serve them.
+# one of them. With that index empty the floor serves its lobby (#831) — never
+# $PWD's definition, and never the shipped examples.
 CL_RC=0
 (cd "$CL_OPCONF" && env -u CREW_CONFIG_DIR -u XDG_CONFIG_HOME -u CREW_ROSTER \
    -u CREW_FLOOR_ROSTER HOME="$CL_FB_HOME" CREW_FLEETS_DIR="$CL_TMP/no-fleets" PATH="$CL_TMP/bin:$PATH" \
    timeout 4 "$CL_ROOT/cli/crew" floor --local --port $((CL_PORT_BASE + 12)) </dev/null) \
    >"$CL_TMP/pwd-floor.out" 2>&1 || CL_RC=$?
-if grep -q 'refuses under the shipped example' "$CL_TMP/pwd-floor.out"; then
-  ok "floor: \$PWD is not a fleet definition — the floor refuses the examples there"
+if grep -q "^  fleets    none yet" "$CL_TMP/pwd-floor.out" && ! grep -q "^  roster " "$CL_TMP/pwd-floor.out"; then
+  ok "floor: \$PWD is not a fleet definition — an empty index serves the lobby, not \$PWD"
 else
-  fail "floor: \$PWD is not a fleet definition — the floor refuses the examples there" \
+  fail "floor: \$PWD is not a fleet definition — an empty index serves the lobby, not \$PWD" \
        "$(cat "$CL_TMP/pwd-floor.out")"
 fi
 

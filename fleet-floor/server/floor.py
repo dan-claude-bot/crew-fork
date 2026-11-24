@@ -68,6 +68,8 @@ if "CREW_CONFIG_DIR" not in os.environ and not os.environ.get("CREW_FLOOR_CHILD"
     _index = [d for fid, d in _fleets.list_fleets()]
     if _index:
         os.environ["CREW_CONFIG_DIR"] = _index[0]
+        # A fleet made between the CLI's look and this one: serve it (#831).
+        os.environ.pop("CREW_FLOOR_EMPTY", None)
 
 from floor.server import main  # noqa: E402  (the sys.path line must precede it)
 
