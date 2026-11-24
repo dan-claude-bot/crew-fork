@@ -400,6 +400,31 @@ t w776-parallel-transcripts-in-role-order "triage builder reviewer" \
 t w776-parallel-summary-rows-in-role-order "triage builder reviewer" \
   "$(sed -n 's/^##   ok         \([a-z]*\)  (phase 2 ran)$/\1/p' <<<"$w776_out" | paste -sd' ' -)"
 t w776-parallel-says-so 1 "$(grep -c '^== --parallel: running triage builder reviewer at once' <<<"$w776_out")"
+# #842: before the roles mint at once, one call per simplestreams remote makes
+# incus's per-remote cache directory, which concurrent first calls race on.
+W842_BIN="$TMP/w842-bin"; W842_LOG="$TMP/w842.log"; mkdir -p "$W842_BIN"
+cat >"$W842_BIN/incus" <<'INCUS'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$W842_LOG"
+case "$1 $2" in
+  "remote list") printf '{"images":{"Addr":"https://images.linuxcontainers.org","Protocol":"simplestreams"},"local":{"Addr":"unix://","Protocol":"incus"}}\n' ;;
+  "image list") exit "${W842_WARM_RC:-0}" ;;
+esac
+INCUS
+chmod +x "$W842_BIN/incus"
+w842_round() { : >"$W842_LOG"; W842_LOG="$W842_LOG" PATH="$W842_BIN:$PATH" w776_round --roles 'triage builder' --keep "$@" \
+  --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+  --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill; }
+w842_out="$(w842_round --parallel)"
+t w842-parallel-warms-each-image-remote "remote list --format json|image list images: no-such-image-crew-drill-warm --format csv -c f" \
+  "$(paste -sd'|' "$W842_LOG")"
+t w842-...and-says-so-before-the-roles-start 1 \
+  "$(awk '/^== --parallel: incus.s images: image cache is warm \(#842\)$/{w=NR} /^== --parallel: running triage builder at once/{r=NR} END{print (w && r && w<r) ? 1 : 0}' <<<"$w842_out")"
+w842_out="$(W842_WARM_RC=1 w842_round --parallel)"
+t w842-a-failed-warm-is-said-and-the-round-runs 1 \
+  "$(grep -c "^== --parallel: could not warm incus's images: image cache — parallel mints may race on it (#842)$" <<<"$w842_out")"
+w842_out="$(w842_round)"
+t w842-a-serial-round-calls-no-incus 0 "$(grep -c . "$W842_LOG")"
 t w776-parallel-heartbeat-names-who-is-still-running 1 \
   "$(grep -c '^== --parallel: still running: triage' <<<"$w776_out" | awk '{print ($1 >= 1)}')"
 t w776-parallel-wall-time-line 1 \
