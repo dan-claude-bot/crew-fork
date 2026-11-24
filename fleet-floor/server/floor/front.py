@@ -38,7 +38,9 @@ PROXY_TIMEOUT_S = 960   # a fleet action's longest path is 15 minutes (round 11)
 
 def home_id(config_dir):
     """The served fleet's index id; a fixture CREW_CONFIG_DIR outside the
-    index answers `default`."""
+    index answers `default`. None for a floor serving no fleet (#831)."""
+    if config_dir is None:
+        return None
     return fleet_id_of(config_dir) or "default"
 
 
@@ -47,13 +49,17 @@ class Children:
     if it dies."""
 
     def __init__(self, home_dir, interval):
-        self.home_dir = os.path.abspath(home_dir)
+        # None: the floor serves no fleet itself (#831: a host with no fleets
+        # yet) and every fleet, once made, is a child.
+        self.home_dir = os.path.abspath(home_dir) if home_dir else None
         self.interval = interval
         self.lock = threading.Lock()
         self.kids = {}      # id -> {"proc", "port", "token", "dir"}
 
     def fleets(self):
         """[(id, dir)] — the home fleet first, then every other host fleet."""
+        if self.home_dir is None:
+            return list(list_fleets())
         hid = home_id(self.home_dir)
         out = [(hid, self.home_dir)]
         for fid, d in list_fleets():

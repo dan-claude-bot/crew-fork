@@ -7,9 +7,10 @@
 # never touches a real crew service on the host, then reads it end to end and
 # tears it down with --purge:
 #
-#   setup converges; check is clean; a caller outside the group is refused
-#   naming it; the service's own runs write only under its data dir; the floor
-#   unit answers with the service's fleets; a box Created from that floor lands
+#   setup converges, with no fleet (#831); check is clean; a caller outside the
+#   group is refused naming it; the floor unit answers with no fleet and its
+#   lobby, and New fleet makes the first; the service's own runs write only
+#   under its data dir and read its fleets; a box Created from that floor lands
 #   in the service's box project and not the operator's; the tick timer's unit
 #   runs the tick as the service; teardown --purge leaves no unit, rule, account
 #   or data behind.
@@ -76,10 +77,11 @@ PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));prin
 
 # --- setup and check -------------------------------------------------------------------------
 aroot "$CLI" service setup --user "$U" --group "$G" --unit-prefix "$PREFIX" --cli "$CLI" \
-  --fleet drill --port "$PORT" --bind 127.0.0.1 --instances 2 </dev/null >"$TMP/setup.out" 2>&1
+  --port "$PORT" --bind 127.0.0.1 --instances 2 </dev/null >"$TMP/setup.out" 2>&1
 t "service: setup converges the scratch service" 0 "$?"
+t "service: ...with no fleet (#831)" 0 "$(sudo -n find "$DATA/fleets" -mindepth 1 2>/dev/null | grep -c . || true)"
 aroot "$CLI" service setup --user "$U" --group "$G" --unit-prefix "$PREFIX" --cli "$CLI" \
-  --fleet drill --port "$PORT" --bind 127.0.0.1 --instances 2 </dev/null >"$TMP/setup2.out" 2>&1
+  --port "$PORT" --bind 127.0.0.1 --instances 2 </dev/null >"$TMP/setup2.out" 2>&1
 t "service: setup again changes no unit" 7 "$(grep -c "  unit $PREFIX-.*: same$" "$TMP/setup2.out")"
 aroot "$CLI" service check </dev/null >"$TMP/check.out" 2>&1
 t "service: check reads it back clean" 0 "$?"
@@ -89,18 +91,26 @@ t "service: check reads it back clean" 0 "$?"
 OUT="$(CREW_ETC_DIR="$ETC" "$CLI" status 2>&1)"; RC=$?
 t "service: a caller outside the group is refused" 1 "$RC"
 t "service: ...and told which group to join" 1 "$(grep -c "not in its group '$G'" <<<"$OUT")"
-asvc "$CLI" init --fleet two </dev/null >/dev/null 2>&1
-t "service: the account makes a fleet in its own index" "$U:$G" "$(sudo -n stat -c '%U:%G' "$DATA/fleets/two/fleet.roster" 2>/dev/null)"
-asvc "$CLI" --fleet drill up --dry-run </dev/null >"$TMP/dry.out" 2>&1
-t "service: the account's runs read the service's fleets" 1 "$(grep -c '^up --dry-run: 0 would be created' "$TMP/dry.out")"
+asvc "$CLI" tick </dev/null >"$TMP/tick0.out" 2>&1
+t "service: with no fleet the tick has nothing to do" 4 "$?"
 
-# --- the floor unit -------------------------------------------------------------------------
+# --- the floor unit: empty, then New fleet ---------------------------------------------------
 FPASS="$(sudo -n sed -n 's/^CREW_FLOOR_PASS=//p' "$ETC/floor.env")"
 fapi() { curl -s -u "operator:$FPASS" "$@"; }
 for _ in $(seq 1 90); do fapi -o /dev/null "http://127.0.0.1:$PORT/healthz" && break; sleep 1; done
-t "service: the floor unit answers with the service's fleets" "drill two" \
-  "$(fapi "http://127.0.0.1:$PORT/api/fleets" | python3 -c 'import json,sys;print(" ".join(f["id"] for f in json.load(sys.stdin)["fleets"]))' 2>/dev/null)"
 t "service: the floor runs as the account" "$U" "$(ps -o user= -p "$(systemctl show -p MainPID --value "$PREFIX-floor.service")" 2>/dev/null | tr -d ' ')"
+t "service: the floor unit answers with no fleet" "" \
+  "$(fapi "http://127.0.0.1:$PORT/api/fleets" | python3 -c 'import json,sys;print(" ".join(f["id"] for f in json.load(sys.stdin)["fleets"]))' 2>/dev/null)"
+t "service: ...and its page is the lobby, New fleet" 1 "$(fapi "http://127.0.0.1:$PORT/" | grep -c '>New fleet</button>')"
+t "service: New fleet makes the first" "/f/drill/" \
+  "$(fapi -H 'Content-Type: application/json' -d '{"id":"drill"}' "http://127.0.0.1:$PORT/api/fleets" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("url",""))' 2>/dev/null)"
+t "service: ...owned by the account" "$U:$G" "$(sudo -n stat -c '%U:%G' "$DATA/fleets/drill/fleet.roster" 2>/dev/null)"
+asvc "$CLI" init --fleet two </dev/null >/dev/null 2>&1
+asvc "$CLI" --fleet drill up --dry-run </dev/null >"$TMP/dry.out" 2>&1
+t "service: the account's runs read the service's fleets" 1 "$(grep -c '^up --dry-run: 0 would be created' "$TMP/dry.out")"
+t "service: the floor lists them" "drill two" \
+  "$(fapi "http://127.0.0.1:$PORT/api/fleets" | python3 -c 'import json,sys;print(" ".join(f["id"] for f in json.load(sys.stdin)["fleets"]))' 2>/dev/null)"
+for _ in $(seq 1 60); do [ "$(fapi -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/f/drill/api/roster")" = 200 ] && break; sleep 1; done
 
 # --- a box Created from that floor is the service's -------------------------------------------
 ETAG="$(fapi "http://127.0.0.1:$PORT/f/drill/api/roster" | python3 -c 'import json,sys;print(json.load(sys.stdin)["etag"])' 2>/dev/null)"

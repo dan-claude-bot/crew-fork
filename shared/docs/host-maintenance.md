@@ -29,7 +29,9 @@ host missed while it was down runs at the next boot (a missed Sunday reset is
 not skipped for a week), `systemctl list-timers 'crew-*'` shows each one's last
 and next run, and every run's output is in the journal (`journalctl -u
 crew-tick`) as well as the host job log below. Exit 3 (a box skipped busy) and 4
-(nothing to do) are reported outcomes, not unit failures. The real-host drill is
+(nothing to do) are reported outcomes, not unit failures. A crew server starts
+with no fleets (#831): until the floor's New fleet makes one, each run says
+`no fleet on this host yet — nothing to walk` and exits 4. The real-host drill is
 operator-attended by construction and is not scheduled.
 
 **The host needs its own `gh` login.** The tick reads every registered board

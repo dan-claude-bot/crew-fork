@@ -237,3 +237,74 @@ SRV7=""
 sleep 1
 t "fleets: the children go with the front" 000 \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$WS_CHILD_PORT/healthz" || true)"
+
+# --- #831: a host with no fleets — the lobby, then the first fleet -------------
+echo
+echo "== the floor with no fleet (#831)"
+WE="$TMP/ws-empty"; WE_IDX="$WE/fleets"; mkdir -p "$WE_IDX" "$WE/etc" "$WE/xdg" "$WE/state"
+WE_PORT=$((PORT + 8))
+env -u CREW_CONFIG_DIR -u CREW_FLOOR_ROSTER XDG_CONFIG_HOME="$WE/xdg" CREW_FLEETS_DIR="$WE_IDX" \
+  CREW_ETC_DIR="$WE/etc" CREW_HOST_STATE_DIR="$WE/state" CREW_FLOOR_PING_INTERVAL=0 \
+  bash "$FLOOR/../cli/crew" floor --port "$WE_PORT" --bind 127.0.0.1 --user "$USER" --pass "$PASSWD" \
+  >"$TMP/server-empty.log" 2>&1 &
+SRV8=$!
+weapi() {  # weapi METHOD PATH [BODY] -> "<body>\n<status>"
+  if [ -n "${3:-}" ]; then
+    curl -s -u "$USER:$PASSWD" -X "$1" -H 'Content-Type: application/json' -d "$3" -w '\n%{http_code}' "http://127.0.0.1:$WE_PORT$2"
+  else
+    curl -s -u "$USER:$PASSWD" -X "$1" -w '\n%{http_code}' "http://127.0.0.1:$WE_PORT$2"
+  fi
+}
+for _ in $(seq 1 60); do
+  curl -fsS -u "$USER:$PASSWD" "http://127.0.0.1:$WE_PORT/healthz" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+t "no fleet: crew floor says there is none yet" 1 \
+  "$(grep -c "^  fleets    none yet — the page's one action is New fleet" "$TMP/server-empty.log")"
+t "no fleet: crew floor watches no roster" 0 "$(grep -c '^  roster ' "$TMP/server-empty.log" || true)"
+WE_OUT="$(weapi GET /)"
+t "no fleet: / is the lobby" 200 "$(tail -1 <<<"$WE_OUT")"
+t "no fleet: the lobby says so" 1 "$(grep -c 'No fleets on this host yet.' <<<"$WE_OUT")"
+t "no fleet: the lobby's one action is New fleet" 1 "$(grep -c '>New fleet</button>' <<<"$WE_OUT")"
+t "no fleet: the fleets list is empty" "[]" "$(weapi GET /api/fleets | sed '$d' | jqf "json.dumps(d['fleets'])")"
+WE_OUT="$(weapi GET /api/fleet)"
+t "no fleet: the snapshot is a 404" 404 "$(tail -1 <<<"$WE_OUT")"
+t "no fleet: ...that names New fleet" 1 "$(sed '$d' <<<"$WE_OUT" | jqf "int(d['error'].startswith('no fleet on this host yet') and 'New fleet' in d['error'])")"
+t "no fleet: the roster is a 404" 404 "$(weapi GET /api/roster | tail -1)"
+t "no fleet: a command is a 404" 404 "$(weapi POST /api/command '{"action":"pause","box":"x"}' | tail -1)"
+t "no fleet: a job is a 404" 404 "$(weapi POST /api/jobs '{"verb":"up","plan":true}' | tail -1)"
+t "no fleet: the examples are never served" 0 "$(grep -c 'examples' "$TMP/server-empty.log" || true)"
+# New fleet from the lobby: driven in a browser when the suite has one (the
+# lobby's own walk, with its own count), else posted as the lobby posts it.
+WE_WALK_COUNT=9
+WE_WALKED=0
+if [ "${BROWSER:-0}" -eq 1 ]; then
+  WE_CHROME="${PW_CHROME:-$HOME/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome}"
+  if command -v node >/dev/null && (cd "$HERE" && node -e "require('playwright-core')") >/dev/null 2>&1 && [ -x "$WE_CHROME" ]; then
+    WE_WALK_LOG="$TMP/walk-lobby.log"
+    (cd "$HERE" && PW_CHROME="$WE_CHROME" node "$HERE/lobby.js" "http://127.0.0.1:$WE_PORT" "$USER" "$PASSWD") 2>&1 | tee "$WE_WALK_LOG"
+    t "lobby walk: green" 0 "${PIPESTATUS[0]}"
+    t "lobby walk: asserted its recorded count" "walk: $WE_WALK_COUNT ok, 0 failed" "$(tail -1 "$WE_WALK_LOG")"
+    WE_WALKED=1
+  fi
+fi
+if [ "$WE_WALKED" -eq 0 ]; then
+  WE_OUT="$(weapi POST /api/fleets '{"id":"first"}')"
+  t "no fleet: New fleet makes the first" 200 "$(tail -1 <<<"$WE_OUT")"
+  t "no fleet: ...and opens it" "/f/first/" "$(sed '$d' <<<"$WE_OUT" | jqf "d['url']")"
+fi
+t "no fleet: ...in the index" 1 "$([ -f "$WE_IDX/first/fleet.roster" ] && echo 1 || echo 0)"
+t "first fleet: / now opens it" "302 /f/first/" \
+  "$(curl -s -o /dev/null -u "$USER:$PASSWD" -w '%{http_code} %header{location}' "http://127.0.0.1:$WE_PORT/")"
+WE_ROSTER=""
+for _ in $(seq 1 60); do
+  WE_ROSTER="$(weapi GET /f/first/api/roster)"
+  [ "$(tail -1 <<<"$WE_ROSTER")" = 200 ] && break
+  sleep 0.5
+done
+t "first fleet: its roster is served, empty" "200 0" \
+  "$(tail -1 <<<"$WE_ROSTER") $(sed '$d' <<<"$WE_ROSTER" | jqf "len(d['members'])")"
+t "first fleet: the fleets list names it" "first" "$(weapi GET /api/fleets | sed '$d' | jqf "' '.join(f['id'] for f in d['fleets'])")"
+kill "$SRV8" 2>/dev/null
+wait "$SRV8" 2>/dev/null
+SRV8=""

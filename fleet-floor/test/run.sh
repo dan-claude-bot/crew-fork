@@ -163,6 +163,7 @@ cleanup() {
   [ -n "${SRV5:-}" ] && kill "$SRV5" 2>/dev/null
   [ -n "${SRV6:-}" ] && kill "$SRV6" 2>/dev/null
   [ -n "${SRV7:-}" ] && kill "$SRV7" 2>/dev/null
+  [ -n "${SRV8:-}" ] && kill "$SRV8" 2>/dev/null
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
