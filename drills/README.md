@@ -519,6 +519,18 @@ with `--tree <pushed checkout>`; a checkout exactly at the tag drills the tag,
 and the record names the commit. A `reset` restores the VM's clean snapshot,
 pool included, so the next round asks again.
 
+**Memory (#845).** Each role's box is minted at its role conf's size (triage
+4 GiB, builder and reviewer 8 GiB), and a converging box touches all of it:
+qemu guest memory is shared memory the host cannot reclaim. `--parallel` sums
+the roles' sizes plus 2 GiB of host headroom against the host's memory: when
+they fit, the roles run at once; when they do not, they run in waves that fit,
+and the round says which. All three at once needs a 24 GiB host. The
+floor-provision and service legs each mint one more triage-sized box while the
+round's boxes stand: with less free than that plus the headroom, the leg reads
+INCOMPLETE with the numbers rather than risking an OOM kill. A qemu the host's
+kernel killed during the round is named at the top of the summary
+(`## HOST OUT OF MEMORY`). `REHEARSAL_HOST_HEADROOM_MIB` changes the headroom.
+
 Within a run, fixtures and the drill box are left in place for inspection; the
 box is always left disarmed and its pre-drill repo registry restored. What
 happens to them *between* runs is the lifecycle below. Companion prose:
@@ -531,7 +543,8 @@ operator's GitHub account that carry it.
 
 **A round creates**, per role in `--roles` (all three by default):
 
-- a **box** on the host, `crew-drill-<role>`, at 2 CPU / 4 GiB / 20 GiB;
+- a **box** on the host, `crew-drill-<role>`, at its role conf's size
+  (`BOX_CPU` / `BOX_MEMORY` / `BOX_DISK`, #607 D4);
 - a **public sandbox repository**, `<host-gh-identity>/crew-drill-<role>`,
   which the round then fills with issues, PRs and review traffic;
 - for the builder role, a **public fork of that sandbox** under the box's

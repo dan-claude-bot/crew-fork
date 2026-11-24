@@ -458,6 +458,11 @@ if [ -z "$INSTALL_TREE" ]; then
 fi
 # shellcheck source=drill/rehearsal-hygiene.sh
 . "$HERE/rehearsal-hygiene.sh"
+# The host's memory, read before boxes are minted on it (#845).
+# shellcheck source=drill/memory-budget.sh
+. "$HERE/memory-budget.sh"
+# Role sizes come from the source being drilled, as rehearsal.sh sizes each box.
+BUDGET_TREE="${INSTALL_TREE:-$HERE/..}"
 # shellcheck source=drill/rehearsal-breaker.sh
 . "$HERE/rehearsal-breaker.sh"
 # Sourced for rehearsal_notify_worst_verdict alone — the fold belongs beside
@@ -626,10 +631,11 @@ fi
 # collection always runs in role order, whatever order the roles ended in, so
 # a parallel round's summary is built exactly as a sequential one's is.
 declare -A ROLE_HYGIENE_FILE=() ROLE_BREAKER_FILE=() ROLE_BREAKER_REASON_FILE=()
-declare -A ROLE_SECTION_FILE=() ROLE_RESULT_FILE=() ROLE_TRANSCRIPT=()
+declare -A ROLE_SECTION_FILE=() ROLE_RESULT_FILE=() ROLE_TRANSCRIPT=() ROLE_WAVE=()
 # "name seconds" per section, for the summary's wall-time block (#776).
 declare -a TIMINGS=()
 ROUND_START=$SECONDS
+ROUND_EPOCH="$(date +%s)"
 
 role_banner() {
   echo
@@ -662,7 +668,8 @@ role_prepare() {
 role_siblings() {
   local r out=""
   [ "$PARALLEL" -eq 1 ] || return 0
-  for r in $ROLES; do
+  # Under a memory budget (#845) only the role's own wave ticks beside it.
+  for r in ${ROLE_WAVE[$1]:-$ROLES}; do
     [ "$r" = "$1" ] || out="$out${out:+ }$r"
   done
   printf '%s' "$out"
@@ -777,38 +784,79 @@ for name, r in json.load(sys.stdin).items():
 if [ "$PARALLEL" -eq 1 ] && [ "$(wc -w <<<"$ROLES")" -gt 1 ]; then
   echo
   warm_incus_remotes
-  echo "== --parallel: running $ROLES at once (#776); each role's transcript is printed whole, in role order, once all of them end"
+  # #845: the roles' boxes against the host's memory. Every role converging at
+  # once touches all of its guest memory, so the sum of the role sizes is what
+  # the host must hold; when it cannot, the roles run in waves that fit.
+  budget_pairs=() budget_terms="" budget_sum=0 budget_known=1
   for role in $ROLES; do
-    role_prepare "$role"
-    ROLE_RESULT_FILE[$role]="$(mktemp)"
-    ROLE_TRANSCRIPT[$role]="$(mktemp)"
-    ROLE_SECTION_STATUS_FILES+=("${ROLE_RESULT_FILE[$role]}" "${ROLE_TRANSCRIPT[$role]}")
-    (
-      role_start=$SECONDS
-      role_invoke "$role" >"${ROLE_TRANSCRIPT[$role]}" 2>&1 </dev/null
-      printf '%s %s\n' "$?" "$((SECONDS - role_start))" >"${ROLE_RESULT_FILE[$role]}"
-    ) &
+    role_mib="$(role_box_mib "$BUDGET_TREE" "$role")"
+    budget_pairs+=("$role:${role_mib:-?}")
+    if [ -n "$role_mib" ]; then
+      budget_terms="$budget_terms${budget_terms:+ + }$role $(mib_human "$role_mib")"
+      budget_sum=$((budget_sum + role_mib))
+    else
+      budget_known=0
+    fi
   done
-  # A heartbeat, so a console with nothing on it for an hour still says what
-  # it is waiting for.
-  while :; do
-    running=""
-    for role in $ROLES; do
-      [ -s "${ROLE_RESULT_FILE[$role]}" ] || running="$running $role"
-    done
-    [ -n "$running" ] || break
-    sleep "${REHEARSAL_PARALLEL_HEARTBEAT_S:-60}"
-    running_now=""
-    for role in $ROLES; do
-      [ -s "${ROLE_RESULT_FILE[$role]}" ] || running_now="$running_now $role"
-    done
-    [ -z "$running_now" ] || echo "== --parallel: still running:$running_now ($(( (SECONDS - ROUND_START) / 60 ))m)"
+  budget_total="$(host_mem_mib)"
+  mapfile -t WAVES < <(parallel_waves "$budget_total" "${budget_pairs[@]}")
+  if [ "$budget_known" -eq 0 ] || ! [[ "$budget_total" =~ ^[0-9]+$ ]]; then
+    echo "== --parallel: could not read the role sizes or this host's memory — running every role at once, unbudgeted (#845)"
+  elif [ "${#WAVES[@]}" -eq 1 ]; then
+    echo "== --parallel: $budget_terms + $(mib_human "$(budget_headroom_mib)") headroom fits this host's $(mib_human "$budget_total") (#845)"
+  else
+    wave_text=""
+    for w in "${WAVES[@]}"; do wave_text="$wave_text${wave_text:+, then }$w"; done
+    echo "== --parallel: $budget_terms + $(mib_human "$(budget_headroom_mib)") headroom is more than this host's $(mib_human "$budget_total") — running in waves: $wave_text (#845)"
+  fi
+  for w in "${WAVES[@]}"; do
+    for role in $w; do ROLE_WAVE[$role]="$w"; done
   done
-  wait
+  wave_no=0
+  for w in "${WAVES[@]}"; do
+    wave_no=$((wave_no + 1))
+    if [ "${#WAVES[@]}" -gt 1 ]; then
+      echo "== --parallel: wave $wave_no of ${#WAVES[@]}: running $w at once (#776, #845); each role's transcript is printed whole, in role order, once the round's roles end"
+    else
+      echo "== --parallel: running $w at once (#776); each role's transcript is printed whole, in role order, once all of them end"
+    fi
+    for role in $w; do
+      role_prepare "$role"
+      ROLE_RESULT_FILE[$role]="$(mktemp)"
+      ROLE_TRANSCRIPT[$role]="$(mktemp)"
+      ROLE_SECTION_STATUS_FILES+=("${ROLE_RESULT_FILE[$role]}" "${ROLE_TRANSCRIPT[$role]}")
+      (
+        role_start=$SECONDS
+        role_invoke "$role" >"${ROLE_TRANSCRIPT[$role]}" 2>&1 </dev/null
+        printf '%s %s\n' "$?" "$((SECONDS - role_start))" >"${ROLE_RESULT_FILE[$role]}"
+      ) &
+    done
+    # A heartbeat, so a console with nothing on it for an hour still says what
+    # it is waiting for.
+    while :; do
+      running=""
+      for role in $w; do
+        [ -s "${ROLE_RESULT_FILE[$role]}" ] || running="$running $role"
+      done
+      [ -n "$running" ] || break
+      sleep "${REHEARSAL_PARALLEL_HEARTBEAT_S:-60}"
+      running_now=""
+      for role in $w; do
+        [ -s "${ROLE_RESULT_FILE[$role]}" ] || running_now="$running_now $role"
+      done
+      [ -z "$running_now" ] || echo "== --parallel: still running:$running_now ($(( (SECONDS - ROUND_START) / 60 ))m)"
+    done
+    wait
+  done
   for role in $ROLES; do
     role_banner "$role"
-    # shellcheck disable=SC2086  # ROLES is a word list by construction
-    echo "## (ran in parallel with: $(printf '%s\n' $ROLES | grep -vx "$role" | paste -sd' ' -))"
+    # shellcheck disable=SC2086  # a wave is a word list by construction
+    siblings="$(printf '%s\n' ${ROLE_WAVE[$role]} | grep -vx "$role" | paste -sd' ' -)"
+    if [ -n "$siblings" ]; then
+      echo "## (ran in parallel with: $siblings)"
+    else
+      echo "## (ran alone: its wave held no other role — #845)"
+    fi
     cat "${ROLE_TRANSCRIPT[$role]}"
     read -r rc role_seconds <"${ROLE_RESULT_FILE[$role]}"
     TIMINGS+=("$role ${role_seconds:-0}")
@@ -1295,9 +1343,29 @@ workspaces_row() { # LEG STATUS-FILE RC OK-DETAIL
     SUMMARY+=("ok         $1  ($4)")
   fi
 }
+# leg_mem_short — why the host cannot take one more triage-sized box now, or
+# nothing when it can (#845). The floor-provision and service legs each mint
+# one while the round's boxes still stand; a short host reads INCOMPLETE with
+# the numbers, never an OOM-killed qemu read as a failed Create.
+leg_mem_short() {
+  local need
+  need="$(role_box_mib "$BUDGET_TREE" triage)"
+  [ -n "$need" ] || return 0
+  mem_short_for "$need" || true
+}
 WS_LEGS=""
 [ "$WORKSPACES_DRILL" -eq 0 ] || WS_LEGS="workspaces"
-[ "$PROVISION_DRILL" -eq 0 ] || WS_LEGS="$WS_LEGS${WS_LEGS:+ }floor-provision"
+PROVISION_MEM_SHORT=""
+if [ "$PROVISION_DRILL" -eq 1 ] && [ -n "${DRILLED// /}" ]; then
+  PROVISION_MEM_SHORT="$(leg_mem_short)"
+fi
+if [ -n "$PROVISION_MEM_SHORT" ]; then
+  echo "== floor-provision not run — $PROVISION_MEM_SHORT; minting it would risk the host OOM-killing a box (#845)"
+  SUMMARY+=("INCOMPLETE floor-provision  (not run — $PROVISION_MEM_SHORT, #845)")
+  [ "$overall" -eq 1 ] || overall=2
+elif [ "$PROVISION_DRILL" -eq 1 ]; then
+  WS_LEGS="$WS_LEGS${WS_LEGS:+ }floor-provision"
+fi
 if [ -n "$WS_LEGS" ] && [ -z "${DRILLED// /}" ]; then
   [ "$WORKSPACES_DRILL" -eq 0 ] || SUMMARY+=("SKIPPED    workspaces  (blocked by role install: no installed drill box)")
   [ "$PROVISION_DRILL" -eq 0 ] || SUMMARY+=("SKIPPED    floor-provision  (blocked by role install: no installed drill box)")
@@ -1316,7 +1384,7 @@ elif [ -n "$WS_LEGS" ]; then
   rc=$?
   [ "$WORKSPACES_DRILL" -eq 0 ] || workspaces_row workspaces "$WORKSPACES_STATUS" "$rc" \
     "two fleets on one floor: pages, actions and roster saves stay in their fleet; the host cap counts both"
-  [ "$PROVISION_DRILL" -eq 0 ] || workspaces_row floor-provision "$PROVISION_STATUS" "$rc" \
+  [ "$PROVISION_DRILL" -eq 0 ] || [ -n "$PROVISION_MEM_SHORT" ] || workspaces_row floor-provision "$PROVISION_STATUS" "$rc" \
     "a fleet made, a member created, hired and logged in from the floor, one job at a time"
   TIMINGS+=("workspaces $((SECONDS - section_start))")
 fi
@@ -1330,6 +1398,10 @@ fi
 # once a role reached a box: a round that installed nothing acts on nothing.
 if [ "$SERVICE_DRILL" -eq 1 ] && [ -z "${DRILLED// /}" ]; then
   SUMMARY+=("SKIPPED    service  (blocked by role install: no installed drill box)")
+  [ "$overall" -eq 1 ] || overall=2
+elif [ "$SERVICE_DRILL" -eq 1 ] && SERVICE_MEM_SHORT="$(leg_mem_short)" && [ -n "$SERVICE_MEM_SHORT" ]; then
+  echo "== service not run — $SERVICE_MEM_SHORT; minting its box would risk the host OOM-killing a box (#845)"
+  SUMMARY+=("INCOMPLETE service  (not run — $SERVICE_MEM_SHORT, #845)")
   [ "$overall" -eq 1 ] || overall=2
 elif [ "$SERVICE_DRILL" -eq 1 ]; then
   echo
@@ -1427,6 +1499,13 @@ if [ -n "$RESOLVED_REF" ]; then
   echo "## drilled source: $RESOLVED_REF ($SOURCE_RECORD)"
 fi
 [ -z "${ROUND_BOX:-}" ] || echo "## drill host: box $ROUND_BOX (the drill's pin: ${DRILL_BOX_REF:-unset})"
+# #845: a qemu the host's kernel killed is named here, so a box that died
+# mid-run is never read as crew's failure when it was the host's memory.
+ROUND_OOM="$(oom_kills_since "$ROUND_EPOCH")"
+if [ -n "$ROUND_OOM" ]; then
+  echo "## HOST OUT OF MEMORY: the kernel OOM-killed qemu $(grep -c . <<<"$ROUND_OOM") time(s) during this round — a box that died mid-run died of it, not of crew (#845):"
+  while IFS= read -r oom_line; do echo "##   $oom_line"; done <<<"$ROUND_OOM"
+fi
 # The door this round used into every box (#792): the record says which box
 # the host ran and whether crew entered as the agent with `--user` (box 0.11.0
 # and later) or as the box's stamped user (before it).
