@@ -41,7 +41,7 @@ shared/lib/jq/*	builder,review,triage
 shared/lib/box-entry.sh	box-entry,cli-lifecycle,cli-reset,cli-store,cli-fleets,common,install-lifecycle,install-drill,drill,drill-teardown,floor-no-browser
 shared/lib/box-mint.sh	cli-lifecycle,cli-reset,common,box-entry
 shared/lib/install-payload.sh	install-lifecycle,artifact,install-drill
-shared/lib/platform.sh	common,cli-lifecycle,cli-reset,cli-store,host-tick,boot-gate,box-entry
+shared/lib/platform.sh	common,cli-lifecycle,cli-reset,cli-store,host-tick,boot-gate,box-entry,drill-provision
 shared/lib/version-skew.sh	common,cli-lifecycle,boot-gate,box-entry,install-lifecycle
 shared/bin/*	full
 shared/prompts/*	builder,review,triage,hygiene,release
@@ -58,7 +58,7 @@ shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
 cli/crew	cli-lifecycle,cli-reset,cli-store,cli-fleets,box-entry,service,host-tick,common,floor-no-browser,pool
-drill/*	drill,install-drill,drill-teardown,box-entry
+drill/*	drill,install-drill,drill-teardown,box-entry,drill-provision
 install.sh	install-lifecycle,artifact,install-drill,service
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate
 dist/*	artifact,install-lifecycle

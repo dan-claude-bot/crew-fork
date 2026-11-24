@@ -270,8 +270,9 @@ short (crew#756):
   drill's contract tests — `shared/test/drill.sh` (orchestration, source
   acquisition, the record's shape, every row's grading through the real
   `wait_for`), `shared/test/install-drill.sh` (the installer's dry run and
-  interlock) and `shared/test/drill-teardown.sh` (the refusal set and
-  idempotence). They need no box, no credential and no network, and a
+  interlock), `shared/test/drill-teardown.sh` (the refusal set and
+  idempotence) and `shared/test/drill-provision.sh` (what the round installs
+  on a bare host, and what it refuses). They need no box, no credential and no network, and a
   harness change that misgrades a row is caught here before it costs a
   round on a host.
 - **On the host, on a candidate**: `drill/rehearsal-all.sh --ref X.Y.Z-rcN`,
@@ -453,6 +454,42 @@ triage, build and review the way the doctrine says. The legs
   errand: it is what an operator looks at to decide the fleet is healthy.
 - **Operator-config convergence** — the registry contract exercised against a
   real installed box.
+
+### The drill host — the round brings what it needs (#825)
+
+A drill host is any machine (never a box) where the operator has passwordless
+sudo: heavy-duty/infra's drill-host VM, which starts with only `git`, `sudo`
+and `curl`, is the usual one. The round provisions itself first
+(`drill/provision.sh`), before it reads anything on the host:
+
+- **box at the drill's pin**, `DRILL_BOX_REF` in `drill/provision.sh`. That is
+  the box this crew is drilled against, and it moves with the drill; nobody
+  passes it. A missing box is installed for the operator with box's own
+  installer at that tag, which runs `box setup-host`. An installed box is
+  never replaced: below the pin the round refuses and names the upgrade,
+  above it the round notes it and runs.
+- **the host tools** the legs call (`jq`, `gh`, `python3`, `crontab`,
+  `flock`, …) and **the browser leg's** node, npm and Chromium, from apt;
+  `playwright-core` in the checkout.
+- **once**, it restarts itself under `sg incus-admin` when `setup-host` has
+  just added the operator to that group.
+
+What is already there is left alone. It refuses, listing what is missing,
+without passwordless sudo or apt-get, and it refuses to install anything in a
+box (`/etc/chrony/conf.d/box-makestep.conf`, heavy-duty/box#80).
+`DRILL_NO_PROVISION=1` skips the step. The summary's `## drill host: box …`
+line records the box the round ran on. The credentials behind `--creds`, and
+`gh`'s own login, are still the operator's to set up.
+
+On infra's drill host, from a local checkout pushed into the VM (nothing is
+cloned inside it):
+
+    git -C ~/work/crew checkout X.Y.Z-rcN
+    runbooks/drill-host/drillhost.sh run crew --from ~/work/crew -- \
+      --parallel --creds gh:<name>,agent:<name>,tg:<name>
+
+drillhost runs the round with `--tree <pushed checkout>`; a checkout exactly
+at the tag drills the tag, and the record names the commit.
 
 Within a run, fixtures and the drill box are left in place for inspection; the
 box is always left disarmed and its pre-drill repo registry restored. What

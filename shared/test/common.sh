@@ -6435,7 +6435,7 @@ case "$p0out" in
 esac
 t rehearsal-dirty-shared-attributed attributed "$r2"
 t rehearsal-dirty-shared-before-box 0 "$(wc -l <"$P0LOG")"
-if p0out="$(PATH="$P0SHIM:$PATH" P0LOG="$P0LOG" P0HOME="$P0HOME" \
+if p0out="$(PATH="$P0SHIM:$PATH" P0LOG="$P0LOG" P0HOME="$P0HOME" DRILL_NO_PROVISION=1 \
   bash "$ROOT/drill/rehearsal-all.sh" --roles reviewer --tree "$P0TREE" \
     --quick --no-app --no-config-drill --no-install-drill 2>&1)"; then r1=0; else r1=$?; fi
 t rehearsal-all-passes-dirty-refusal-rc 1 "$r1"
