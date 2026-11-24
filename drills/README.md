@@ -494,16 +494,16 @@ echoed, never shown again), and the Telegram group chat when a `tg:` entry is
 named. With no terminal, the round refuses and prints the one command that
 fills the pool on that host, `drill/creds.sh gh:…,agent:…,tg:…`.
 
-**Two GitHub accounts (#835).** The host and the box are counterparties: the
-host owns the sandboxes, opens the issues and pull requests, and deletes the
-sandboxes at teardown (`delete_repo`); the box forks, pushes and reviews.
-GitHub refuses a review of one's own pull request, so they are two accounts.
-The box's is the `--creds` `gh:` entry; the host's is a second `gh:` entry in
-the same pool, named with `--host-gh <name>` and asked for with the rest. The
-round's own GitHub calls use its token. Without `--host-gh`, the host's own
-`gh` login serves, if it has one. Both accounts are read before anything is
-minted: neither one, or one account on both sides with builder or reviewer in
-the round, is refused there.
+**Two GitHub accounts (#835).** The boxes and the round are counterparties:
+the round owns the sandboxes, opens the issues and pull requests, and deletes
+the sandboxes at teardown (`delete_repo`); the boxes fork, push and review.
+GitHub refuses a review of one's own pull request, so they are two accounts:
+two `gh:` entries in `--creds`, ordinary pool entries asked for with the rest.
+The round uses each by case: the first logs the boxes in, the other makes the
+round's own GitHub calls. With one `gh:` entry, the host's own `gh` login, if
+it has one, makes those calls. Both accounts are read before anything is
+minted: no second account, or one account on both sides with builder or
+reviewer in the round, is refused there.
 
 On infra's drill host, from a local checkout pushed into the VM (nothing is
 cloned inside it), the whole round is:
@@ -511,7 +511,7 @@ cloned inside it), the whole round is:
     git -C ~/work/crew checkout X.Y.Z-rcN
     runbooks/drill-host/drillhost.sh reset      # or `up`, the first time
     runbooks/drill-host/drillhost.sh run crew --from ~/work/crew -- \
-      --parallel --creds gh:<name>,agent:<name>,tg:<name> --host-gh <name>
+      --parallel --creds gh:<name>,gh:<name>,agent:<name>,tg:<name>
 
 The round installs what it needs, asks for the four secrets once (drillhost
 gives it the terminal, heavy-duty/infra#130), and runs. drillhost runs it
