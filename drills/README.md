@@ -271,8 +271,9 @@ short (crew#756):
   acquisition, the record's shape, every row's grading through the real
   `wait_for`), `shared/test/install-drill.sh` (the installer's dry run and
   interlock), `shared/test/drill-teardown.sh` (the refusal set and
-  idempotence) and `shared/test/drill-provision.sh` (what the round installs
-  on a bare host, and what it refuses). They need no box, no credential and no network, and a
+  idempotence), `shared/test/drill-provision.sh` (what the round installs
+  on a bare host, and what it refuses) and `shared/test/drill-creds.sh` (the
+  drill's own pool and what it asks for). They need no box, no credential and no network, and a
   harness change that misgrades a row is caught here before it costs a
   round on a host.
 - **On the host, on a candidate**: `drill/rehearsal-all.sh --ref X.Y.Z-rcN`,
@@ -478,18 +479,32 @@ What is already there is left alone. It refuses, listing what is missing,
 without passwordless sudo or apt-get, and it refuses to install anything in a
 box (`/etc/chrony/conf.d/box-makestep.conf`, heavy-duty/box#80).
 `DRILL_NO_PROVISION=1` skips the step. The summary's `## drill host: box …`
-line records the box the round ran on. The credentials behind `--creds`, and
-`gh`'s own login, are still the operator's to set up.
+line records the box the round ran on.
+
+**Credentials (#828).** `--creds` names entries in the drill's own pool,
+`~/.config/crew-drill/credentials` (`DRILL_POOL_HOME`), unless
+`CREW_CREDENTIALS_DIR` points at another. It needs no fleet and no crew
+service. Whatever the named entries lack is asked for on the terminal before
+any role starts: each secret through crew's own `crew creds add` (never
+echoed, never shown again), and the Telegram group chat when a `tg:` entry is
+named. With no terminal, the round refuses and prints the one command that
+fills the pool on that host, `drill/creds.sh gh:…,agent:…,tg:…`. When the
+host's `gh` is not logged in, the round's own GitHub calls use the `gh:`
+entry's token, so the drill host needs no `gh auth login` either.
 
 On infra's drill host, from a local checkout pushed into the VM (nothing is
-cloned inside it):
+cloned inside it), the whole round is:
 
     git -C ~/work/crew checkout X.Y.Z-rcN
+    runbooks/drill-host/drillhost.sh reset      # or `up`, the first time
     runbooks/drill-host/drillhost.sh run crew --from ~/work/crew -- \
       --parallel --creds gh:<name>,agent:<name>,tg:<name>
 
-drillhost runs the round with `--tree <pushed checkout>`; a checkout exactly
-at the tag drills the tag, and the record names the commit.
+The round installs what it needs, asks for the three secrets once (drillhost
+gives it the terminal, heavy-duty/infra#130), and runs. drillhost runs it
+with `--tree <pushed checkout>`; a checkout exactly at the tag drills the tag,
+and the record names the commit. A `reset` restores the VM's clean snapshot,
+pool included, so the next round asks again.
 
 Within a run, fixtures and the drill box are left in place for inspection; the
 box is always left disarmed and its pre-drill repo registry restored. What

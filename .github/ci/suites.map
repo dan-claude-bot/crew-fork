@@ -58,7 +58,7 @@ shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
 cli/crew	cli-lifecycle,cli-reset,cli-store,cli-fleets,box-entry,service,host-tick,common,floor-no-browser,pool
-drill/*	drill,install-drill,drill-teardown,box-entry,drill-provision
+drill/*	drill,install-drill,drill-teardown,box-entry,drill-provision,drill-creds
 install.sh	install-lifecycle,artifact,install-drill,service
 shared/install.sh	install-lifecycle,artifact,install-drill,boot-gate
 dist/*	artifact,install-lifecycle

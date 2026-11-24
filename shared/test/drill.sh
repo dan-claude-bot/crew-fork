@@ -55,6 +55,10 @@ cp "$ROOT/drill/rehearsal-all.sh" "$ROOT/drill/rehearsal-notify.sh" \
 # fixture (#656).
 cp "$ROOT/drill/fleet-lifecycle.sh" "$HARNESS/"
 cp "$ROOT/drill/rehearsal-report.sh" "$HARNESS/"
+# #828: the drill's own pool and its prompts. No terminal in this suite, ever:
+# a row that wants the prompt path drives drill/creds.sh in its own suite.
+cp "$ROOT/drill/creds.sh" "$HARNESS/"
+export DRILL_CREDS_TTY="$TMP/no-tty"
 # #789: the self-armed app pass, through a stub transport that keeps one
 # box's cron and clock offset in files. Exported once: every round in this
 # suite that reaches the app phase without --app-roster drives it.
@@ -520,6 +524,39 @@ t w788-a-tg-entry-reaches-every-role "triage gh:bot,agent:max,tg:alerts $W774_PO
 w774_out="$(w774_round --creds tg:alerts,tg:other)"
 t w788-two-tg-entries-are-refused 1 "$(grep -c 'one gh, one agent and one tg entry at most' <<<"$w774_out")"
 rm -rf "$W774_POOL/entries/tg--alerts" "$W774_POOL/tg-chat"
+
+# --- #828: the drill's own pool, and the gh entry standing in for a gh login --
+W828_HOME="$TMP/w828-home"
+W828_BIN="$TMP/w828-bin"; mkdir -p "$W828_BIN"
+# shellcheck disable=SC2016  # the stub's own program
+printf '#!/usr/bin/env bash\n[ "$1 $2" = "auth status" ] && exit "${W828_GH_RC:-1}"\nexit 0\n' >"$W828_BIN/gh"
+chmod +x "$W828_BIN/gh"
+w828_round() {
+  : >"$W774_LOG"
+  local out rc=0
+  out="$(env -u CREW_CREDENTIALS_DIR -u GH_TOKEN DRILL_POOL_HOME="$W828_HOME" PATH="$W828_BIN:$PATH" \
+    DRILL_CREDS_LOG="$W774_LOG" DRILL_ROLE_LOG="$ROLE_LOG" DRILL_INSTALL_LOG="$INSTALL_LOG" DRILL_REMOTE="$REMOTE" \
+    REHEARSAL_PARALLEL_HEARTBEAT_S=0.2 \
+    bash "$HARNESS/rehearsal-all.sh" --tree "$SOURCE" --no-config-drill --no-install-drill --no-app \
+      --roles triage --keep --no-resume-drill --no-attention-drill --no-attention-audit-drill --no-release-drill \
+      --no-hygiene-drill --no-breaker-drill --no-notify-drill --no-fleet-drill "$@" 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+w828_out="$(w828_round --creds gh:bot,agent:max)"
+t w828-no-pool-no-terminal-is-refused 1 \
+  "$(grep -c 'no terminal to ask on — add them once, on this host: drill/creds.sh gh:bot,agent:max$' <<<"$w828_out")"
+t w828-no-pool-names-each-entry 2 "$(grep -c "no pool entry \(gh:bot\|agent:max\) in $W828_HOME/credentials" <<<"$w828_out")"
+t w828-no-pool-runs-no-role 0 "$(grep -c . "$W774_LOG")"
+w828_out="$(w828_round --agent grok --creds gh:bot)"
+t w828-hint-names-a-non-default-agent 1 "$(grep -c 'drill/creds.sh --agent grok gh:bot$' <<<"$w828_out")"
+mkdir -p "$W828_HOME/credentials/entries/gh--bot" "$W828_HOME/credentials/entries/agent--max"
+printf 'ghp_w828' >"$W828_HOME/credentials/entries/gh--bot/secret"; printf 'x' >"$W828_HOME/credentials/entries/agent--max/secret"
+w828_out="$(w828_round --creds gh:bot,agent:max)"
+t w828-the-drills-pool-is-the-default "triage gh:bot,agent:max $W828_HOME/credentials" "$(paste -sd'|' "$W774_LOG")"
+t w828-gh-entry-stands-in-for-a-gh-login 1 \
+  "$(grep -c '^== host gh: not logged in — the round.s own GitHub calls use the gh:bot pool entry$' <<<"$w828_out")"
+w828_out="$(W828_GH_RC=0 w828_round --creds gh:bot,agent:max)"
+t w828-a-logged-in-gh-is-kept 0 "$(grep -c '^== host gh: not logged in' <<<"$w828_out")"
 w774_out="$(w774_round)"
 t w774-no-creds-hands-the-roles-nothing "triage - -|builder - -" "$(sed "s|$W774_POOL|-|" "$W774_LOG" | paste -sd'|')"
 # The push sits after the creds-free rows and before phase 2 decides.
