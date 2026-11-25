@@ -368,6 +368,33 @@ t resume-verdict-opt-out-is-a-skip "builder skip --no-resume-drill" \
   "$(cat "$REHEARSAL_RESUME_STATUS")"
 unset REHEARSAL_RESUME_STATUS
 
+# #853: the wake tick waits for the engine's own read — the PR's
+# statusCheckRollup — to carry the drill's context at the state it set.
+P853_ROLLUP='{"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"drill/resume-head-settle","state":"PENDING"}]}'
+t p853-rollup-reads-the-drill-context PENDING \
+  "$(rehearsal_resume_rollup_state_from_json drill/resume-head-settle "$P853_ROLLUP")"
+t p853-rollup-reads-a-check-run-by-name SUCCESS \
+  "$(rehearsal_resume_rollup_state_from_json ci "$P853_ROLLUP")"
+t p853-rollup-without-the-context-reads-nothing "" \
+  "$(rehearsal_resume_rollup_state_from_json drill/other "$P853_ROLLUP")"
+t p853-rollup-unreadable-reads-nothing "" \
+  "$(rehearsal_resume_rollup_state_from_json drill/resume-head-settle 'not json')"
+p853_rc=0
+(
+  gh() { printf '%s\n' '{"statusCheckRollup":[{"context":"drill/resume-head-settle","state":"PENDING"}]}'; }
+  rehearsal_resume_rollup_is owner/repo 1 drill/resume-head-settle SUCCESS
+) || p853_rc=$?
+t p853-a-lagging-rollup-is-not-green 1 "$p853_rc"
+p853_rc=0
+(
+  gh() { printf '%s\n' '{"statusCheckRollup":[{"context":"drill/resume-head-settle","state":"SUCCESS"}]}'; }
+  rehearsal_resume_rollup_is owner/repo 1 drill/resume-head-settle SUCCESS
+) || p853_rc=$?
+t p853-a-caught-up-rollup-is-green 0 "$p853_rc"
+# The leg waits on it after setting green, before its wake tick.
+t p853-the-wake-tick-waits-for-the-rollup 1 \
+  "$(awk '/ok "resume: green head status established"$/{if(!g)g=NR} /rehearsal_resume_rollup_is "\$repo" "\$pr" "\$context" SUCCESS/{w=NR} /first tick after green resumes the parked PR/{k=NR} END{print (g && w && k && g<w && w<k) ? 1 : 0}' "$ROOT/drill/rehearsal-resume.sh")"
+
 # --- rehearsal terminal-breaker leg: sourceable mutations (#424) ---------
 BREAKER_KIND=attention
 BREAKER_THRESHOLD=3
