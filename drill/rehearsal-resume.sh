@@ -52,6 +52,25 @@ rehearsal_resume_tick_log() {
   bx "tail -n +$first_line ~/duty/duty.log"
 }
 
+# rehearsal_resume_rollup_state_from_json CONTEXT JSON — the state the PR's
+# statusCheckRollup gives CONTEXT, upper-case (SUCCESS, PENDING, …), or nothing.
+# That is the engine's own read of a head (`gh pr list/view --json
+# statusCheckRollup`, duty-builder.sh), and it is GraphQL: it can lag a REST
+# `statuses` write by seconds. On the rc16 round the wake tick read the head
+# still pending 3 s after the drill set it green, and the next tick resumed it
+# (#853).
+rehearsal_resume_rollup_state_from_json() {
+  jq -r --arg c "$1" '[.statusCheckRollup[]? | select((.context // .name // "") == $c)
+    | (.state // .conclusion // "")] | last // empty' <<<"$2" 2>/dev/null
+}
+
+# rehearsal_resume_rollup_is REPO PR CONTEXT STATE — the engine's read agrees.
+rehearsal_resume_rollup_is() {
+  local json
+  json="$(gh pr view "$2" -R "$1" --json statusCheckRollup 2>/dev/null)" || return 1
+  [ "$(rehearsal_resume_rollup_state_from_json "$3" "$json")" = "$4" ]
+}
+
 rehearsal_resume_tick() {
   # shellcheck disable=SC2016  # HOME expands inside the drill box
   bx '$HOME/duty/bin/tick.sh'
@@ -237,6 +256,8 @@ rehearsal_resume_drill() {
   if rehearsal_set_builder_head_status "$repo" "$head" "$context" pending \
       'drill holds resume until the next check-conclusion tick'; then
     ok "resume: pending head status established"
+    wait_for 60 "resume: pending head status visible to the engine's read (#853)" \
+      rehearsal_resume_rollup_is "$repo" "$pr" "$context" PENDING || true
   else
     fail "resume: pending head status established"
     rehearsal_resume_verdict fail "pending head status could not be established"
@@ -267,6 +288,12 @@ rehearsal_resume_drill() {
   if rehearsal_set_builder_head_status "$repo" "$head" "$context" success \
       'drill releases the check-conclusion wake'; then
     ok "resume: green head status established"
+    # Before the wake tick, the engine's own read must say green; otherwise the
+    # tick grades GitHub's lag, not the lane (#853).
+    if ! wait_for 60 "resume: green head status visible to the engine's read (#853)" \
+        rehearsal_resume_rollup_is "$repo" "$pr" "$context" SUCCESS; then
+      rehearsal_resume_verdict fail "the green head status never reached the PR's statusCheckRollup"
+    fi
   else
     fail "resume: green head status established"
     rehearsal_resume_verdict fail "green head status could not be established"
