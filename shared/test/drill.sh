@@ -1060,6 +1060,9 @@ t w789-the-tick-ran-armed-and-skewed "tick offset=120 armed=1" "$(cat "$ARMED_ST
 t w789-the-box-ends-disarmed absent "$([ -e "$ARMED_STATE/armed" ] && echo present || echo absent)"
 t w789-the-box-ends-on-the-host-clock 0 "$(cat "$ARMED_STATE/offset")"
 t w789-the-restore-is-said 1 "$(grep -c '^== crew-drill-reviewer restored: cron disarmed, clock back on the host clock' <<<"$w789_out")"
+# …once: the exit trap does not restore it again (#849).
+t p849-the-box-is-restored-once 1 "$(grep -c 'crew-drill-reviewer restored: ' <<<"$w789_out")"
+t p849-...and-no-false-not-restored-line 0 "$(grep -c 'NOT fully restored' <<<"$w789_out")"
 # Arm, skew and tick come in that order, all before the pass.
 t w789-arm-then-skew-then-tick 1 \
   "$(awk '/crontab -$/{a=NR} /date -s @\$\(\( \$\(date \+%s\) \+ 120/{s=NR} /duty\/bin\/tick.sh$/{if(!k)k=NR} END{print (a && s && k && a<s && s<k) ? 1 : 0}' "$ARMED_STATE/calls")"
@@ -3438,6 +3441,20 @@ brk_slice_lines() {
       printf '%s duty tick skipped: previous run still holds the lock (running unknown)\n' \
         "$BRK_TS" ;;
     SILENT) ;;
+    # #850, the rc15 round: tick.sh came back between the session's end and the
+    # trip line. The rest of the run lands after the leg's first read of it.
+    EARLY_TRIP)
+      printf '%s duty run start\n' "$BRK_TS"
+      brk_session_lines TERMINAL
+      {
+        printf '%s WARN: session breaker: kind=%s tripped after %s consecutive terminal failures\n' \
+          "$BRK_TS" "$BRK_KIND" "$BRK_THRESHOLD"
+        printf '%s duty run end\n' "$BRK_TS"
+      } >"$BRK_HOME/duty/pending" ;;
+    # …and a run that never ends at all.
+    NEVER_ENDS)
+      printf '%s duty run start\n' "$BRK_TS"
+      brk_session_lines TERMINAL ;;
     FAILED)
       printf '%s duty run start\n' "$BRK_TS"
       printf '%s duty tick FAILED: duty.sh exited 1\n' "$BRK_TS" ;;
@@ -3488,7 +3505,12 @@ brk_bx() {
     # its own HOME, which is how the slice boundary gets exercised at all.
     *'tail -n +'*)
       [ "$BRK_LOG_READABLE" -eq 1 ] || return 1
-      ( HOME="$BRK_HOME"; bash -c "$cmd" 2>/dev/null ) ;;
+      ( HOME="$BRK_HOME"; bash -c "$cmd" 2>/dev/null )
+      # What the run writes after the leg's first read lands before its next.
+      if [ -f "$BRK_HOME/duty/pending" ]; then
+        cat "$BRK_HOME/duty/pending" >>"$BRK_HOME/duty/duty.log"
+        rm -f "$BRK_HOME/duty/pending"
+      fi ;;
     *) return 0 ;;
   esac
 }
@@ -3560,6 +3582,7 @@ brk_drive() {
   (
     export REHEARSAL_BREAKER_TICK_TRIES="$BRK_TRIES"
     export REHEARSAL_BREAKER_TICK_WAIT=0
+    export REHEARSAL_BREAKER_SETTLE_STEP=0 REHEARSAL_BREAKER_SETTLE_TRIES="${BRK_SETTLE_TRIES:-3}"
     # The breaker's label predicate is the shared one in rehearsal-fixtures.sh
     # since #749, so the leg is sourced with it, as rehearsal.sh sources both.
     # shellcheck source=drill/rehearsal-fixtures.sh
@@ -3638,6 +3661,27 @@ t drill-breaker-running-ticks-fires-six-ticks 1 "$(brk_v "$BRK_GREEN" TICKS 6)"
 t drill-breaker-open-fixture-is-not-reopened 1 "$(brk_v "$BRK_GREEN" REOPENS 0)"
 t drill-breaker-running-ticks-trips-the-lane 1 \
   "$(grep -c '^ok breaker: lane trips once at installed threshold for kimi$' <<<"$BRK_GREEN" || true)"
+
+# #850, the rc15 round's shape: the third tick's `box exec` came back before
+# the run wrote its trip line. The leg re-reads that slice until the run ends,
+# and the trip is graded where it happened.
+BRK_SLICES=(TERMINAL TERMINAL EARLY_TRIP SUPPRESSED SUPPRESSED RECOVERED)
+brk_reset
+BRK_EARLY="$(brk_drive)"
+t p850-an-early-return-still-reads-the-trip 1 \
+  "$(grep -c '^ok breaker: lane trips once at installed threshold for kimi$' <<<"$BRK_EARLY" || true)"
+t p850-...and-the-round-is-green 0 "$(brk_fail "$BRK_EARLY")"
+t p850-...saying-it-waited-for-the-run 1 \
+  "$(grep -c "^   the tick returned before its run ended (tick.sh rc 0); re-read its slice 1 time(s) until 'duty run end' (#850)$" <<<"$BRK_EARLY" || true)"
+t p850-...and-firing-no-extra-tick 1 "$(brk_v "$BRK_EARLY" TICKS 6)"
+# A run that never ends inside the bound is not a reading: INCOMPLETE, said.
+BRK_SLICES=(TERMINAL TERMINAL NEVER_ENDS)
+brk_reset
+BRK_NEVER="$(brk_drive)"
+t p850-a-run-that-never-ends-is-incomplete 1 "$(brk_v "$BRK_NEVER" RC 2)"
+t p850-...not-a-fail 0 "$(brk_fail "$BRK_NEVER")"
+t p850-...naming-why 1 "$(grep -c "no 'duty run end' followed after 3 re-reads (#850)" "$BRK_REASON" || true)"
+BRK_SLICES=(TERMINAL TERMINAL TRIP SUPPRESSED SUPPRESSED RECOVERED)
 
 # (b) THE FIXTURE AN EARLIER LEG CLOSED — the `triage` role's round.
 #

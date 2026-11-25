@@ -776,9 +776,10 @@ breaker_hooked_out="$({
   # nothing is an unreachable box and this leg stops at it — which is the fix
   # working. This stub is about a fully-hooked profile reaching the threshold
   # probe, so it models a box whose ticks RUN: a measurable log, and a slice
-  # carrying the `duty run start` a real tick's job writes.
+  # carrying the `duty run start` and `duty run end` a real tick's job writes —
+  # since #850 the leg grades a run only once it has ended.
   rehearsal_breaker_tick_log() {
-    printf '%s\n' '2026-09-12T15:54:29Z duty run start'
+    printf '%s\n' '2026-09-12T15:54:29Z duty run start' '2026-09-12T15:54:30Z duty run end'
   }
   rehearsal_breaker_restore_cli_for_recovery() { return 0; }
   rehearsal_breaker_restore_cli() { return 0; }

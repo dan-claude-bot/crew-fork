@@ -1230,6 +1230,11 @@ elif [ "$APP" -eq 1 ] && [ "$ARMED_SELF" -eq 1 ] && [ "$GENERATED_APP" -eq 1 ]; 
     rc=0; app_agreement=not-presented
   fi
   armed_self_back="$(armed_self_restore "$ARMED_SELF_BOX")"; armed_self_back_rc=$?
+  # The restore ran in a command substitution, so its own `ARMED_SELF_STAGE=0`
+  # stayed there. Cleared here, or the EXIT trap restores the box a second time
+  # — after a green round's teardown has removed it, as a false "NOT fully
+  # restored" line under the summary (#849).
+  [ "$armed_self_back_rc" -ne 0 ] || ARMED_SELF_STAGE=0
   echo "== $armed_self_back"
   if [ "$armed_self_back_rc" -ne 0 ]; then
     # A box left armed or skewed is a box the rest of the round (and the

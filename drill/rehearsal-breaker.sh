@@ -26,6 +26,10 @@ REHEARSAL_BREAKER_TICK_REASON=""
 # overridable so the suite can exhaust the bound without spending minutes.
 REHEARSAL_BREAKER_TICK_TRIES="${REHEARSAL_BREAKER_TICK_TRIES:-10}"
 REHEARSAL_BREAKER_TICK_WAIT="${REHEARSAL_BREAKER_TICK_WAIT:-30}"
+# #850: a tick whose `box exec` returned before its run ended is re-read until
+# the run's `duty run end` is in the slice — every STEP seconds, TRIES times.
+REHEARSAL_BREAKER_SETTLE_TRIES="${REHEARSAL_BREAKER_SETTLE_TRIES:-150}"
+REHEARSAL_BREAKER_SETTLE_STEP="${REHEARSAL_BREAKER_SETTLE_STEP:-2}"
 
 rehearsal_breaker_record_result() {
   local result="$1" result_file="${REHEARSAL_BREAKER_RESULT_FILE:-}"
@@ -388,6 +392,14 @@ rehearsal_breaker_tick_log() {
 # reading HERE, which is what the sentence above already said — this leg
 # declines to grade a tick that did not run, whatever the holder turns out to
 # have been — so both wordings are matched and neither is ranked.
+# rehearsal_breaker_run_ended_from_log SLICE — the last `duty run start` in the
+# slice is followed by a `duty run end` (#850). A slice with a start and no end
+# is a run still going: what it has not written yet — the trip line, on the
+# rc15 round — would fall between this slice and the next one's boundary.
+rehearsal_breaker_run_ended_from_log() {
+  awk '/ duty run start$/ { ended = 0 } / duty run end$/ { ended = 1 } END { exit !ended }' <<<"$1"
+}
+
 rehearsal_breaker_tick_was_skipped_from_log() {
   grep -Fq -e 'tick skipped: previous run still holds the lock' \
            -e 'tick skipped: lock held with no live holder' <<<"$1"
@@ -466,6 +478,24 @@ rehearsal_breaker_fire_tick() {
     outcome="$(rehearsal_breaker_tick_outcome_from_log "$slice")"
     case "$outcome" in
       ran)
+        # #850: `box exec … tick.sh` can come back while the run it started is
+        # still writing (the rc15 round: the next tick was refused by it 13 s
+        # later). Grade the run whole, or not at all.
+        local settled=0
+        while ! rehearsal_breaker_run_ended_from_log "$slice"; do
+          if [ "$settled" -ge "$REHEARSAL_BREAKER_SETTLE_TRIES" ]; then
+            REHEARSAL_BREAKER_TICK_REASON="the tick returned before its run ended, and no 'duty run end' followed after $settled re-reads (#850)"
+            return 2
+          fi
+          sleep "$REHEARSAL_BREAKER_SETTLE_STEP"
+          settled=$((settled + 1))
+          if ! slice="$(rehearsal_breaker_tick_log "$first")"; then
+            REHEARSAL_BREAKER_TICK_REASON="the box's duty.log could not be read back"
+            return 2
+          fi
+        done
+        [ "$settled" -eq 0 ] \
+          || echo "   the tick returned before its run ended (tick.sh rc $rc); re-read its slice $settled time(s) until 'duty run end' (#850)"
         REHEARSAL_BREAKER_TICK_LOG="$slice"
         return 0 ;;
       failed)
