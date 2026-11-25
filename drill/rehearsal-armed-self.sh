@@ -109,7 +109,11 @@ armed_self_restore() {
     armed_self_root "$box" "date -s @$(date +%s) >/dev/null; systemctl start chrony 2>/dev/null || systemctl start chronyd 2>/dev/null || true" || true
     delta="$(armed_self_clock_delta "$box")"
     if [ -z "$delta" ] || [ "${delta#-}" -gt "$ARMED_SELF_RESYNC_TOLERANCE_S" ]; then
-      bad="${bad}${bad:+; }its clock is ${delta:-unread}s off the host's"
+      if [ -n "$delta" ]; then
+        bad="${bad}${bad:+; }its clock is ${delta}s off the host's"
+      else
+        bad="${bad}${bad:+; }its clock could not be read"
+      fi
     fi
   fi
   if [ -n "$bad" ]; then

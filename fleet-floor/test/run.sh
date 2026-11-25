@@ -174,6 +174,13 @@ else
   fail "fleet-wide actions run concurrently in stable order" "see output above"
 fi
 
+# #847: a job that reads finished has released its slot, so the next one starts.
+if python3 "$HERE/job-slot.py"; then
+  ok "jobs: a job that reads finished has released its slot (#847)"
+else
+  fail "jobs: a job that reads finished has released its slot (#847)" "see output above"
+fi
+
 api() {  # api METHOD PATH [BODY] -> "<status>\n<body>"
   local m="$1" p="$2" b="${3:-}"
   if [ -n "$b" ]; then

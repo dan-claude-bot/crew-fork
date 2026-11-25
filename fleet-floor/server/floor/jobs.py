@@ -304,15 +304,20 @@ class Jobs:
                 job["output"].append("the floor could not run crew: %s" % e)
             rc = 127
         finally:
-            with self.lock:
-                job["rc"] = rc
-                job["ended"] = time.time()
-                job["state"] = "done" if rc == 0 else "failed"
-                job["step"] = ("finished: exit %s" % rc)
+            # The record and the journal are written from the FINAL state while
+            # this job still holds the slot and the maintenance lock, and only
+            # after both are released does the job read finished (#847). The
+            # other order let a client that saw "done" start the next job inside
+            # the window where the slot was still held, and get a 409.
+            final = dict(job)
+            final["rc"] = rc
+            final["ended"] = time.time()
+            final["state"] = "done" if rc == 0 else "failed"
+            final["step"] = ("finished: exit %s" % rc)
             if logf:
                 logf.close()
-            self._record(job)
-            self._journal(job, log_path)
+            self._record(final)
+            self._journal(final, log_path)
             if maint:
                 try:
                     with open(maint.name + ".holder", "w", encoding="utf-8"):
@@ -321,6 +326,9 @@ class Jobs:
                     pass
                 maint.close()
             slot.close()
+            with self.lock:
+                for k in ("rc", "ended", "state", "step"):
+                    job[k] = final[k]
 
     def _journal(self, job, log_path):
         line = "%s %s fleet=%s verb=%s%s%s argv=%s rc=%s dur=%ds log=%s\n" % (
