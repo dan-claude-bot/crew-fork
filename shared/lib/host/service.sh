@@ -278,7 +278,7 @@ service_check() { # [--unit-prefix P] — read-only; exit 1 on drift
   # The engine's GitHub App (#864): said, never drift — a fresh host has none
   # until the floor's Credentials → Engine gives it one.
   local eng
-  eng="$(runuser -u "$user" -- env HOME="$data" "$cli" engine </dev/null 2>/dev/null | head -n1)" || eng=""
+  eng="$(runuser -u "$user" -- env HOME="$data" "$cli" engine </dev/null 2>/dev/null | head -n1)" || eng=""  # Decision-path empty fallback: a note, never drift; empty says crew engine did not answer
   echo "  note   ${eng:-engine: crew engine did not answer}"
   [ "$drift" -eq 0 ] && echo "service: clean" || echo "service: DRIFT — re-run: sudo crew service setup"
   return "$drift"

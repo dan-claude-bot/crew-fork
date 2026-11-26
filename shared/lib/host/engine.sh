@@ -97,7 +97,7 @@ engine_configured() {
 # engine_describe — one line for `crew engine`, the tick and service check.
 engine_describe() {
   local js
-  js="$(engine_py status 2>/dev/null)" || js=""
+  js="$(engine_py status 2>/dev/null)" || js=""  # Decision-path empty fallback: an unread status reads as no App, said as such below
   if grep -q '"configured": true' <<<"$js"; then
     printf '%s' "$js" | python3 -c 'import json,sys; s=json.load(sys.stdin); print("GitHub App %s (id %s, owner %s)" % (s.get("slug") or "?", s.get("id"), s.get("owner") or "?"))'
   elif gh auth status >/dev/null 2>&1; then
