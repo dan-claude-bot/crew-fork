@@ -30,6 +30,7 @@ case "$1" in
   --version) echo "box ${SV_BOX:-0.11.0} (x)" ;;
   list) echo "[]" ;;
   grant) [ -z "${SV_GRANT_FAIL:-}" ] || exit 1 ;;
+  revoke) echo "box BOX_YES=${BOX_YES:-}" >>"$SV_LOG"; [ -z "${SV_REVOKE_FAIL:-}" ] || { echo "box revoke: refusing" >&2; exit 1; } ;;
 esac'
 stub groupadd "$log"'; : >"$SV_MARK/group-${!#}"'
 stub groupdel "$log"'; rm -f "$SV_MARK/group-$1"'
@@ -204,6 +205,8 @@ t teardown-removes-the-rule 0 "$([ -e "$CREW_SUDOERS_DIR/crew" ] && echo 1 || ec
 t teardown-removes-service-conf 0 "$([ -e "$CREW_ETC_DIR/service.conf" ] && echo 1 || echo 0)"
 t teardown-keeps-the-data 1 "$([ -f "$CREW_DATA_DIR/fleets/main/fleet.roster" ] && echo 1 || echo 0)"
 t teardown-keeps-the-account 0 "$(calls '^userdel')"
+t teardown-plain-header-says-no-purge 0 "$(grep -c ', purge' <<<"$OUT")"
+t teardown-plain-gives-box-no-consent "box BOX_YES=" "$(grep '^box BOX_YES' "$SV_LOG")"
 OUT="$(bash "$CLI" --fleet main hire x 2>&1)"; RC=$?
 t no-service-an-index-fixture-still-reads 0 "$(grep -c 'not in its group' <<<"$OUT")"
 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" --no-caps >/dev/null 2>&1
@@ -212,6 +215,25 @@ OUT="$(CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service teardown --purge 2>&1)"; R
 t teardown-purge-revokes-with-purge "box revoke crew --purge" "$(grep '^box revoke' "$SV_LOG")"
 t teardown-purge-removes-account-and-group "userdel crew|groupdel crew" "$(grep -E '^(userdel|groupdel) ' "$SV_LOG" | paste -sd'|' -)"
 t teardown-purge-removes-the-data 0 "$([ -e "$CREW_DATA_DIR" ] && echo 1 || echo 0)"
+t teardown-purge-gives-box-its-consent "box BOX_YES=1" "$(grep '^box BOX_YES' "$SV_LOG")"
+t teardown-purge-says-revoked-purged 1 "$(grep -c 'box grant: revoked (purged)' <<<"$OUT")"
+
+# #858: a revoke box refuses stops teardown before the account goes, says so,
+# and a re-run (box's revoke succeeds once nothing is in its way) finishes.
+CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" --no-caps >/dev/null 2>&1
+: >"$SV_LOG"
+OUT="$(SV_REVOKE_FAIL=1 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service teardown --purge 2>&1)"; RC=$?
+t w858-failed-revoke-exits-nonzero 1 "$([ "$RC" -ne 0 ] && echo 1 || echo 0)"
+t w858-failed-revoke-says-not-revoked 1 "$(grep -c 'box grant: NOT revoked — box revoke crew --purge exited 1' <<<"$OUT")"
+t w858-failed-revoke-never-says-revoked 0 "$(grep -c 'box grant: revoked' <<<"$OUT")"
+t w858-failed-revoke-names-the-re-run 1 "$(grep -c 'then re-run: sudo crew service teardown --purge' <<<"$OUT")"
+t w858-failed-revoke-keeps-service-conf 1 "$([ -e "$CREW_ETC_DIR/service.conf" ] && echo 1 || echo 0)"
+t w858-failed-revoke-keeps-the-account 0 "$(calls '^userdel')"
+t w858-failed-revoke-keeps-the-data 1 "$([ -e "$CREW_DATA_DIR" ] && echo 1 || echo 0)"
+: >"$SV_LOG"
+OUT="$(CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service teardown --purge 2>&1)"; RC=$?
+t w858-re-run-finishes 0 "$RC"
+t w858-re-run-removes-account-and-group "userdel crew|groupdel crew" "$(grep -E '^(userdel|groupdel) ' "$SV_LOG" | paste -sd'|' -)"
 
 # --- a host with no service acts on nothing --------------------------------------------------
 OUT="$(unset CREW_DATA_DIR; CREW_DATA_DIR="$TMP/nowhere" bash "$CLI" hire x 2>&1)"; RC=$?

@@ -280,17 +280,18 @@ service_check() { # [--unit-prefix P] — read-only; exit 1 on drift
 }
 
 service_teardown() { # [--purge]
-  local purge=0 etc="$CREW_ETC_DIR" prefix u
+  local purge=0 etc="$CREW_ETC_DIR" prefix u pflag=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --purge) purge=1; shift ;;
       *) usage_error "unknown argument '$1' (usage: $(synopsis_of service))" ;;
     esac
   done
+  [ "$purge" -eq 0 ] || pflag=" --purge"
   service_is_root || die "crew service teardown runs as root"
   [ -f "$etc/service.conf" ] || die "$etc/service.conf is missing — nothing to tear down"
   prefix="$(service_conf_value CREW_UNIT_PREFIX)"; prefix="${prefix:-crew}"
-  echo "== crew service teardown (units $prefix-*${purge:+, purge})"
+  echo "== crew service teardown (units $prefix-*$([ "$purge" -eq 0 ] || echo ", purge"))"
   # Units first: box refuses to revoke a service while a unit still runs as it.
   while read -r u; do
     systemctl disable --now "$u" >/dev/null 2>&1 || true
@@ -299,10 +300,20 @@ service_teardown() { # [--purge]
   systemctl daemon-reload || true
   echo "  units: stopped and removed"
   rm -f "$SERVICE_SUDOERS_DIR/$prefix"; echo "  sudoers rule: removed"
+  # `--purge` here IS the operator's confirmation: box asks again on a terminal
+  # and refuses without one, so its consent (BOX_YES=1) goes with it (#858).
+  local revoke_rc=0
   if [ "$purge" -eq 1 ]; then
-    box revoke "$SERVICE_USER" --purge </dev/null || echo "  WARNING: box revoke $SERVICE_USER --purge failed"
+    BOX_YES=1 box revoke "$SERVICE_USER" --purge </dev/null || revoke_rc=$?
   else
-    box revoke "$SERVICE_USER" </dev/null || echo "  WARNING: box revoke $SERVICE_USER failed"
+    box revoke "$SERVICE_USER" </dev/null || revoke_rc=$?
+  fi
+  if [ "$revoke_rc" -ne 0 ]; then
+    # Stop BEFORE service.conf and the account go: a grant whose account was
+    # deleted is an orphaned project no re-run could find. box's revoke exits 0
+    # when nothing is left, so re-running teardown finishes the job.
+    echo "  box grant: NOT revoked — box revoke $SERVICE_USER$pflag exited $revoke_rc (above)"
+    die "teardown stopped: $etc/service.conf, the account and the data are kept — fix what box said, then re-run: sudo crew service teardown$pflag"
   fi
   echo "  box grant: revoked$([ "$purge" -eq 0 ] || echo ' (purged)')"
   rm -f "$etc/service.conf"; echo "  $etc/service.conf: removed — crew no longer runs as a service here"
