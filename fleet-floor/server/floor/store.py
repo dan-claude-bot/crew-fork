@@ -1240,6 +1240,33 @@ def main(argv=None):
         for rid, ts in rows:
             print("%s %s" % (rid, ts))
         return 0 if rows else 1
+    if verb == "last-run":
+        # The member's latest duty run, as its stored duty.log lines: from the
+        # last `duty run start` on. The host tick reads it to tell a member
+        # that looked and bought nothing from one that could not log in at
+        # all (#880). Nothing stored prints nothing.
+        box = _arg(argv, "--box")
+        if not box:
+            raise SystemExit("store.py last-run: --box is required")
+        try:
+            conn = connect(readonly=True)
+        except Exception:                                   # noqa: BLE001
+            return 0
+        try:
+            rows = conn.execute("SELECT line FROM duty_log WHERE box=? ORDER BY n DESC LIMIT 200",
+                                (box,)).fetchall()
+        except Exception:                                   # noqa: BLE001
+            rows = []
+        finally:
+            conn.close()
+        run = []
+        for (line,) in rows:
+            run.append(line)
+            if "duty run start" in line:
+                break
+        for line in reversed(run):
+            print(line)
+        return 0
     if verb == "sessions-count":
         box, kind = _arg(argv, "--box"), _arg(argv, "--kind")
         since = _arg(argv, "--since", "24h")

@@ -255,12 +255,17 @@ ht_record() {  # ht_record <box> <login> [ledger-line] [idle-ticks]
   {
     printf '::engine 9.9.9\n::integrity current\n::agent claude\n::uptime 1\n::now 2026-10-23T12:00:00Z\n'
     printf '::tickhealthstart\n::tickhealthend\n::tickage 30\n::gh nofail\n::vendor nofail\n::suppression \n::limitdropped 0\n::limitstart\n::limitend\n::cron 1\n::paused 0\n::vitals \n'
-    printf '::logstart\n2026-10-23T11:00:00Z duty run start\n::logend\n'
+    printf '::logstart\n2026-10-23T11:00:00Z duty run start\n%s::logend\n' "${HT_LOG_LINE:+2026-10-23T11:00:01Z $HT_LOG_LINE
+}"
     printf '::statefiles .identity .seen-build%s%s\n::filestart .identity\n%s\n::fileend\n' "${4:+ .idle-ticks}" "${HT_EXTRA_FILE:+ $HT_EXTRA_FILE}" "$2"
     printf '::filestart .seen-build\n%s\n::fileend\n' "${3:-}"
     [ -z "${4:-}" ] || printf '::filestart .idle-ticks\n%s\n::fileend\n' "$4"
     [ -z "${HT_EXTRA_FILE:-}" ] || printf '::filestart %s\n%s\n::fileend\n' "$HT_EXTRA_FILE" "$HT_EXTRA_BODY"
-    printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
+    if [ -n "${HT_LOG_LINE:-}" ]; then
+      printf '::logfrom 1\n::logtotal 2\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n2026-10-23T11:00:01Z %s\n::fileend\n' "$HT_LOG_LINE"
+    else
+      printf '::logfrom 1\n::logtotal 1\n::filestart duty.log\n2026-10-23T11:00:00Z duty run start\n::fileend\n'
+    fi
   } >"$STATE/$1.record"
   CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" ingest --box "$1" <"$STATE/$1.record" >/dev/null
 }
@@ -749,5 +754,23 @@ ht_record alpha dan-claude-bot '' 0
 capture tick
 t held-the-quiet-board-is-read-again-once-it-clears 1 "$(grep -c 'alpha: woke (running) why=ready#o/r#40' <<<"$OUT")"
 t held-then-the-digest-is-recorded 1 "$(find "$CONF/store/wake" -name 'alpha.o_r.digest' | wc -l | tr -d ' ')"
+
+
+# (#880) A member whose last run could not log in looked at nothing: the host
+# does not set its work aside as `passed`, and says why.
+echo running >"$STATE/alpha.state"; echo stopped >"$STATE/gamma.state"; printf '0\n' >"$STATE/alpha.idle"
+ht_record alpha dan-claude-bot '' 0
+rm -f "$CONF/store/wake"/alpha.* "$STATE/alpha.lock" "$STATE/alpha.ledger"; : >"$STATE/calls"
+ht_board 'I 18 2026-10-23T19:00:00Z lista -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
+capture tick
+printf '2\n' >"$STATE/alpha.idle"
+HT_LOG_LINE='WARN: cannot resolve own login (gh auth dead?) — nothing to do this tick' ht_record alpha dan-claude-bot '' 2
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:20:00Z blocked -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
+: >"$STATE/calls"
+capture tick
+t auth-dead-sets-nothing-aside 0 "$(grep -c 'alpha: veto .*:passed' <<<"$OUT")"
+t auth-dead-says-why 1 "$(grep -c 'alpha: its last run had no working login (gh rejected) — its work is not set aside' <<<"$OUT")"
+t auth-dead-its-work-still-wakes-it 1 "$(grep -c 'alpha: woke (running) why=.*pr#o/r#30' <<<"$OUT")"
+t store-last-run-is-the-latest-run 2 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" last-run --box alpha | grep -c .)"
 
 suite_finish
