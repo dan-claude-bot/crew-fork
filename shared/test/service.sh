@@ -50,6 +50,7 @@ case "$1" in
   enable) shift; [ "$1" = --now ] && shift; for u in "$@"; do : >"$SV_MARK/active-$u"; done ;;
   disable) shift; [ "$1" = --now ] && shift; for u in "$@"; do rm -f "$SV_MARK/active-$u"; done ;;
   is-active) [ -e "$SV_MARK/active-${!#}" ] ;;
+  show) [ -n "${SV_FLOOR_PID:-}" ] && echo "$SV_FLOOR_PID" || echo 0 ;;
 esac'
 stub visudo "$log"'; [ -z "${SV_VISUDO_FAIL:-}" ]'
 stub install '
@@ -113,7 +114,7 @@ t unit-restart-is-all "ExecStart=$CLI restart --all" "$(grep '^ExecStart=' "$CRE
 t unit-skips-and-nothing-are-not-failures 3 "$(cat "$CREW_SYSTEMD_DIR"/crew-{tick,restart,reset}.service | grep -cx 'SuccessExitStatus=3 4')"
 t unit-floor-reads-floor-env 1 "$(grep -cx "EnvironmentFile=$CREW_ETC_DIR/floor.env" "$CREW_SYSTEMD_DIR/crew-floor.service")"
 t unit-floor-runs-as-the-account 1 "$(grep -cx 'User=crew' "$CREW_SYSTEMD_DIR/crew-floor.service")"
-t setup-reloads-and-starts "systemctl daemon-reload|systemctl enable --now crew-floor.service crew-tick.timer crew-restart.timer crew-reset.timer" "$(grep '^systemctl' "$SV_LOG" | paste -sd'|' -)"
+t setup-reloads-and-starts "systemctl daemon-reload|systemctl enable --now crew-floor.service crew-tick.timer crew-restart.timer crew-reset.timer|systemctl show -p MainPID --value crew-floor.service" "$(grep '^systemctl' "$SV_LOG" | paste -sd'|' -)"
 # #831: a crew server starts with no fleets — the floor's New fleet makes the first.
 t setup-makes-no-fleet 0 "$(calls 'init --fleet')"
 t setup-leaves-the-index-empty 0 "$(find "$CREW_DATA_DIR/fleets" -mindepth 1 | grep -c . || true)"
@@ -140,6 +141,25 @@ t setup-caps-are-flags "box grant --service crew --share crew --instances 3 --me
 : >"$SV_LOG"
 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" --no-caps >/dev/null 2>&1
 t setup-no-caps-grants-bare "box grant --service crew --share crew" "$(grep '^box grant' "$SV_LOG")"
+
+# --- a running floor from another tree is restarted (the upgrade path) -------------------
+PROC="$TMP/proc"; mkdir -p "$PROC/4242"
+printf 'python3\0/opt/crew/versions/0.1.4-old/fleet-floor/server/floor.py\0' >"$PROC/4242/cmdline"
+: >"$SV_LOG"
+OUT="$(CREW_SERVICE_PROC_DIR="$PROC" SV_FLOOR_PID=4242 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" 2>&1)"
+t upgrade-restarts-a-floor-on-another-tree 1 "$(grep -c '^systemctl restart crew-floor.service$' "$SV_LOG")"
+t upgrade-says-which-tree-it-ran 1 "$(grep -c '  restarted: crew-floor.service — it was running /opt/crew/versions/0.1.4-old, now ' <<<"$OUT")"
+printf 'python3\0%s/fleet-floor/server/floor.py\0' "$ROOT" >"$PROC/4242/cmdline"
+: >"$SV_LOG"
+OUT="$(CREW_SERVICE_PROC_DIR="$PROC" SV_FLOOR_PID=4242 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" 2>&1)"
+t a-floor-on-this-tree-is-left-alone 0 "$(grep -c '^systemctl restart' "$SV_LOG")"
+printf 'bash\0/usr/local/bin/crew\0floor\0' >"$PROC/4242/cmdline"
+: >"$SV_LOG"
+CREW_SERVICE_PROC_DIR="$PROC" SV_FLOOR_PID=4242 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" >/dev/null 2>&1
+t a-floor-still-starting-is-left-alone 0 "$(grep -c '^systemctl restart' "$SV_LOG")"
+: >"$SV_LOG"
+OUT="$(CREW_SERVICE_PROC_DIR="$PROC" SV_FLOOR_PID=4242 CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service setup --cli "$CLI" --no-start 2>&1)"
+t no-start-restarts-nothing 0 "$(grep -c '^systemctl restart' "$SV_LOG")"
 
 # --- check -------------------------------------------------------------------------------
 OUT="$(CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service check 2>&1)"; RC=$?

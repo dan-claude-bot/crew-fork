@@ -234,6 +234,7 @@ service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] 
     systemctl enable --now "$prefix-floor.service" "$prefix-tick.timer" "$prefix-restart.timer" "$prefix-reset.timer" ||
       die "systemctl enable --now failed"
     echo "  started: $prefix-floor.service and the tick, restart and reset timers"
+    service_floor_current "$prefix"
   else
     echo "  not started (--no-start): systemctl enable --now $prefix-floor.service $prefix-{tick,restart,reset}.timer"
   fi
@@ -243,6 +244,31 @@ service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] 
   echo "  the engine's GitHub App: the floor's Credentials → Engine (create one, or paste an existing App's ID and key)"
   echo "  the floor: http://<this host>:$port/ — user and password in $etc/floor.env"
   echo "  then, in the floor: New fleet, its members in its Roster, and Create each one"
+}
+
+# service_floor_current PREFIX — a floor already running keeps the tree it
+# started from: `systemctl enable --now` starts a stopped unit and leaves a
+# running one alone. After an upgrade (the installer flips `current`), the
+# floor would serve the previous version's code — and miss what the new one
+# added — until the next reboot. The timers start a fresh process every run,
+# so only the floor needs this. Its main process is the python `crew floor`
+# exec'd, named by its versioned tree; one that is not THIS tree's is
+# restarted, and said. One still starting (not yet python) is left alone.
+service_floor_current() {
+  local unit="$1-floor.service" proc="${CREW_SERVICE_PROC_DIR:-/proc}" pid cmd want old
+  want="$CREW_ROOT/fleet-floor/server/floor.py"
+  pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -r "$proc/$pid/cmdline" ] || return 0
+  cmd="$(tr '\0' ' ' <"$proc/$pid/cmdline")"
+  case "$cmd" in
+    *"$want"*) return 0 ;;
+    */fleet-floor/server/floor.py*) ;;
+    *) return 0 ;;
+  esac
+  old="$(grep -o '[^ ]*/fleet-floor/server/floor.py' <<<"$cmd" | head -n1)"
+  old="${old%/fleet-floor/server/floor.py}"
+  systemctl restart "$unit" || die "systemctl restart $unit failed (it was running ${old:-another tree})"
+  echo "  restarted: $unit — it was running ${old:-another tree}, now $CREW_ROOT"
 }
 
 service_check() { # [--unit-prefix P] — read-only; exit 1 on drift
