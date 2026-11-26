@@ -4818,8 +4818,12 @@ tick_run() { # DRY_RUN
     # The App's token for this owner, minted here so the board's reads (forks)
     # share it. An App that cannot read the owner is said by name.
     ENGINE_LAST_ERROR=""
-    if ! engine_prime "$repo" || ! rows="$(wake_board_rows "$repo")"; then
+    local read_err
+    read_err="$(mktemp)"
+    if ! engine_prime "$repo" || ! rows="$(wake_board_rows "$repo" 2>"$read_err")"; then
       [ -z "$ENGINE_LAST_ERROR" ] || echo "  $repo: $ENGINE_LAST_ERROR"
+      [ ! -s "$read_err" ] || echo "  $repo: $(tail -n1 "$read_err")"
+      rm -f -- "$read_err"
       # Blind for a tick or two is a hiccup; blind for TICK_BLIND_TICKS running
       # is a repository the host cannot read (renamed, private to this login,
       # gone), and holding every idle box up for it would keep the fleet fully
@@ -4834,6 +4838,7 @@ tick_run() { # DRY_RUN
       fi
       continue
     fi
+    rm -f -- "$read_err"
     tick_unreadable_count "$repo" 0 >/dev/null
     rows="$(tick_merge_settle "$repo" "$rows")"
     ROWS[$repo]="$rows"

@@ -30,7 +30,8 @@ t board-rows-join-the-three-reads 6 "$(printf '%s\n' "$rows" | grep -c .)"
 t board-rows-read-rc 0 "$rows_rc"
 t board-reads-issues-prs-and-discussions-once-each "1 1 1" \
   "$(printf '%s %s %s' "$(grep -c '^issue list' "$HT_GH_LOG")" "$(grep -c '^pr list' "$HT_GH_LOG")" "$(grep -c '^api graphql' "$HT_GH_LOG")")"
-HT_GH_FAIL='pr'; failed_rows="$(wake_board_rows o/r)"; failed_rc=$?; unset HT_GH_FAIL
+HT_GH_FAIL='pr'; failed_rows="$(wake_board_rows o/r 2>"$TMP/read.err")"; failed_rc=$?; unset HT_GH_FAIL
+t board-an-unreadable-read-names-which 1 "$(grep -c '^the pull requests read failed: gh gave no reason$' "$TMP/read.err")"
 t board-an-unreadable-read-yields-nothing "" "$failed_rows"
 t board-an-unreadable-read-is-1 1 "$failed_rc"
 d1="$(printf '%s\n' "$rows" | wake_digest)"; d2="$(printf '%s\n' "$rows" | wake_digest)"
@@ -238,7 +239,7 @@ cat >"$SHIM/gh" <<'EOF'
 case "$1 $2" in
   "auth status") [ -z "${HT_GH_DEAD:-}" ] || exit 1; exit 0 ;;
   "issue list") cat "$HT_STATE/board.issues" 2>/dev/null || exit 1 ;;
-  "pr list")    cat "$HT_STATE/board.prs" 2>/dev/null || exit 1 ;;
+  "pr list")    cat "$HT_STATE/board.prs" 2>/dev/null || { echo "GraphQL: Resource not accessible by integration (repository.pullRequests.nodes.0.statusCheckRollup.nodes.0)" >&2; exit 1; } ;;
   "api graphql") cat "$HT_STATE/board.discs" 2>/dev/null || exit 1 ;;
   *) exit 1 ;;
 esac
@@ -330,6 +331,7 @@ t tick-dry-run-records-no-digest 0 "$(find "$CONF/store/wake" -name 'alpha.*' 2>
 rm -f "$STATE/board.prs"; : >"$STATE/calls"
 capture tick
 t tick-an-unreadable-board-is-no-change 1 "$(grep -c 'o/r: board unreadable this tick — no change assumed, and no box is stopped on a tick that could not see the board' <<<"$OUT")"
+t tick-an-unreadable-board-names-the-read-and-githubs-reason 1 "$(grep -c '  o/r: the pull requests read failed: GraphQL: Resource not accessible by integration' <<<"$OUT")"
 t tick-an-unreadable-board-starts-nothing 0 "$(calls 'start ')"
 # ...and stops nothing: a blind tick must not read a dead board as a quiet fleet.
 echo running >"$STATE/beta.state"; printf '5\n' >"$STATE/beta.idle"; : >"$STATE/calls"
