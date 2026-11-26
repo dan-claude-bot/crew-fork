@@ -68,24 +68,33 @@ const stubLines = () => (fs.existsSync(STUB_LOG) ? fs.readFileSync(STUB_LOG, 'ut
 
   // Two tabs on two fleets share nothing.
   const b = await open('/f/default/');
-  await a.click('#g-roster'); await a.waitForSelector('#rosov', { state: 'visible' });
-  await b.click('#g-roster'); await b.waitForSelector('#rosov', { state: 'visible' });
-  const boxesA = await a.$$eval('#roslist [data-k="box"]', (i) => i.map((x) => x.value));
-  const boxesB = await b.$$eval('#roslist [data-k="box"]', (i) => i.map((x) => x.value));
+  await a.click('#g-roster'); await a.waitForSelector('#pagebody .mcard [data-job]', { state: 'visible' });
+  await b.click('#g-roster'); await b.waitForSelector('#pagebody .mcard [data-job]', { state: 'visible' });
+  ok('pages: Members is its own address (#870)', /#\/members$/.test(a.url()), a.url());
+  const boxesA = await a.$$eval('#pagebody .mcard', (i) => i.map((x) => x.dataset.box));
+  const boxesB = await b.$$eval('#pagebody .mcard', (i) => i.map((x) => x.dataset.box));
   ok('tabs: the second fleet\'s roster is its own', boxesA.join(' ') === 'ws-two', boxesA.join(' '));
   ok('tabs: the other tab\'s roster is the default fleet\'s', boxesB.length > 1 && boxesB.includes('ff-idle') && !boxesB.includes('ws-two'), boxesB.join(' '));
 
   // A member's buttons follow its standing.
-  const btnA = await a.$$eval('#roslist [data-job]', (o) => o.map((x) => `${x.dataset.job}:${x.dataset.box}`));
+  const btnA = await a.$$eval('#pagebody .mcard [data-job]', (o) => o.map((x) => `${x.dataset.job}:${x.dataset.box}`));
   ok('roster: a member with no box offers Create', btnA.join(' ') === 'create:ws-two', btnA.join(' '));
-  const btnB = await b.$$eval('#roslist [data-job]', (o) => o.map((x) => x.dataset.job));
+  const btnB = await b.$$eval('#pagebody .mcard [data-job]', (o) => o.map((x) => x.dataset.job));
   ok('roster: a hired member offers Upgrade', btnB.includes('upgrade'), btnB.join(' '));
-  await b.click('#rosx');
+  // A member's own page, and the back button walks back to the list.
+  await b.click('#pagebody .mcard[data-box="ff-idle"] .mhead a');
+  await b.waitForSelector('#pagebody [data-pg="remove"]', { state: 'visible' });
+  ok('pages: a member has its own page', /#\/member\/ff-idle$/.test(b.url()), b.url());
+  await b.goBack();
+  await b.waitForSelector('#pagebody .mcard', { state: 'visible' });
+  ok('pages: the back button returns to Members', /#\/members$/.test(b.url()), b.url());
+  await b.click('#page .pgtabs a[data-tab=""]');
+  await b.waitForSelector('#page', { state: 'hidden' });
 
   // Create shows its plan first; nothing but the dry run has run.
   const before = stubLines().length;
   fs.writeFileSync(SLEEP_FILE, '0');
-  await a.click('#roslist [data-job="create"]');
+  await a.click('#pagebody .mcard [data-job="create"]');
   await a.waitForSelector('#jobov', { state: 'visible' });
   await a.waitForFunction(() => /finished|FAILED/.test(document.getElementById('jobstate').textContent), null, { timeout: 30000 });
   const ran = stubLines().slice(before);

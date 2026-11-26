@@ -1428,32 +1428,36 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
   eq('registry: the ops bar carries the fleet-wide control', 1,
      await page.locator('#g-reg').count());
   if (LIVE && visible.length) {
+    /* #870: the registries are pages now — the fleet's lists on
+       #/repositories, a box's selection on its own #/member/<box>. */
+    const pageOpen = async () => await page.locator('#page').isVisible().catch(() => false);
+    const toFloor = async () => {
+      await page.click('#page .pgtabs a[data-tab=""]');
+      await settle(async () => !(await pageOpen()), 4000);
+    };
     await page.click('#g-reg');
-    await settle(async () => await page.locator('#regov').isVisible().catch(() => false), 8000);
-    const fleetOpen = await page.locator('#regov').isVisible().catch(() => false);
-    ok('registry: the fleet-wide editor opens', fleetOpen,
+    await settle(async () => (await pageOpen()) && (await page.locator('#pagebody .regblk').count()) > 0, 8000);
+    const fleetOpen = await pageOpen();
+    ok('registry: the fleet\'s Repositories page opens', fleetOpen,
        (await page.locator('#livestat').textContent()).trim());
+    ok('registry: ...at its own address (#870)', /#\/repositories$/.test(page.url()), page.url());
     if (fleetOpen) {
-      // Both registries, not just the work one: the fleet has two and an
-      // editor that silently covered one of them would read as complete.
-      eq('registry: both registries are on the fleet-wide editor', 2,
-         await page.locator('#regov .regblk').count());
+      // Both registries, not just the work one: the fleet has two and a page
+      // that silently covered one of them would read as complete.
+      eq('registry: both registries are on the fleet\'s page', 2,
+         await page.locator('#pagebody .regblk').count());
       eq('registry: ...the work list first', 'work',
-         await page.locator('#regov .regblk').first().getAttribute('data-kind'));
-      // A box scope would carry the source chip; the fleet-wide one has no
-      // layer above it, so it must not claim one.
-      eq('registry: the fleet-wide scope claims no inheritance', 0,
-         await page.locator('#regov .regsrc').count());
-      // The fleet-wide scope IS the universe, so it is the one that gets a
-      // free field: there is nothing above it to bound what an operator may
-      // type, and adding a board is typing its name.
-      eq('registry: the fleet-wide scope is a free list', 2,
-         await page.locator('#regov .regta').count());
+         await page.locator('#pagebody .regblk').first().getAttribute('data-kind'));
+      // The fleet's scope has no layer above it, so it must not claim one.
+      eq('registry: the fleet\'s scope claims no inheritance', 0,
+         await page.locator('#pagebody .regsrc').count());
+      // The fleet's scope IS the universe, so it is the one an operator types
+      // into: adding a board is typing its name.
+      eq('registry: the fleet\'s scope takes a typed repository', 2,
+         await page.locator('#pagebody [data-k="repo-new"]').count());
       await shot('06-registries-fleet');
-      await page.keyboard.press('Escape');
-      await settle(async () => !(await page.locator('#regov').isVisible().catch(() => false)), 4000);
-      ok('registry: Esc closes the editor',
-         !(await page.locator('#regov').isVisible().catch(() => false)));
+      await toFloor();
+      ok('registry: the Floor tab closes the page', !(await pageOpen()));
     }
     // ...and the per-box half, from that box's own console.
     const r0 = await enterAt(visible[0]);
@@ -1467,36 +1471,29 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
       ok('registry: the box vitals name what it watches', /Registry/.test(vit),
          vit.replace(/\s+/g, ' ').slice(-90));
       await page.click('#ac-reg');
-      await settle(async () => await page.locator('#regov').isVisible().catch(() => false), 8000);
-      const boxOpen = await page.locator('#regov').isVisible().catch(() => false);
-      ok('registry: the per-box editor opens from the box console', boxOpen,
+      await settle(async () => (await pageOpen()) && (await page.locator('#pagebody [data-pg="scope-save"]').count()) > 0, 8000);
+      const boxOpen = await pageOpen();
+      ok('registry: the member page opens from the box console', boxOpen,
          (await page.locator('#livestat').textContent()).trim());
       if (boxOpen) {
-        // SCOPED TO THE OPEN BOX. One editor serves both scopes, so the thing
-        // that can go wrong is it opening on the wrong one — the same identity
-        // check `pause` gets above, for the same reason.
-        eq('registry: ...scoped to the box on screen', visible[0].expect,
-           await page.locator('#regov').getAttribute('data-box'));
+        // SCOPED TO THE OPEN BOX: the member page is the box on screen's.
+        ok('registry: ...scoped to the box on screen',
+           page.url().endsWith('#/member/' + encodeURIComponent(visible[0].expect)), page.url());
         eq('registry: ...saying whether the box inherits or overrides', 2,
-           await page.locator('#regov .regsrc').count());
+           await page.locator('#pagebody .regsrc').count());
         eq('registry: ...and offering the inherit action', 2,
-           await page.locator('#regov [data-reg="inherit"]').count());
+           await page.locator('#pagebody [data-pg="scope-inherit"]').count());
         /* THE PER-BOX SCOPE IS A SELECTION, NOT A FREE LIST (operator,
-           2026-08-29). A box can never name a repository the fleet-wide
-           registry does not, so the legal values are finite and already on
-           screen; a textarea here would exist only for the collector to refuse
-           what the page had invited. Asserted on the page because that is
-           where the invitation is — the collector's refusal is already
-           covered, and a build with both would still be one an operator could
-           type into. */
-        eq('registry: ...as switches over the fleet-wide list, not a free field', 0,
-           await page.locator('#regov .regta').count());
-        const wsel = '#regov .regblk[data-kind="work"] ';
+           2026-08-29). A box can never name a repository the fleet's list does
+           not, so the legal values are finite and already on screen. */
+        eq('registry: ...as switches over the fleet\'s list, not a free field', 0,
+           await page.locator('#pagebody .regta, #pagebody [data-k="repo-new"]').count());
+        const wsel = '#pagebody .regblk[data-kind="work"] ';
         ok('registry: ...one switch per repository the fleet watches',
            (await page.locator(`${wsel}.regopt`).count()) >= 1,
            `switches: ${await page.locator(`${wsel}.regopt`).count()}`);
         // An inheriting box shows every switch ON. Inheriting IS selecting all
-        // of them, and a cell that drew them off would read as a narrowed box
+        // of them, and a page that drew them off would read as a narrowed box
         // and invite an operator to "fix" one that is not.
         const wsrc = (await page.locator(`${wsel}.regsrc`).textContent()).trim();
         if (wsrc === 'inherited') {
@@ -1505,8 +1502,7 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
              await page.locator(`${wsel}.regopt input:checked`).count());
         }
         await shot('07-registries-box');
-        await page.keyboard.press('Escape');
-        await settle(async () => !(await page.locator('#regov').isVisible().catch(() => false)), 4000);
+        await toFloor();
       }
     }
     await leave();

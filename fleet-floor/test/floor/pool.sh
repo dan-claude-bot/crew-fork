@@ -148,6 +148,8 @@ t "pool: the page offers Assign, Rotate and Add" "1 1 1" \
   "$(grep -c "data-pool-act=\"assign\"" "$FLOOR/index.html") $(grep -c "data-pool-act=\"rotate\"" "$FLOOR/index.html") $(grep -c "data-pool-act=\"add\"" "$FLOOR/index.html")"
 t "pool: a value field is cleared before the request is sent" 1 \
   "$(sed -n '/^function onPoolClick(b){/,/^}/p' "$FLOOR/src/app.js" | awk '/inp.value="";/ {c=NR} /act\("ov:pool","pool-"\+what,body\)/ {a=NR} END {print (c && a && c < a) ? 1 : 0}')"
-t "pool: closing the overlay forgets a typed pool value" 1 \
-  "$(grep -c "querySelectorAll('\[data-k=\"secret\"\],\[data-k=\"pool-secret\"\]')" "$FLOOR/src/app.js")"
+# #870: a page, not an overlay — leaving it for the floor clears every secret
+# field, and moving between pages re-renders the body, which drops them too.
+t "pool: leaving a page forgets a typed pool value" 1 \
+  "$(sed -n '/^function pageRoute(){/,/^}/p' "$FLOOR/src/app.js" | grep -c "querySelectorAll('input\[type=\"password\"\],textarea')")"
 rm -f "$TMP/bin/gh" "$TMP/bin/curl"

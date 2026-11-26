@@ -314,6 +314,8 @@ source "$HERE/floor/server.sh"
 source "$HERE/floor/actions.sh"
 # shellcheck source=floor/credentials.sh
 source "$HERE/floor/credentials.sh"
+# shellcheck source=floor/pages.sh
+source "$HERE/floor/pages.sh"
 # shellcheck source=floor/pool.sh
 source "$HERE/floor/pool.sh"
 # shellcheck source=floor/inflight.sh

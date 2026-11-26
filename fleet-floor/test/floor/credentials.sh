@@ -23,6 +23,14 @@ t "credentials: a claude member takes its profile's kinds" "oauth-token api-key 
   "$(jqf "' '.join([m for m in d['members'] if m['box']=='ff-idle'][0]['services']['agent'])" <<<"$CR_SNAP")"
 t "credentials: a codex member takes codex's" "api-key auth-json" \
   "$(jqf "' '.join([m for m in d['members'] if m['box']=='ff-lim-breaker'][0]['services']['agent'])" <<<"$CR_SNAP")"
+# #871: every agent this crew resolves, with its kinds — whoever the roster
+# holds — so an empty fleet's pool can take an agent login before its first member.
+t "credentials: every shipped agent is offered, roster or not (#871)" "claude codex grok kimi" \
+  "$(jqf "' '.join(a for a in sorted(d['agents']) if a in ('claude','codex','grok','kimi'))" <<<"$CR_SNAP")"
+t "credentials: ...each with its profile's kinds" "oauth-token api-key credentials-json" \
+  "$(jqf "' '.join(d['agents']['claude'])" <<<"$CR_SNAP")"
+t "credentials: the pool's Add reads the agents, not the roster's members" 1 \
+  "$(grep -c 'var agents={},src=CREDS_OPTS.agents||{};' "$FLOOR/src/app.js")"
 t "credentials: the snapshot carries no value of any kind" 0 \
   "$(grep -ciE 'secret|token\"[[:space:]]*:' <<<"$CR_SNAP")"
 
@@ -75,8 +83,8 @@ CR_R="$(api POST /api/command '{"action":"credentials-set","box":"ff-unreach","s
 t "credentials: an unreachable box is a failed set" False "$(printf '%s' "$CR_R" | sed '$d' | jqf "d['ok']")"
 t "credentials: ...journalled as not taken" 1 "$(grep -c ' box=ff-unreach service=gh kind=token ok=no ' "$CR_JOURNAL")"
 
-# The page: the overlay exists and clears its field before the reply.
+# The page (#870: Credentials and each member's page) clears its field before the reply.
 t "credentials: the page has the button" 1 "$(grep -c 'id="g-creds"' "$FLOOR/index.html")"
 t "credentials: the field is cleared before the request resolves" 1 \
-  "$(awk '/^function onCredsClick/{f=1} f&&/inp\.value="";/{c=NR} f&&/"credentials-set",\{box:box,service/{print (c&&c<NR)?1:0; exit}' "$FLOOR/src/app.js")"
+  "$(awk '/^function pageCredSet/{f=1} f&&/inp\.value="";/{c=NR} f&&/"credentials-set",\{box:box,service/{print (c&&c<NR)?1:0; exit}' "$FLOOR/src/app.js")"
 t "credentials: the input is a password field" 1 "$(grep -c 'data-k="secret" type="password"' "$FLOOR/src/app.js")"
