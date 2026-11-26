@@ -35,19 +35,35 @@ wake_store() { store_py "$@"; }
 # (cli/crew tick_merge_settle), so a recompute after main moves flaps nothing.
 #   D <num> <updatedAt>
 wake_board_rows() {
-  local repo="$1" owner name issues prs discs
+  local repo="$1" owner name issues prs discs err
   owner="${repo%%/*}"; name="${repo#*/}"
+  # A read that fails says which and why on stderr (the tick prints it):
+  # "board unreadable" alone hid a missing App permission (#876).
+  err="$(mktemp)"
   issues="$(wake_gh issue list -R "$repo" --state open --limit 200 \
     --json number,updatedAt,labels,assignees \
-    --jq '.[] | "I \(.number) \(.updatedAt) \(([.labels[].name] | join(",")) | if . == "" then "-" else . end) \(([.assignees[].login] | join(",")) | if . == "" then "-" else . end)"' 2>/dev/null)" || return 1
+    --jq '.[] | "I \(.number) \(.updatedAt) \(([.labels[].name] | join(",")) | if . == "" then "-" else . end) \(([.assignees[].login] | join(",")) | if . == "" then "-" else . end)"' 2>"$err")" \
+    || { wake_read_failed issues "$err"; return 1; }
   prs="$(wake_gh pr list -R "$repo" --state open --limit 100 \
     --json number,updatedAt,author,isDraft,reviewRequests,mergeable,statusCheckRollup \
-    --jq '.[] | "P \(.number) \(.updatedAt) \(.author.login // "-") \(if .isDraft then 1 else 0 end) \(([.reviewRequests[]?.login // .reviewRequests[]?.name // empty] | join(",")) | if . == "" then "-" else . end) \(if .mergeable == "CONFLICTING" then "conflict" elif .mergeable == "MERGEABLE" then "ok" else "unknown" end) \([.statusCheckRollup[]? | ((.conclusion // .state // "") | ascii_upcase)] as $c | if any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE") then "red" else "ok" end)"' 2>/dev/null)" || return 1
+    --jq '.[] | "P \(.number) \(.updatedAt) \(.author.login // "-") \(if .isDraft then 1 else 0 end) \(([.reviewRequests[]?.login // .reviewRequests[]?.name // empty] | join(",")) | if . == "" then "-" else . end) \(if .mergeable == "CONFLICTING" then "conflict" elif .mergeable == "MERGEABLE" then "ok" else "unknown" end) \([.statusCheckRollup[]? | ((.conclusion // .state // "") | ascii_upcase)] as $c | if any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT" or . == "ACTION_REQUIRED" or . == "STARTUP_FAILURE") then "red" else "ok" end)"' 2>"$err")" \
+    || { wake_read_failed "pull requests" "$err"; return 1; }
   discs="$(wake_gh api graphql -f owner="$owner" -f name="$name" -f query='
     query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){
       discussions(first:50,states:OPEN){ nodes{ number updatedAt } } } }' \
-    --jq '.data.repository.discussions.nodes[] | "D \(.number) \(.updatedAt)"' 2>/dev/null)" || return 1
+    --jq '.data.repository.discussions.nodes[] | "D \(.number) \(.updatedAt)"' 2>"$err")" \
+    || { wake_read_failed discussions "$err"; return 1; }
+  rm -f -- "$err"
   printf '%s\n%s\n%s\n' "$issues" "$prs" "$discs" | sed '/^$/d'
+}
+
+# wake_read_failed WHAT ERRFILE — one line on stderr: which read, and the last
+# thing gh said (GitHub's own reason). Removes ERRFILE.
+wake_read_failed() {
+  local why
+  why="$(sed '/^[[:space:]]*$/d' "$2" 2>/dev/null | tail -n1 | cut -c1-300)"
+  rm -f -- "$2"
+  echo "the $1 read failed: ${why:-gh gave no reason}" >&2
 }
 
 # wake_digest — one token for a board's rows, so "did anything move" is a

@@ -57,8 +57,15 @@ RE_CODE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 KEY_MAX = 16 * 1024
 # Read-only, and only what the engine's reads touch: the board (issues, pull
 # requests with their check rollup, discussions) and the repository itself.
+# Read on dev-server-1 (#876): a PR's check rollup hangs off its head COMMIT,
+# and a commit object is `contents` — without it GitHub answers "Resource not
+# accessible by integration" at pullRequests.nodes.N.commits.nodes.0 and the
+# whole PR list fails. `actions` because gh's statusCheckRollup also asks each
+# check run for its workflow (checkSuite.workflowRun). Both read-only.
 PERMISSIONS = {
     "metadata": "read",
+    "contents": "read",
+    "actions": "read",
     "issues": "read",
     "pull_requests": "read",
     "checks": "read",

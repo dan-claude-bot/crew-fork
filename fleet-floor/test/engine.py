@@ -198,6 +198,8 @@ try:
     t("manifest-personal-action", True, action.startswith("https://github.example/settings/apps/new?state="))
     t("manifest-redirects-to-the-floor", "http://100.1.2.3:8420/engine/callback", m["redirect_url"])
     t("manifest-is-read-only", {"read"}, set(m["default_permissions"].values()))
+    t("manifest-reads-actions-for-the-check-rollup", "read", m["default_permissions"].get("actions"))
+    t("manifest-reads-contents-for-a-prs-head-commit", "read", m["default_permissions"].get("contents"))
     t("manifest-has-no-webhook", (False, []), ("hook_attributes" in m, m["default_events"]))
     t("manifest-name-fits-github", True, len(m["name"]) <= 34)
     action_org, _ = engine.manifest("http://h:1", "acme")
