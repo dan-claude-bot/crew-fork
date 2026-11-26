@@ -250,9 +250,13 @@ service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] 
   echo
   echo "next:"
   echo "  sudo usermod -aG $group <you>        # then log in again: crew runs as $user for you"
-  echo "  the engine's GitHub App: the floor's Credentials → Engine (create one, or paste an existing App's ID and key)"
   echo "  the floor: http://<this host>:$port/ — user and password in $etc/floor.env"
-  echo "  then, in the floor: New fleet, its members in its Roster, and Create each one"
+  echo "  the engine's GitHub App: the floor's Credentials → Engine (create one, or paste an existing App's ID and key)"
+  if [ -z "$(CREW_FLEETS_DIR="$data/fleets" fleet_dirs)" ]; then
+    echo "  then, in the floor: New fleet, add its members on Members, and Create each one"
+  else
+    echo "  your fleets are on the floor: Members (Create, Hire, Upgrade), Repositories, Credentials"
+  fi
 }
 
 # service_floor_current PREFIX — a floor already running keeps the tree it
@@ -312,9 +316,13 @@ service_check() { # [--unit-prefix P] — read-only; exit 1 on drift
   else ck no "$user cannot reach a box project (box grant --service $user)"; fi
   # The engine's GitHub App (#864): said, never drift — a fresh host has none
   # until the floor's Credentials → Engine gives it one.
-  local eng
-  eng="$(runuser -u "$user" -- env HOME="$data" "$cli" engine </dev/null 2>/dev/null | head -n1)" || eng=""  # Decision-path empty fallback: a note, never drift; empty says crew engine did not answer
-  echo "  note   ${eng:-engine: crew engine did not answer}"
+  # Run from / (#885): the caller's working directory may be one the account
+  # cannot enter, and a failure says its own last line instead of nothing.
+  local eng eng_out
+  eng_out="$(cd / && runuser -u "$user" -- env HOME="$data" "$cli" engine </dev/null 2>&1)" || true
+  eng="$(grep -m1 '^engine: ' <<<"$eng_out")" || eng=""  # Decision-path empty fallback: a note, never drift; empty is said with crew engine's own words below
+  [ -n "$eng" ] || eng="engine: crew engine did not answer ($(tail -n1 <<<"$eng_out" | cut -c1-200))"
+  echo "  note   $eng"
   [ "$drift" -eq 0 ] && echo "service: clean" || echo "service: DRIFT — re-run: sudo crew service setup"
   return "$drift"
 }
