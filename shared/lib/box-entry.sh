@@ -114,8 +114,33 @@ box_in() {
   local rc=0
   if [ "$BOX_ENTRY_MODE_CACHED" = stamp ]; then box exec "$box" "$@" || rc=$?; return "$rc"; fi
   box_entry_resolve_user "$box" || { rc=$?; return "$rc"; }
+  box_entry_wait_agent "$box" "$BOX_ENTRY_USER"
   box exec --user "$BOX_ENTRY_USER" "$box" "$@" || rc=$?
   return "$rc"
+}
+
+# box_entry_wait_agent BOX USER — a box just started answers `box exec` only
+# once its VM agent is up; until then box's own user lookup fails with Incus's
+# "VM agent isn't currently running" and nothing runs. The unknown-user path
+# above waits for that (BOX_ENTRY_ANSWER_S); a box whose agent the roster
+# names did not, so every credential the tick delivered right after a wake
+# was refused (dev-server-1, #880). Waited once per box per process, and only
+# for THAT error: a stopped box ("Instance is not running") or any other
+# failure is left to the real call to report, at no extra wait.
+declare -gA BOX_ENTRY_READY=()
+box_entry_wait_agent() { # BOX USER
+  local box="$1" user="$2" err deadline=$((SECONDS + ${BOX_ENTRY_ANSWER_S:-90}))
+  [ -z "${BOX_ENTRY_READY[$box]:-}" ] || return 0
+  err="$(mktemp)"
+  while :; do
+    if box exec --user "$user" "$box" -- true </dev/null >/dev/null 2>"$err"; then
+      BOX_ENTRY_READY[$box]=1; break
+    fi
+    if ! grep -q "VM agent isn't currently running" "$err" || [ "$SECONDS" -ge "$deadline" ]; then break; fi
+    sleep "${BOX_ENTRY_ANSWER_POLL_S:-3}"
+  done
+  rm -f -- "$err"
+  return 0
 }
 
 # box_in_flags BOX — sets BOX_IN_FLAGS to the words box_in would insert after

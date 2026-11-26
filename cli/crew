@@ -4713,9 +4713,13 @@ tick_woken_record() {
 # or — for a ready issue — the member's own PR merging or closing, which frees
 # the slot the builder passed on it for. Waits and due cuts carry no
 # timestamp and are never set aside this way.
+#
+# A member whose last run could not log in (tick_auth_dead) has looked at
+# nothing: its idle ticks are not a verdict, and nothing is set aside (#880).
 tick_passed() {
   local f="" line reason ts wts widle wctx frozen="${5:-}"
   [ "$3" -lt "$IDLE_TICKS_BEFORE_STOP" ] || f="$(tick_woken_file "$1")"
+  [ -z "$f" ] || [ -z "$(tick_auth_dead "$1")" ] || f=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     read -r reason ts <<<"$line"
@@ -4733,6 +4737,19 @@ tick_passed() {
     fi
     printf '%s\n' "$line"
   done <<<"$2"
+}
+
+# tick_auth_dead MEMBER — prints why when the member's latest stored run
+# could not log in (its own `cannot resolve own login`, or gh or its vendor
+# rejecting it), nothing otherwise. Such a run looked at no work: the host
+# must not read its idle ticks as "bought nothing" (#880).
+tick_auth_dead() {
+  local run why=""
+  run="$(store_py last-run --box "$1" 2>/dev/null)" || return 0
+  grep -q 'cannot resolve own login\|auth: gh rejected us\|auth: vendor rejected us' <<<"$run" || return 0
+  grep -q 'auth: gh rejected us\|cannot resolve own login' <<<"$run" && why="gh"
+  grep -q 'auth: vendor rejected us' <<<"$run" && why="${why:+$why and }its agent"
+  printf '%s\n' "${why:-its logins}"
 }
 
 # tick_held_repos SURVIVING — the repositories a budget or a breaker vetoed a
@@ -4797,7 +4814,7 @@ tick_wake() {
 
 tick_run() { # DRY_RUN
   local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE held_repos
-  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held
+  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held auth_dead
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4949,7 +4966,9 @@ tick_run() { # DRY_RUN
     # box's stored count would otherwise be the last word, and a new
     # needs-triage issue never a wake: only tick_passed sets one aside, by
     # the item and its timestamp (#763 rounds 3 and 5).
-    if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] \
+    auth_dead="$(tick_auth_dead "$name")"
+    [ -z "$auth_dead" ] || echo "  $name: its last run had no working login ($auth_dead rejected) — its work is not set aside; set its credentials on the floor (Credentials)"
+    if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] && [ -z "$auth_dead" ] \
        && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
       echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"
       why=""

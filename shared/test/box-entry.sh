@@ -35,6 +35,14 @@ case "${1:-}" in
           if [ "$n" -lt "$BE_SILENT" ]; then echo $((n + 1)) >"$BE_STATE/silent"; echo "Error: VM agent isn't currently running" >&2; exit 1; fi
         fi
         [ -z "${BE_USERS:-}" ] || printf '%s\n' $BE_USERS ;;
+      *"--user "*)
+        # A box just started (#880): its VM agent comes up after BE_BOOT tries.
+        if [ -n "${BE_BOOT:-}" ]; then
+          n="$(cat "$BE_STATE/boot" 2>/dev/null || echo 0)"
+          if [ "$n" -lt "$BE_BOOT" ]; then echo $((n + 1)) >"$BE_STATE/boot"; echo "box: could not look up user 'claude' in b1 (is it running?): Error: VM agent isn't currently running" >&2; exit 1; fi
+        fi
+        [ "${BE_STOPPED:-}" != 1 ] || { echo "box: could not look up user 'claude' in b1 (is it running?): Error: Instance is not running" >&2; exit 1; }
+        echo ran ;;
       *) echo ran ;;
     esac ;;
   root) cat >"$BE_STATE/root.stdin" ;;
@@ -68,9 +76,9 @@ t mode-read-once-per-process 1 "$(grep -c '^--version' "$BE_LOG")"
 reset_calls; BE_CMD='box_in b1 -- bash -lc true' be BE_VERSION=0.10.0 >/dev/null
 t stamp-is-todays-argv "exec b1 -- bash -lc true" "$(grep '^exec' "$BE_LOG")"
 reset_calls; BE_CMD='box_in b1 -- bash -lc true' be BE_VERSION=0.11.0 BOX_IN_USER=claude >/dev/null
-t user-names-the-agent "exec --user claude b1 -- bash -lc true" "$(grep '^exec' "$BE_LOG")"
+t user-names-the-agent "exec --user claude b1 -- bash -lc true" "$(grep '^exec' "$BE_LOG" | tail -1)"
 reset_calls; BE_CMD='box_entry_agent_of() { echo codex; }; box_in b1 -- true' be BE_VERSION=0.11.0 >/dev/null
-t user-reads-the-callers-agent "exec --user codex b1 -- true" "$(grep '^exec' "$BE_LOG")"
+t user-reads-the-callers-agent "exec --user codex b1 -- true" "$(grep '^exec' "$BE_LOG" | tail -1)"
 reset_calls; BE_CMD='box_in b1 -- true' be BE_VERSION=0.11.0 BE_USERS=kimi >/dev/null
 t user-finds-the-one-regular-user "exec --user kimi b1 -- true" "$(grep '^exec' "$BE_LOG" | tail -1)"
 t user-finds-it-as-root 1 "$(grep -c '^exec b1 -- awk -F: .* /etc/passwd$' "$BE_LOG")"
@@ -84,7 +92,7 @@ t no-user-runs-nothing-as-root 0 "$(grep -c 'touch x' "$BE_LOG")"
 # no user — the read is retried, and a box still silent is named as not answering.
 reset_calls; rm -f "$BE_STATE/silent"
 out="$(BE_CMD='box_in b1 -- true' be BE_VERSION=0.11.0 BE_USERS=claude BE_SILENT=2 BOX_ENTRY_ANSWER_POLL_S=0 2>&1)"; rc=$?
-t silent-then-answering-resolves "0 exec --user claude b1 -- true" "$rc $(grep '^exec --user' "$BE_LOG")"
+t silent-then-answering-resolves "0 exec --user claude b1 -- true" "$rc $(grep '^exec --user' "$BE_LOG" | tail -1)"
 t silent-then-answering-read-three-times 3 "$(grep -c '/etc/passwd' "$BE_LOG")"
 reset_calls; rm -f "$BE_STATE/silent"
 out="$(BE_CMD='box_in b1 -- touch x' be BE_VERSION=0.11.0 BE_USERS=claude BE_SILENT=never BOX_ENTRY_ANSWER_S=1 BOX_ENTRY_ANSWER_POLL_S=0 2>&1)"; rc=$?
@@ -93,6 +101,20 @@ t never-answering-says-so-with-boxs-words 1 "$(grep -c "b1 is not answering (box
 t never-answering-is-not-called-unconverged 0 "$(grep -c 'no regular user' <<<"$out" || true)"
 t never-answering-runs-nothing 0 "$(grep -c 'touch x' "$BE_LOG")"
 rm -f "$BE_STATE/silent"
+
+# --- a box just started: the known agent waits for its VM agent (#880) ---------------
+reset_calls; rm -f "$BE_STATE/boot"
+out="$(BE_CMD='box_in b1 -- deliver' be BE_VERSION=0.11.0 BOX_IN_USER=claude BE_BOOT=2 BOX_ENTRY_ANSWER_POLL_S=0 2>&1)"; rc=$?
+t booting-agent-is-waited-for "0 ran" "$rc $(tail -1 <<<"$out")"
+t booting-agent-runs-the-command-once 1 "$(grep -c -- '-- deliver$' "$BE_LOG")"
+t booting-agent-probed-until-up 3 "$(grep -c -- '^exec --user claude b1 -- true$' "$BE_LOG")"
+reset_calls; rm -f "$BE_STATE/boot"
+BE_CMD='box_in b1 -- one >/dev/null; box_in b1 -- two >/dev/null' be BE_VERSION=0.11.0 BOX_IN_USER=claude >/dev/null
+t booting-agent-waited-once-per-box 1 "$(grep -c -- '^exec --user claude b1 -- true$' "$BE_LOG")"
+reset_calls
+out="$(BE_CMD='box_in b1 -- deliver' be BE_VERSION=0.11.0 BOX_IN_USER=claude BE_STOPPED=1 BOX_ENTRY_ANSWER_S=30 BOX_ENTRY_ANSWER_POLL_S=0 2>&1)"; rc=$?
+t a-stopped-box-is-not-waited-for 1 "$(grep -c -- '^exec --user claude b1 -- true$' "$BE_LOG")"
+t a-stopped-box-says-boxs-words 1 "$(grep -c 'Instance is not running' <<<"$out")"
 reset_calls; out="$(BE_CMD='box_in b1 -- touch x' be BE_VERSION=0.11.0 BE_USERS='alice bob' 2>&1)"; rc=$?
 t two-users-are-refused-3 3 "$rc"
 t two-users-are-named 1 "$(grep -c 'b1 has 2 regular users (alice bob)' <<<"$out")"
