@@ -20,6 +20,7 @@ from floor.registry import snapshot as registry_snapshot
 from floor.roster import CONFIG_DIR, read_roster, require_operator_config, roster_snapshot
 from floor.credentials import credentials_snapshot
 from floor.pool import pool_snapshot
+from floor import panel as floor_panel
 from floor.inflight import INFLIGHT
 from floor import front
 from floor.fleets import valid_id
@@ -279,6 +280,11 @@ class Handler(BaseHTTPRequestHandler):
             # Which kinds each member's agent takes (#765) — never a
             # credential: there is no endpoint that reads one back.
             return self.send_json(200, credentials_snapshot())
+
+        if path == "/api/panel":
+            # The fleet's review panel and triage actor (#879), with what its
+            # members answer as, the flags, and who is staged with an older one.
+            return self.send_json(200, floor_panel.snapshot())
 
         if path == "/api/pool":
             # The host credential pool (#780): the CLI's own listing — names,

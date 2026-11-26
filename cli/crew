@@ -1600,6 +1600,11 @@ stage_fleet_definition() { # BOX
      stage_registry_examples "$box_name" &&
      stage_agent_profiles "$box_name"; then
     rm -f "$runtime_conf" "$carried_seed"
+    # The panel this member now holds (#879): the floor names a member staged
+    # with an older one, since the fleet's setting reaches a box only here.
+    if mkdir -p "$CONFIG_DIR/store/staged" 2>/dev/null; then
+      sed -n 's/^FLEET_BENCH=//p' "$FLEET_CONF" | tail -1 | tr -d "\"'" >"$CONFIG_DIR/store/staged/$box_name.bench" 2>/dev/null || true
+    fi
     registry_seed_discard work "$work_seed"
     registry_seed_discard notify "$notify_seed"
     return 0

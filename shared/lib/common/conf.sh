@@ -120,7 +120,16 @@ render_prompt() {
 }
 
 # panel_for_repo REPO DIR [AUTHOR] — the review panel of REPO as a JSON array
-# of logins, author NOT yet subtracted. An optional `panel[AUTHOR]=` line wins
+# of logins, author NOT yet subtracted.
+#
+# THE FLEET'S PANEL WINS (operator ruling on #879, 2026-11-26: "the reviewer
+# panel configuration should be on the crew side, not the repo"). A non-empty
+# FLEET_BENCH — the fleet's own setting, edited on the floor's Repositories
+# page — is the panel for every repository the fleet works, and the
+# repository's labels.conf is not read. An EMPTY FLEET_BENCH falls back to the
+# repository, exactly as before #879:
+#
+# An optional `panel[AUTHOR]=` line wins
 # over `panel=`; callers still subtract AUTHOR as a safety net.
 # in the repo's own .github/labels.conf governs over any prose or hardcoded
 # list — rig#120 shipped a kimi-less panel from a stale hardcoded roster.
@@ -129,6 +138,12 @@ render_prompt() {
 # fallback bench when a panel= line exists), then FLEET_BENCH.
 panel_for_repo() {
   local repo="$1" dir="$2" author="${3:-}" conf="" line=""
+  local bench="${FLEET_BENCH:-}"
+  if [ -n "${bench// /}" ]; then
+    # shellcheck disable=SC2086  # word splitting of the bench list is the point
+    printf '%s\n' $bench | jq -R . | jq -cs .
+    return 0
+  fi
   if [ -d "$dir/.git" ]; then
     conf="$(git -C "$dir" show 'origin/HEAD:.github/labels.conf' 2>/dev/null || true)"
     [ -n "$conf" ] || conf="$(git -C "$dir" show 'origin/main:.github/labels.conf' 2>/dev/null || true)"

@@ -548,3 +548,23 @@ app_surface_page_groups() {
   app_surface_tiles "$page" "$3" "$4" "$5"
   app_surface_empty_floor "$page" "$5" "$3"
 }
+
+# app_surface_pages <page-read.json> <roster count> — the pages (#874) on the
+# real floor: Members draws one card per roster line, a member's own page,
+# Repositories (with its review panel, #879) and Credentials (with the engine,
+# #864) each render from the collector's real answers, and walking them raises
+# no script or console error.
+app_surface_pages() {
+  local page="$1" roster_n="$2" name v
+  for name in members member repositories credentials; do
+    v="$(jqf "'ok' if d['pages']['$name']['ok'] else 'NOT rendered: ' + d['pages']['$name']['text']" < "$page" 2>/dev/null || echo "not read")"
+    if [ "$v" = ok ]; then ok "page: #/$name renders on the real floor (#874)"
+    else fail "page: #/$name renders on the real floor (#874)" "$v"; fi
+  done
+  v="$(jqf "d['pages']['cards']" < "$page" 2>/dev/null || echo "?")"
+  if [ "$v" = "$roster_n" ]; then ok "page: Members draws one card per roster line ($v)"
+  else fail "page: Members draws one card per roster line" "$v cards, $roster_n roster lines"; fi
+  v="$(jqf "' | '.join(d['pages']['errors'])" < "$page" 2>/dev/null || echo "not read")"
+  if [ -z "$v" ]; then ok "page: walking the pages raises no script or console error"
+  else fail "page: walking the pages raises no script or console error" "$v"; fi
+}

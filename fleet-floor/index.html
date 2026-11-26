@@ -7689,8 +7689,8 @@ function memberScope(box,regs){
 }
 /* ---- #/repositories ------------------------------------------------------------ */
 function renderRepositories(){
-  return Promise.all([pollRegistries(),api("/api/engine").catch(function(){return null;})]).then(function(rs){
-    var r=rs[0],eng=rs[1]||{};
+  return Promise.all([pollRegistries(),api("/api/engine").catch(function(){return null;}),api("/api/panel").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0],eng=rs[1]||{},pan=rs[2];
     if(!r||!r.fleet)throw new Error("could not read the registries");
     if(PAGE.route!=="repositories")return;
     PAGE.data=r;
@@ -7719,8 +7719,28 @@ function renderRepositories(){
         +(narrow.length?'<div class="rosst">narrowed by: '+narrow.map(function(b){return '<a href="#/member/'+encodeURIComponent(b)+'">'+esc(b)+'</a>';}).join(", ")+'</div>':'')
         +'</div>';
     }).join('');
+    h+=panelSection(pan);
     document.getElementById("pagebody").innerHTML=h;
   });
+}
+/* The fleet's review panel and triage actor (#879): crew's own setting, which
+   wins over a repository's .github/labels.conf. The page suggests what this
+   fleet's reviewers answer as, flags a reviewer off the panel, and names a
+   member still staged with an older panel — the setting reaches a box only at
+   its next hire or upgrade. */
+function panelSection(p){
+  var h='<div class="pgsec" id="panelsec"><div class="wt"><span class="dot"></span>REVIEW PANEL <span class="rosst">this fleet\'s — wins over each repository\'s labels.conf</span></div>';
+  if(!p)return h+'<div class="regempty">the panel could not be read</div></div>';
+  h+='<div class="regnote">Who this fleet\'s builders ask for reviews, on every repository above, and the triage actor (which never reviews). Empty: each repository\'s own <code>.github/labels.conf</code> decides. A change reaches each member at its next <b>Upgrade</b>.</div>';
+  (p.flags||[]).forEach(function(f){h+='<div class="rosst bad">⚠ '+esc(f)+'</div>';});
+  if((p.stale||[]).length)h+='<div class="rosst bad">staged with an older panel — Upgrade them: '+p.stale.map(function(b){return '<a href="#/member/'+encodeURIComponent(b)+'">'+esc(b)+'</a>';}).join(", ")+'</div>';
+  var sb=(p.suggest&&p.suggest.bench)||[],st=(p.suggest&&p.suggest.triage)||"";
+  var differs=sb.length&&sb.join(" ")!==(p.bench||[]).join(" ");
+  h+='<div class="reporow">panel <input class="rosin" data-k="panel-bench" spellcheck="false" placeholder="(empty: the repositories decide)" value="'+esc((p.bench||[]).join(" "))+'" style="width:22em"></div>'
+    +'<div class="reporow">triage actor <input class="rosin" data-k="panel-triage" spellcheck="false" placeholder="(none)" value="'+esc(p.triage||"")+'" style="width:12em"></div>'
+    +(differs||(st&&st!==p.triage)?'<div class="rosst">your members answer as: reviewers <b>'+esc(sb.join(" ")||"—")+'</b>, triage <b>'+esc(st||"—")+'</b> <button class="lbtn" data-pg="panel-suggest" data-bench="'+esc(sb.join(" "))+'" data-triage="'+esc(st)+'">Use these</button></div>':'')
+    +'<div class="regacts"><button class="lbtn" data-pg="panel-save">Save panel</button></div></div>';
+  return h;
 }
 function repoWrite(kind,entries,scope,okText){
   return act("ov:reg","registry-set",{kind:kind,entries:entries}).then(function(r){
@@ -7758,6 +7778,17 @@ function onPageClick(e){
   var cb=t.closest("[data-cred]");if(cb)return pageCredSet(cb);
   var b=t.closest("[data-pg]");if(!b)return;
   var what=b.dataset.pg,box=PAGE.box;
+  if(what==="panel-suggest"){
+    var pb2=document.querySelector('#pagebody [data-k="panel-bench"]'),pt=document.querySelector('#pagebody [data-k="panel-triage"]');
+    if(pb2&&b.dataset.bench)pb2.value=b.dataset.bench;if(pt&&b.dataset.triage)pt.value=b.dataset.triage;return;
+  }
+  if(what==="panel-save"){
+    var bench=(document.querySelector('#pagebody [data-k="panel-bench"]').value||"").replace(/,/g," ").split(/\s+/).filter(Boolean);
+    var tri=(document.querySelector('#pagebody [data-k="panel-triage"]').value||"").trim();
+    var pacts=b.closest(".regacts");
+    return act("ov:panel","panel-set",{bench:bench,triage:tri}).then(function(r){
+      return pgAfter(r,pacts,'#pagebody [data-pg="panel-save"]',"saved — panel "+(bench.join(", ")||"empty: the repositories decide")+"; it reaches each member at its next Upgrade");});
+  }
   if(what==="add-open"){var f=addForm();if(f){f.hidden=false;addNameSync();f.querySelector('[data-k="add-name"]').focus();}return;}
   if(what==="add-cancel"){var f2=addForm();if(f2)f2.hidden=true;return;}
   if(what==="add-save")return addSave();
