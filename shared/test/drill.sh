@@ -519,8 +519,10 @@ w845_round() { # a parallel round of all three roles on the sized source
   echo "rc=$?"
 }
 : >"$ROLE_LOG"; : >"$W783_SIBS"
+# The free figure is pinned too: the legs that mint later read MemAvailable,
+# and the machine running this suite is not the 16GiB host being described.
 w845_out="$(DRILL_SIBLINGS_LOG="$W783_SIBS" DRILL_SLEEP_triage=0.6 DRILL_SLEEP_builder=0.3 \
-  REHEARSAL_HOST_MEM_MIB=16384 w845_round)"
+  REHEARSAL_HOST_MEM_MIB=16384 REHEARSAL_HOST_AVAIL_MIB=12288 w845_round)"
 t w845-a-16gib-host-says-the-plan 1 \
   "$(grep -cx '== --parallel: triage 4GiB + builder 8GiB + reviewer 8GiB + 2GiB headroom is more than this host.s 16GiB — running in waves: triage builder, then reviewer (#845)' <<<"$w845_out")"
 t w845-each-wave-is-announced 2 "$(grep -c '^== --parallel: wave [12] of 2: running ' <<<"$w845_out")"
@@ -564,6 +566,31 @@ t w776-legs-teardown-is-kept 1 \
   "$(grep -c '^##   keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)$' <<<"$w776_out")"
 t w776-legs-the-run-is-marked-selective 1 "$(grep -c '^## selective run (--legs hygiene,breaker)' <<<"$w776_out")"
 t w776-legs-a-selected-leg-is-not-skipped 0 "$(grep -c '^##   skip       hygiene' <<<"$w776_out")"
+# A selection of standalone legs only (`service`) mints no role and runs no
+# role section; the service leg is not blocked for want of a role's box, and
+# teardown says why it had nothing to do. A selection with any role-reading leg
+# still runs the role sections (#753, 2026-11-26).
+: >"$ROLE_LOG"; SA_SVC="$TMP/standalone-svc.log"; : >"$SA_SVC"
+sa_out="$(DRILL_SVC_LOG="$SA_SVC" w776_round --legs service)"
+t standalone-legs-says-no-role-runs 1 "$(grep -c '^== --legs service: every selected leg stands on its own — the role sections do not run$' <<<"$sa_out")"
+t standalone-legs-no-role-section-ran 0 "$(grep -c . "$ROLE_LOG" || true)"
+t standalone-legs-the-service-leg-ran 1 "$(grep -c . "$SA_SVC")"
+t standalone-legs-service-reads-ok 1 "$(grep -c '^##   ok         service' <<<"$sa_out")"
+t standalone-legs-service-not-blocked 0 "$(grep -c 'blocked by role install' <<<"$sa_out")"
+t standalone-legs-teardown-says-why 1 "$(grep -c "^##   skip       teardown  (no role section ran: nothing of the round's to remove; a standalone leg removes its own)$" <<<"$sa_out")"
+t standalone-legs-summary-names-it 1 "$(grep -c '^## no role section ran: every selected leg stands on its own' <<<"$sa_out")"
+t standalone-legs-no-boxes-remain-footer 0 "$(grep -c 'drill boxes and sandbox repositories remain' <<<"$sa_out")"
+t standalone-legs-no-role-rows 0 "$(grep -cE '^##   (ok|FAIL|SKIPPED) +(triage|builder|reviewer) ' <<<"$sa_out")"
+t standalone-legs-exits-0 1 "$(grep -c '^rc=0$' <<<"$sa_out")"
+: >"$ROLE_LOG"
+sa_out="$(DRILL_SVC_LOG="$SA_SVC" w776_round --roles reviewer --legs service,hygiene)"
+t standalone-legs-mixed-runs-the-roles 1 "$(grep -c . "$ROLE_LOG")"
+t standalone-legs-mixed-says-nothing 0 "$(grep -c 'stands on its own' <<<"$sa_out")"
+: >"$ROLE_LOG"
+sa_out="$(DRILL_SVC_LOG="$SA_SVC" DRILL_SVC_RC=1 DRILL_SVC_VERDICT="FAIL service: teardown --purge succeeds" w776_round --legs service)"
+t standalone-legs-a-failed-leg-fails-the-round 1 "$(grep -c '^##   FAIL       service' <<<"$sa_out")"
+t standalone-legs-a-failed-leg-exits-nonzero 0 "$(grep -c '^rc=0$' <<<"$sa_out")"
+
 w776_out="$(w776_round --roles reviewer --legs hygeine)"
 t w776-legs-a-typo-is-refused 1 "$(grep -c "^drill/rehearsal-all.sh: --legs: 'hygeine' is not a declared leg$" <<<"$w776_out")"
 t w776-legs-a-typo-runs-nothing 1 "$(grep -cx 'rc=1' <<<"$w776_out")"

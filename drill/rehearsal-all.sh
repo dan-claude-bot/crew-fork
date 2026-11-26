@@ -25,7 +25,8 @@
 # only for demands still standing after the tick, so another role resolving
 # its own fixture mid-tick cannot red this one.
 #
-#   --legs a,b,…        run only these legs (the role sections always run)
+#   --legs a,b,…        run only these legs (the role sections run too, unless every
+#                       named leg stands on its own: today only `service`)
 #   --only-failed LOG   run only the legs LOG read FAIL or INCOMPLETE, and
 #                       print the rest of LOG's leg states beside the result
 #
@@ -244,6 +245,24 @@ if [ -n "$LEGS" ]; then
       *) echo "drill/rehearsal-all.sh: --legs: '$leg' is not a declared leg" >&2; exit 1 ;;
     esac
   done
+fi
+# A selection whose every leg stands on its own runs no role section: a minimal
+# change is read by the legs it touches, not a 35-minute three-role round
+# (#753, operator 2026-11-26; #860). A standalone leg installs and mints what it
+# reads by itself and acts on no role's box: today only `service`, which
+# stands up its own scratch crew and box. A leg is added to this list only
+# once it is checked to read nothing a role section left behind.
+STANDALONE_LEGS=" service "
+LEGS_STANDALONE=0
+if [ -n "$LEGS" ]; then
+  LEGS_STANDALONE=1
+  for leg in ${LEGS//,/ }; do
+    case "$STANDALONE_LEGS" in *" $leg "*) ;; *) LEGS_STANDALONE=0 ;; esac
+  done
+  if [ "$LEGS_STANDALONE" -eq 1 ]; then
+    ROLES=""
+    echo "== --legs $LEGS: every selected leg stands on its own — the role sections do not run"
+  fi
 fi
 # --creds: the drill's own pool (#828: ~/.config/crew-drill/credentials, or
 # CREW_CREDENTIALS_DIR), every named entry checked to be there before any role
@@ -1401,7 +1420,7 @@ fi
 # purged. It needs passwordless sudo and box 0.11.0; without them its readings
 # are skips and the row is INCOMPLETE. Like every independent leg, it runs only
 # once a role reached a box: a round that installed nothing acts on nothing.
-if [ "$SERVICE_DRILL" -eq 1 ] && [ -z "${DRILLED// /}" ]; then
+if [ "$SERVICE_DRILL" -eq 1 ] && [ -z "${DRILLED// /}" ] && [ "$LEGS_STANDALONE" -eq 0 ]; then
   SUMMARY+=("SKIPPED    service  (blocked by role install: no installed drill box)")
   [ "$overall" -eq 1 ] || overall=2
 elif [ "$SERVICE_DRILL" -eq 1 ] && SERVICE_MEM_SHORT="$(leg_mem_short)" && [ -n "$SERVICE_MEM_SHORT" ]; then
@@ -1462,7 +1481,9 @@ if [ "$PROVISION_DRILL" -eq 1 ]; then
     *$'\n'"crew-drill-floor"$'\n'*) TEARDOWN_HINT="$TEARDOWN_HINT --box crew-drill-floor" ;;
   esac
 fi
-if [ "$KEEP" -eq 1 ] && [ -n "$LEGS" ]; then
+if [ "$LEGS_STANDALONE" -eq 1 ]; then
+  SUMMARY+=("skip       teardown  (no role section ran: nothing of the round's to remove; a standalone leg removes its own)")
+elif [ "$KEEP" -eq 1 ] && [ -n "$LEGS" ]; then
   SUMMARY+=("keep       teardown  (not selected by --legs: boxes and sandbox repos RETAINED)")
 elif [ "$KEEP" -eq 1 ]; then
   SUMMARY+=("keep       teardown  (--keep: boxes and sandbox repos RETAINED)")
@@ -1599,8 +1620,10 @@ if [ -n "$ONLY_FAILED_CARRIED" ]; then
 elif [ -n "$LEGS" ]; then
   echo "## selective run (--legs $LEGS): the legs not selected were not read by this run"
 fi
+[ "$LEGS_STANDALONE" -eq 0 ] \
+  || echo "## no role section ran: every selected leg stands on its own (triage, builder and reviewer were not minted)"
 echo "############################################################"
-if [ "$KEEP" -eq 1 ] || [ "$overall" -ne 0 ]; then
+if { [ "$KEEP" -eq 1 ] || [ "$overall" -ne 0 ]; } && [ "$LEGS_STANDALONE" -eq 0 ]; then
   # "remain" rather than "were kept": this line also covers a teardown that
   # ran and failed, where some of the round is gone and the rest is not. What
   # exactly survived is named above, by the teardown's own FAIL lines.

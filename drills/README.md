@@ -632,6 +632,19 @@ engine's plumbing with a stub agent, and its summary opens with `## TIER: fast`.
 It is evidence for nothing in a promotion gate: a record cites the full round,
 and a reading taken only by a fast round is a reading not taken.
 
+A **selective** round (`--legs a,b,…`) reads only the named legs. With any leg
+that reads a role's box, the role sections still run (#806). When **every**
+named leg stands on its own (today only `service`, which installs its own
+scratch crew and mints its own box), no role section runs: the round says
+`every selected leg stands on its own — the role sections do not run`, the
+summary adds `## no role section ran`, and teardown reads `skip` because the
+round made nothing to remove. This is how a candidate that differs from a
+drilled-green one by a change confined to such a leg is read (#753, operator
+2026-11-26): the record names the legs read on this candidate and carries the
+rest from the green round, naming it. A leg joins the standalone list in
+`drill/rehearsal-all.sh` only once it is checked to read nothing a role
+section left behind.
+
 ## What a record should contain
 
 What ran, on what host, the pinned candidate ref, the numbers, and what failed.
