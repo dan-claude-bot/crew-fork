@@ -1023,6 +1023,12 @@ def stored_unit(box, now, path=None):
                        "log", "log_unavailable")} for s in sessions[:11]],
         "spark": spark_24h(sessions, now),
         "today": sum(1 for s in sessions if now - s["ts"] < 86400),
+        # What the store last SAW, never a claim about the box now (#875):
+        # the engine it was running when it last answered, and when. A
+        # stopped box that was seen hired is asleep, not lost — units.py
+        # reads these two and takes them off the record it serves.
+        "engine_seen": (r["box"].get("engine") or ""),
+        "last_seen": (r["box"].get("last_seen") or ""),
     }
     if sessions:
         durs = [s["dur"] for s in sessions if s["dur"] is not None]

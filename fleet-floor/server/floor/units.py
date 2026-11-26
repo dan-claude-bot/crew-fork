@@ -2,6 +2,7 @@
 
 import base64
 import math
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -740,7 +741,7 @@ def unit_defaults():
     }
 
 
-def _overlay_stored(u, store, now):
+def _overlay_stored(u, store, now, seen=None):
     """A box that did not answer, read from the store (#758).
 
     Only ADDS: the state and the note the early returns decided stay as they
@@ -757,8 +758,23 @@ def _overlay_stored(u, store, now):
         u["note"] = "%s · store unreadable: %s" % (u["note"], e) if u["note"] else str(e)
         return u
     if stored:
+        # The store's last sighting (#875) is handed to the caller that asked
+        # for it in SEEN, and never served: it is no claim about the box now.
+        engine_seen, last_seen = stored.pop("engine_seen", ""), stored.pop("last_seen", "")
+        if seen is not None:
+            seen.update(engine=engine_seen, at=last_seen)
         u.update(stored)
     return u
+
+
+def _paused_on_host(box):
+    """Whether `crew pause` left its marker for BOX — `<config>/store/paused/
+    <box>`, the file the host tick reads (actions._paused_marker writes it)."""
+    try:
+        from floor.roster import CONFIG_DIR
+    except Exception:                                       # noqa: BLE001
+        return False
+    return os.path.isfile(os.path.join(CONFIG_DIR, "store", "paused", box))
 
 
 def build_unit(unit, state, agent_conf, now, inventory_ok=True, store=None):
@@ -794,15 +810,38 @@ def build_unit(unit, state, agent_conf, now, inventory_ok=True, store=None):
         u["note"] = "not created — crew new %s" % unit["box"]
         return u
     if state == "stopped":
-        # Keeps "unknown": the box exists and nobody can ask it anything while
-        # it is down. Hiring is not undone by `crew down`.
+        # Hired stays "unknown" unless the store saw it: the box exists and
+        # nobody can ask it anything while it is down, and hiring is not
+        # undone by `crew down`.
         u["note"] = "stopped — crew up starts it"
+        seen = {}
         if store is not None:
             try:
                 store.note_state(unit["box"], "stopped")
             except Exception:                               # noqa: BLE001
                 pass
-            return _overlay_stored(u, store, now)
+            u = _overlay_stored(u, store, now, seen)
+        # A pause holds a box off on purpose and stays the console's alarm
+        # colour, with the pause's own sentence: the operator did it, the
+        # console undoes it.
+        if _paused_on_host(unit["box"]):
+            u["paused"] = True
+            u["note"] = "paused by operator — resume from the console"
+            return u
+        # 0.1.4's "the box sleeps" (#759): the host tick stops an idle member
+        # and starts it again when its board has work. A stopped box the store
+        # last saw running an engine is ASLEEP (#875) — not a lost signal, and
+        # no alarm — so the page draws it calm and says when it was last up.
+        if seen.get("engine"):
+            u["hired"] = "yes"
+            u["state"] = "asleep"
+            u["note"] = "asleep — the host tick wakes it when its board has work" + (
+                " · last up %s" % seen["at"] if seen.get("at") else "")
+            return u
+        # Never seen hired: starting it is not enough, it needs Hire.
+        if store is not None:
+            u["note"] = ("stopped — never seen hired: crew up %s starts it, and Hire "
+                         "(crew hire %s) puts it on duty" % (unit["box"], unit["box"]))
         return u
 
     # Bracket this box's own probe. The fleet's batch timestamp predates an

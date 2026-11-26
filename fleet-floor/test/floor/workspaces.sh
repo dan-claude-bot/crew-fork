@@ -219,7 +219,9 @@ t "jobs: a dead floor's record is not a running job" None "$(wsbody GET /api/job
 # The page over these fleets (#814/#815), when the suite drives a browser:
 # the switcher, the URL, two tabs, the plan, the job bar. Its own walk with its
 # own exact count, for the reason the main walk has one (walk_count_verdict).
-WS_WALK_COUNT=24
+# 24 -> 27 with #870: Members at its own address, a member's own page, and
+# the back button returning to Members.
+WS_WALK_COUNT=27
 if [ "${BROWSER:-0}" -eq 1 ]; then
   WS_CHROME="${PW_CHROME:-$HOME/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome}"
   if command -v node >/dev/null && (cd "$HERE" && node -e "require('playwright-core')") >/dev/null 2>&1 && [ -x "$WS_CHROME" ]; then

@@ -18,7 +18,7 @@ import threading
 import time
 
 from floor.ping import log, run
-from floor.roster import CONFIG_DIR, CONFIG_IS_OPERATOR, CREW_ROOT, agent_conf_path, read_roster
+from floor.roster import CONFIG_DIR, CONFIG_IS_OPERATOR, CREW_ROOT, agent_conf_path, profile_names, read_roster
 from floor.boxentry import box_exec
 
 CREDENTIALS_JOURNAL = os.path.join(CONFIG_DIR, ".credentials-journal.log")
@@ -59,7 +59,11 @@ def agent_kinds(agent):
 def credentials_snapshot():
     """Per member: its agent and the kinds each service takes. No secret, no
     file content — nothing here is readable that the poll does not publish."""
+    # Every agent profile resolved here, with its kinds (#871): what the pool can
+    # hold does not depend on who is on the roster yet — an empty fleet adds
+    # its agent's login before its first member.
     return {"journal": CREDENTIALS_JOURNAL, "operator": CONFIG_IS_OPERATOR,
+            "agents": {a: agent_kinds(a) for a in profile_names("agents")},
             "members": [{"box": u["box"], "agent": u["agent"],
                          "services": {"gh": ["token"], "agent": agent_kinds(u["agent"])}}
                         for u in read_roster()]}

@@ -194,8 +194,8 @@ sed -i '/^rs-late /d' "$RS_ROSTER"; rm -f "$RS_STATE/on-list.ran"
 # ticked one, drops an unticked one, and keeps one it cannot show (#763 round
 # 4: checkbox order re-wrote `triage,builder` as `builder,triage` on any save).
 # The function is read out of app.js itself, so the pin is on the shipped code.
-t "roster: each row carries the order its line was written in, and the save reads it" "1 1" \
-  "$(grep -c '<tr class="rosrow" data-room=' "$FLOOR/src/app.js") $(grep -c 'roles:rosterRoles((tr.dataset.room' "$FLOOR/src/app.js")"
+t "roster: the member page carries the order its line was written in, and the save reads it" "1 1" \
+  "$(grep -c 'data-k="ed-roles" data-written=' "$FLOOR/src/app.js") $(grep -c 'roles=rosterRoles(written,ROSTER_OPTS.roles,checked)' "$FLOOR/src/app.js")"
 if command -v node >/dev/null 2>&1; then
   RS_ORDER="$(node -e "$(sed -n '/^function rosterRoles(/,/^}/p' "$FLOOR/src/app.js")
 var o=['builder','reviewer','triage'];

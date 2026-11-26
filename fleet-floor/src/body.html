@@ -33,6 +33,7 @@
       <button class="fchip on" data-f="state" data-v="all">All</button>
       <button class="fchip" data-f="state" data-v="working">Working</button>
       <button class="fchip" data-f="state" data-v="idle">Idle</button>
+      <button class="fchip" data-f="state" data-v="asleep">Asleep</button>
       <button class="fchip" data-f="state" data-v="suppressed">Suppressed</button>
       <button class="fchip" data-f="state" data-v="limited">Limited</button>
       <button class="fchip" data-f="state" data-v="disarmed">Disarmed</button>
@@ -83,10 +84,11 @@
         The fleet-wide half of #488. It sits with the other fleet-scope
         controls rather than in the chrome above, because that is what it is:
         a change to what the whole fleet watches. The per-box half is in the
-        box's own console, beside every other per-box control. --><button class="gbtn" id="g-reg">⛭ Registries</button><!--
+        box's own console, beside every other per-box control. Both are pages now (#870):
+        #/repositories, and each member's own #/member/<box>. --><button class="gbtn" id="g-reg">⛭ Repositories</button><!--
         The fleet's definition itself (#764): one line per box,
-        edited here the way the registries are. --><button class="gbtn" id="g-roster">☰ Roster</button><!--
-        Each member's logins (#765): set here, never read back. --><button class="gbtn" id="g-creds">🔑 Credentials</button></span></div>
+        its page is #/members (#870): Add member, and one page per member. --><button class="gbtn" id="g-roster">☰ Members</button><!--
+        The engine's App and the pool (#765, #864): #/credentials (#870). --><button class="gbtn" id="g-creds">🔑 Credentials</button></span></div>
       <div class="olist" id="opslist"></div>
     </div>
     <div class="obox met">

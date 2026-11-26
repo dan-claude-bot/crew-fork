@@ -169,15 +169,59 @@ body.room .rail,body.room .console2{display:flex}
 #logov pre{margin:0;flex:1;overflow:auto;padding:14px;white-space:pre-wrap;word-break:break-word;font:11px/1.5 var(--mono);color:#b9c8dc}
 .woff{opacity:.4;cursor:not-allowed}
 input.woff{color:#5a6a80}
-/* The registry editor (#488). It shares #logov's overlay geometry because it
-   is the same kind of thing — a full-bleed reader over a dimmed floor — and a
-   second set of numbers for it would drift the first time either moved. */
-#regov{display:none;position:fixed;inset:0;z-index:60;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
-#regov .logbox{display:flex;flex-direction:column;width:min(880px,92vw);max-height:86vh;background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
-#regov .regbody{flex:1;overflow:auto;padding:14px}
-#rosov{display:none;position:fixed;inset:0;z-index:60;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
-#rosov .logbox{display:flex;flex-direction:column;width:min(980px,94vw);max-height:86vh;background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
-#rosov .regbody{flex:1;overflow:auto;padding:14px}
+/* Pages, not modals (#870): the fleet's members, repositories and
+   credentials, one hash route each, on a layer over the floor. The log, job
+   and plan overlays (z 60/61) still open above a page, and the job bar (55)
+   stays readable on one. */
+#page{display:none;position:fixed;inset:0;z-index:50;overflow:auto;background:#05080e;color:#b9c8dc;font-family:var(--mono)}
+.pghd{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px;padding:12px 20px;background:#070c14f2;border-bottom:1px solid #142230;backdrop-filter:blur(4px)}
+.pgbrand{font-size:12px;letter-spacing:.14em;color:#5fd6ff}
+.pgtabs{display:flex;flex-wrap:wrap;gap:4px}
+.pgtabs a{font-size:11px;letter-spacing:.08em;color:#8aa0b8;text-decoration:none;border:1px solid transparent;border-radius:6px;padding:6px 11px}
+.pgtabs a:hover{color:var(--cyan);border-color:#1d5772}
+.pgtabs a.on{color:#e3eef9;background:#0f1a28;border-color:#223148}
+#pagebody{max-width:980px;margin:0 auto;padding:18px 20px 120px}
+#pagebody a{color:#5fd6ff}
+.pgtitle{font-size:15px;letter-spacing:.06em;color:#e3eef9;margin:4px 0 12px}
+.pgtitle a{text-decoration:none;font-size:12px}
+.pgsec{background:#080d16;border:1px solid #16202c;border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.pgsec .wt{display:flex;align-items:center;gap:8px;font-size:9.5px;letter-spacing:.14em;color:#7f97b0;margin-bottom:8px}
+.pgsec .wt .dot{width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.pgbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0 10px}
+.pgbar .lbtn,.mnext .lbtn{text-align:center;text-decoration:none}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:12px}
+.mcard{background:#080d16;border:1px solid #16202c;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.mcard:hover{border-color:#223148}
+.mhead{display:flex;flex-direction:column;gap:2px}
+.mhead a{text-decoration:none;font-size:13px}
+.mline{font-size:10.5px}
+.mnext{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px}
+.mst{display:inline-block;font-size:9px;letter-spacing:.12em;text-transform:uppercase;border-radius:4px;padding:2px 6px;color:#8aa0b8;background:#8aa0b81f}
+.mst.s-working{color:#5fce9b;background:#5fce9b1f}
+.mst.s-idle{color:#5fd6ff;background:#5fd6ff1f}
+.mst.s-offline,.mst.s-stopped{color:#ff8a7c;background:#ff8a7c1f}
+.mst.s-paused{color:#f7bd4e;background:#f7bd4e1f}
+/* asleep (#875): the host tick stopped it and wakes it on work — calm, never an alarm */
+.mst.s-asleep{color:#7f97b0;background:#7f97b014}
+.mcred{font-size:10px;color:#ff8a7c}
+.mcred.ok{color:#5fce9b}
+.mcred.zz{color:#7f97b0}
+.mform .mfrow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
+.mfrow label{display:flex;flex-direction:column;gap:4px;flex:1;min-width:200px;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#7f97b0}
+.mflab{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#7f97b0;min-width:60px;padding-top:6px}
+.mfrow .regsel{flex:1}
+.reporow{display:flex;align-items:center;gap:10px;padding:5px 0;border-top:1px solid #101a26;font-size:11px}
+.reporow:first-of-type{border-top:0}
+.reporow .repo{flex:1;color:#e3eef9;word-break:break-all}
+.reporow .rosin{flex:1}
+/* A write's verdict, beside the control that made it (#874 finding). */
+.pgverdict{font:10.5px/1.5 var(--mono);margin-top:6px;padding:5px 9px;border-radius:6px;word-break:break-word}
+.pgverdict.bad{color:#ff8a7c;background:#ff51471a;border:1px solid #ff51473d}
+.pgverdict.good{color:#5fce9b;background:#5fce9b14;border:1px solid #5fce9b33}
+.regacts{flex-wrap:wrap}
+.regacts .pgverdict{flex-basis:100%}
+@media (max-width:640px){#pagebody{padding:14px 16px 120px}.pghd{padding:10px 16px}}
+/* The registry and roster blocks the pages draw (#488, #764). */
 .rostbl{width:100%;border-collapse:collapse;font:11px/1.4 var(--mono);color:#b9c8dc;margin-top:8px}
 .rostbl th{text-align:left;font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:#46566a;padding:4px 6px;font-weight:normal}
 .rostbl td{padding:5px 6px;vertical-align:top;border-top:1px solid #142230}
@@ -188,10 +232,7 @@ input.woff{color:#5a6a80}
 .rosst{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#5a6a80;margin-top:3px}
 .rosst.new{color:#f7bd4e}
 .rosdrop{color:#ff8a7c;border-color:#3a1c1c}
-#credov{display:none;position:fixed;inset:0;z-index:60;background:rgba(2,5,10,.82);align-items:center;justify-content:center;padding:5vh 5vw}
-#credov .logbox{display:flex;flex-direction:column;width:min(980px,94vw);max-height:86vh;background:#080d16;border:1px solid #223148;border-radius:10px;overflow:hidden}
-#credov .regbody{flex:1;overflow:auto;padding:14px}
-#credov .rosin+.rosin{margin-top:4px}
+.credrow .rosin+.rosin{margin-top:4px}
 .credverdict{text-transform:none;letter-spacing:0;font-size:10px;color:#5fce9b}
 .credverdict.bad{color:#ff8a7c}
 .regblk{margin-bottom:16px}
@@ -329,6 +370,7 @@ body { margin: 0; background: #05080f; color: #cfe0f2; font-family: var(--mono);
       <button class="fchip on" data-f="state" data-v="all">All</button>
       <button class="fchip" data-f="state" data-v="working">Working</button>
       <button class="fchip" data-f="state" data-v="idle">Idle</button>
+      <button class="fchip" data-f="state" data-v="asleep">Asleep</button>
       <button class="fchip" data-f="state" data-v="suppressed">Suppressed</button>
       <button class="fchip" data-f="state" data-v="limited">Limited</button>
       <button class="fchip" data-f="state" data-v="disarmed">Disarmed</button>
@@ -379,10 +421,11 @@ body { margin: 0; background: #05080f; color: #cfe0f2; font-family: var(--mono);
         The fleet-wide half of #488. It sits with the other fleet-scope
         controls rather than in the chrome above, because that is what it is:
         a change to what the whole fleet watches. The per-box half is in the
-        box's own console, beside every other per-box control. --><button class="gbtn" id="g-reg">⛭ Registries</button><!--
+        box's own console, beside every other per-box control. Both are pages now (#870):
+        #/repositories, and each member's own #/member/<box>. --><button class="gbtn" id="g-reg">⛭ Repositories</button><!--
         The fleet's definition itself (#764): one line per box,
-        edited here the way the registries are. --><button class="gbtn" id="g-roster">☰ Roster</button><!--
-        Each member's logins (#765): set here, never read back. --><button class="gbtn" id="g-creds">🔑 Credentials</button></span></div>
+        its page is #/members (#870): Add member, and one page per member. --><button class="gbtn" id="g-roster">☰ Members</button><!--
+        The engine's App and the pool (#765, #864): #/credentials (#870). --><button class="gbtn" id="g-creds">🔑 Credentials</button></span></div>
       <div class="olist" id="opslist"></div>
     </div>
     <div class="obox met">
@@ -1412,6 +1455,10 @@ function camHeadroomRows(v){
    the video is the whole card, and the facts sit on top of it. */
 function drawCamCell(t,x,y,w,h,unit){
   var off=unit.state==="offline", work=unit.state==="working", suppressed=unit.state==="suppressed";
+  /* ASLEEP (#875) is not offline: the host tick stopped it on purpose and wakes
+     it on work. No SIGNAL LOST, no red flatline, no alarm ring — a dimmed feed,
+     a slow quiet trace and the word. */
+  var asleep=unit.state==="asleep";
   var box=UNITID(unit), d=dataOf(box,unit.room), vc=VENDORCOL(unit.agent);
   var bp=strPhase(box);
   X.save();X.textBaseline="alphabetic";X.textAlign="left";
@@ -1431,8 +1478,8 @@ function drawCamCell(t,x,y,w,h,unit){
        subject moves inside a mounted camera's frame, which is the webcam
        grammar the cadence never delivered. Dead is still; reduced is still. */
     var fb=CAMFRAME[unit.agent]||CAMFRAME.claude, bsc=(w-2)/fb.w;
-    var by=(off||reduced)?0:fb.ba*bsc*Math.sin(t*fb.bf+bp);
-    var bx3=(off||reduced||!fb.bx)?0:fb.bx*bsc*Math.sin(t*(fb.bxf||1.3)+bp*1.7);
+    var by=(off||reduced)?0:fb.ba*bsc*Math.sin(t*fb.bf*(asleep?0.35:1)+bp)*(asleep?0.5:1);
+    var bx3=(off||asleep||reduced||!fb.bx)?0:fb.bx*bsc*Math.sin(t*(fb.bxf||1.3)+bp*1.7);
     X.drawImage(still.cv,x+1+bx3,y+1+by,w-2,h-2);
   }
   /* Live sensor grain — the one per-frame texture, and the base coat of the
@@ -1599,11 +1646,20 @@ function drawCamCell(t,x,y,w,h,unit){
     }
   }
   // heartbeat, bottom-right: rate follows state, flatlines with the box
-  var hr=off?0:work?(1.35+0.25*Math.sin(bp)):0.72;
+  var hr=off?0:asleep?0.22:work?(1.35+0.25*Math.sin(bp)):0.72;
   var hw=Math.min(140,w*0.32);
+  if(asleep){
+    X.fillStyle="rgba(4,8,14,0.46)";X.fillRect(x+1,y+1,w-2,h-2);
+    X.font="700 11px ui-monospace,monospace";X.textAlign="center";
+    var zw=X.measureText("ASLEEP — WAKES ON WORK").width;
+    X.fillStyle="rgba(6,10,18,0.70)";rr(X,x+(w-zw)/2-10,y+h*0.5-11,zw+20,22,4);X.fill();
+    X.fillStyle="rgba(150,175,205,0.85)";
+    X.fillText("ASLEEP — WAKES ON WORK",x+w/2,y+h*0.5);
+    X.textAlign="left";
+  }
   drawEKG(x+w-pad-6-hw,y+h-pad-26,hw,24,t+bp,hr,
-          off?"rgba(255,81,71,0.85)":work?"rgba(120,225,255,0.9)":"rgba(95,206,155,0.8)",
-          off?"— BPM":Math.round(hr*60+2*Math.sin(t*0.7+bp))+" BPM");
+          off?"rgba(255,81,71,0.85)":asleep?"rgba(127,151,176,0.55)":work?"rgba(120,225,255,0.9)":"rgba(95,206,155,0.8)",
+          off?"— BPM":asleep?"ASLEEP":Math.round(hr*60+2*Math.sin(t*0.7+bp))+" BPM");
   if(off){
     X.font="700 11px ui-monospace,monospace";X.textAlign="center";
     var slw=X.measureText("SIGNAL LOST — RECONNECTING").width;
@@ -1784,6 +1840,9 @@ function fleetStateData(u,d){
      over-spending it cost — the word an operator learns not to trust. */
   if(u.state==="working")return "working";
   if(u.state==="suppressed")return "suppressed";
+  /* Asleep (#875): the host tick stopped an idle member and starts it when its
+     board has work — 0.1.4's "the box sleeps". Its own word, never SILENT. */
+  if(u.state==="asleep")return "asleep";
   if(u.state==="offline")return stoppedWord(d)?"disarmed":"silent";
   /* Past the dispatch, this is the `idle` cell `applyFleet` normalised a
      working unit with no current-session object into — the only path either
@@ -1810,7 +1869,7 @@ function matchedFloorUnits(){return ROSTER.filter(matchesFloorFilter);}
    that disagreed about what SILENT means would be worse than one that was
    wrong. */
 function fleetCounts(){
-  var c={working:0,idle:0,suppressed:0,limited:0,disarmed:0,silent:0};
+  var c={working:0,idle:0,asleep:0,suppressed:0,limited:0,disarmed:0,silent:0};
   ROSTER.forEach(function(u){c[fleetState(u)]++;});
   return c;
 }
@@ -1821,6 +1880,7 @@ function stageCounts(){
   var c=fleetCounts();
   var stat=[[c.silent+" SILENT","#ff5147"],[c.idle+" IDLE","#5fce9b"],[c.working+" WORKING","#f7bd4e"]];
   if(c.suppressed)stat.splice(1,0,[c.suppressed+" SUPPRESSED","#f28b54"]);
+  if(c.asleep)stat.splice(2,0,[c.asleep+" ASLEEP","#7f97b0"]);
   if(c.limited)stat.splice(1,0,[c.limited+" LIMITED","#ff5147"]);
   /* Only when non-zero, on the ALERT counter's rule below: a permanent
      "0 DISARMED" is furniture. SILENT stays unconditional either way — an
@@ -2147,12 +2207,13 @@ function applyFleet(snap){
        empty roster. Once live, though, an empty poll keeps the last snapshot
        rather than blanking a fleet that was there a second ago. */
     if(!LIVE){LIVE=true;LIVEMETA=snap;ROSTER=[];dataCache={};DECLARED=0;goLive();
-      buildTiles();buildOps();syncEmptyFloor();
+      buildTiles();buildOps();syncEmptyFloor();pageOnPoll();
       setStatus("collector reports an empty fleet — check the resolved fleet roster",true);}
     return;
   }
   LIVEMETA=snap;
   var first=!LIVE;LIVE=true;LASTPOLL=Date.now();
+  pageOnPoll();
   var roster=[],cache={};
   DECLARED=snap.units.length;
   snap.units.forEach(function(u){
@@ -2337,8 +2398,13 @@ function cmd(action,extra){
        can outlast any number picked here, and the collector is still doing
        it. Said as that — /api/actions keeps showing it while it runs. */
     .catch(function(e){
-      if(e&&e.name==="AbortError")setStatus(action+": no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running on the collector (shown here while it is)",true);
+      var late=!!(e&&e.name==="AbortError");
+      if(late)setStatus(action+": no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running on the collector (shown here while it is)",true);
       else setStatus(action+" failed: "+e.message,true);
+      /* The reason travels back to the caller as well (#870): a page says a
+         refusal beside the control that made it, where it is read. */
+      return {ok:false,failed:true,late:late,
+              error:late?"no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running":String((e&&e.message)||e||"failed")};
     });
 }
 /* ---- Actions in flight (#766) -------------------------------------------------
@@ -2503,7 +2569,7 @@ function buildTiles(){var ct=fleetCounts(),q=0;ROSTER.forEach(function(u){q+=dat
     hidden+(hidden===1?" declared box has":" declared boxes have")
     +" no console: not hired — crew hire <box>"):"";
   var limited=ct.limited?tl(ct.limited,"limited","#ff5147",true):"";
-  var el=document.getElementById("tiles");if(el)el.innerHTML=tl(declared,"units","#c7d4e4")+hire+tl(ct.working,"working","#f7bd4e")+tl(ct.idle,"idle","#5fce9b")+tl(ct.suppressed,"suppressed","#f28b54",ct.suppressed>0)+limited+tl(ct.disarmed,"disarmed","#8aa0b8")+tl(ct.silent,"silent","#ff5147",ct.silent>0)+tl(q,"queued","#5fd6ff");}
+  var el=document.getElementById("tiles");if(el)el.innerHTML=tl(declared,"units","#c7d4e4")+hire+tl(ct.working,"working","#f7bd4e")+tl(ct.idle,"idle","#5fce9b")+(ct.asleep?tl(ct.asleep,"asleep","#7f97b0"):"")+tl(ct.suppressed,"suppressed","#f28b54",ct.suppressed>0)+limited+tl(ct.disarmed,"disarmed","#8aa0b8")+tl(ct.silent,"silent","#ff5147",ct.silent>0)+tl(q,"queued","#5fd6ff");}
 function populateDash(){
   if(VIEW!=="room")return;
   /* The art-preview toggles can set any STATE; live data may disagree. Only
@@ -2514,7 +2580,9 @@ function populateDash(){
      asks this first; `off` still decides the shape of the panel, this decides
      what it is allowed to shout (#203). */
   var stw=off?stoppedWord(d):"";
-  var sc=stw?"#8aa0b8":off?"#ff5147":suppressed?"#f28b54":limited?"#ff5147":work?"#f7bd4e":"#5fce9b",sl=stw||(off?"SILENT":suppressed?"SUPPRESSED":limited?"LIMITED":work?(d.kind==="build"?"BUILDING":d.kind==="review"?"REVIEWING":"DISPATCHING"):"STANDBY");
+  /* ASLEEP (#875): the host tick's own stop, said calm — never SILENT. */
+  var asleep=STATE==="asleep";
+  var sc=asleep?"#7f97b0":stw?"#8aa0b8":off?"#ff5147":suppressed?"#f28b54":limited?"#ff5147":work?"#f7bd4e":"#5fce9b",sl=asleep?"ASLEEP":stw||(off?"SILENT":suppressed?"SUPPRESSED":limited?"LIMITED":work?(d.kind==="build"?"BUILDING":d.kind==="review"?"REVIEWING":"DISPATCHING"):"STANDBY");
   document.getElementById("w-id").innerHTML='<div class="idc"><div class="av" style="background:'+hexA(vc,0.16)+';box-shadow:inset 0 0 0 1px '+hexA(vc,0.5)+';color:'+vc+'">'+AGENT[0].toUpperCase()+'</div><div><div class="nm">'+id+'</div><div class="rl">'+AGENT+' · '+ROOM+'</div><span class="pill" style="color:'+sc+';background:'+hexA(sc,0.14)+';box-shadow:inset 0 0 0 1px '+hexA(sc,0.4)+'">● '+sl+'</span></div></div><div class="spark" title="24h activity">'+(off?"":d.spark.map(function(v,i){return '<span style="height:'+Math.round(v*100)+'%;background:'+hexA(vc,i>=d.spark.length-4?0.95:0.42)+'"></span>';}).join(''))+'</div>';
   /* In LIVE mode every value here is what the box reported this poll; the
      DEMO strings it replaces were the placeholders #38 was filed about. */
@@ -2525,7 +2593,7 @@ function populateDash(){
        half-right here and disarmed was not started: this vital named the
        operator's pause and then fell through to SILENT for a box with no cron
        line at all. */
-    vCron=stw||((d.cron.age===null||d.cron.age===undefined)?"no ticks yet":(d.cron.ok?fmtDur(d.cron.age)+" ago":"SILENT · "+fmtDur(d.cron.age)));
+    vCron=asleep?"ASLEEP · wakes on work":stw||((d.cron.age===null||d.cron.age===undefined)?"no ticks yet":(d.cron.ok?fmtDur(d.cron.age)+" ago":"SILENT · "+fmtDur(d.cron.age)));
     if(d.note&&!d.engine)vBox=esc(d.note);
   }
   document.getElementById("w-vitals").innerHTML='<div class="wt"><span class="dot"></span>VITALS</div><div class="kv">'
@@ -2564,7 +2632,7 @@ function populateDash(){
        sitting with every other per-box control rather than in the fleet
        chrome. It edits a host file; nothing here reaches into the guest, so
        unlike its neighbours it stays lit on an unreachable box. */
-    +ab("ac-reg","⛭ &nbsp;Watch registry")
+    +ab("ac-reg","☰ &nbsp;Member page · logins, scope")
     +'<div style="display:flex;gap:6px"><button class="lbtn pw'+(LIVE?'':' woff')+'" data-pw="off"'+(LIVE?'':' title="'+CTL_TIP+'"')+' style="flex:1;text-align:center;'+(off?'opacity:.5':'color:#ff8a7c;border-color:#3a1c1c')+'">⏻ Power off</button><button class="lbtn pw'+(LIVE?'':' woff')+'" data-pw="on"'+(LIVE?'':' title="'+CTL_TIP+'"')+' style="flex:1;text-align:center;'+(off?'color:#5fce9b;border-color:#1c3a2a':'opacity:.5')+'">⭘ Power on</button></div>'
     /* #486 D4 — a DISTINCT control that names its own violence, on its own
        line below the graceful pair rather than inside their row: an operator
@@ -2592,6 +2660,9 @@ function populateDash(){
   else if(suppressed)cs+='<div class="big" style="color:#f28b54">SUPPRESSED</div><div class="task">'+esc(d.note||"zero-action resume breaker")+'</div>';
   else if(limited)cs+='<div class="big" style="color:#ff5147">LIMITED</div><div class="task">'+esc(d.note||"operating limit")+'</div>';
   else if(work)cs+='<div class="big" id="cur-el">'+fmtDur(Math.floor(Date.now()/1000)-d.cur.start)+'</div><div class="task">'+esc(d.kind)+' · '+esc(d.cur.key)+'</div><div class="pbar"><i></i></div>';
+  /* ASLEEP (#875): stopped, and the host tick starts it on work — said calm,
+     with the collector's note, never STANDBY (it is not running) nor SILENT. */
+  else if(STATE==="asleep")cs+='<div class="big" style="color:#7f97b0">ASLEEP</div><div class="task">'+esc(LIVE&&d.note?d.note:"the host tick wakes it when its board has work")+'</div>';
   else cs+='<div class="big" style="color:#5fce9b">STANDBY</div><div class="task">idle · awaiting next tick</div>';
   document.getElementById("w-current").innerHTML=cs+'</div>';
   var mk=d.kind==="build"?"Build":d.kind==="review"?"Review":"Triage";
@@ -7058,7 +7129,17 @@ var lastT=0;
    not once a cell renders rooms: the map's tiles would queue behind the hidden
    view's. FLOORDEV.pause stops the painting, not the page. */
 var devPaused=false;
-function frame(ms){var t=ms/1000,dt=Math.min(0.05,(ms-lastT)/1000)||0.016;lastT=ms;if(!devPaused){if(VIEW==="floor"){drawFloor(t);}else{drawTarget(t,dt);blit();}}requestAnimationFrame(frame);}
+function frame(ms){var t=ms/1000,dt=Math.min(0.05,(ms-lastT)/1000)||0.016;lastT=ms;if(!devPaused){if(VIEW==="floor"){drawFloor(t);}else{drawTarget(t,dt);blit();if(STATE==="asleep")asleepVeil();}}requestAnimationFrame(frame);}
+/* ASLEEP (#875) in the room: the art draws the unit at rest (it is neither
+   working nor lost), and this dims the cell and says why — the calm reading of
+   a box the host tick stopped and will wake on work. Never SIGNAL LOST. */
+function asleepVeil(){
+  X.save();X.fillStyle="rgba(4,8,14,0.42)";X.fillRect(dstX,dstY,dstW,dstH);
+  X.font="700 12px ui-monospace,monospace";X.textAlign="center";
+  X.fillStyle="rgba(150,175,205,0.85)";
+  X.fillText("ASLEEP — THE HOST TICK WAKES IT WHEN ITS BOARD HAS WORK",dstX+dstW/2,dstY+dstH*0.14);
+  X.restore();
+}
 
 function refreshChrome(){
   document.getElementById("modelabel").textContent=STATE.toUpperCase();
@@ -7270,9 +7351,9 @@ setInterval(loadFleets,60000);
    whose cron is dead has no evidence anyone asked for one. */
 document.getElementById("g-start").addEventListener("click",function(){if(!LIVE)return;if(confirm("Start every roster box?"))act("fleet","start-all");});
 document.getElementById("g-stop").addEventListener("click",function(){if(!LIVE)return;if(confirm("Stop every roster box? Running sessions are lost."))act("fleet","stop-all");});
-document.getElementById("g-reg").addEventListener("click",function(){openRegistries("");});
-document.getElementById("g-roster").addEventListener("click",function(){openRoster();});
-document.getElementById("g-creds").addEventListener("click",function(){openCreds();});
+document.getElementById("g-reg").addEventListener("click",function(){if(!LIVE){setStatus("the repositories are live-only — run the collector to edit them",true);return;}goto("#/repositories");});
+document.getElementById("g-roster").addEventListener("click",function(){if(!LIVE){setStatus("the members are live-only — run the collector to edit them",true);return;}goto("#/members");});
+document.getElementById("g-creds").addEventListener("click",function(){if(!LIVE){setStatus("credentials are live-only — run the collector to edit them",true);return;}goto("#/credentials");});
 document.getElementById("g-wake").addEventListener("click",function(){if(!LIVE)return;act("fleet","wake-silent");});
 document.getElementById("g-up").addEventListener("click",function(){onJobButton(this);});
 document.getElementById("g-down").addEventListener("click",function(){onJobButton(this);});
@@ -7308,7 +7389,7 @@ if(_railL)_railL.addEventListener("click",function(e){
     else setStatus(c,false);
   }
   else if(b.id==="ac-logs")openLogs(box,"");
-  else if(b.id==="ac-reg")openRegistries(box);
+  else if(b.id==="ac-reg")goto("#/member/"+encodeURIComponent(box));
 });
 /* Raw logs come back as text/plain from the collector, which tails them in the
    box — the page never gets shell access to a path.
@@ -7382,198 +7463,127 @@ function registryRow(box){
 }
 var REGKINDS=[["work","WORK REGISTRY","the boards this box works: issues, reviews, author-side duties"],
               ["notify","NOTIFY REGISTRY","extra handoff targets the operator notifier sweeps"]];
-/* openRegistries(BOX) — BOX "" is the fleet-wide pair, a box name is that
-   box's own layer. One editor for both scopes rather than two: the shapes are
-   identical and the only difference is which buttons a scope can offer, so a
-   second component would be a second place for the two to drift apart. */
-function openRegistries(box){
-  if(!LIVE){setStatus("registries are live-only — run the collector to edit them",true);return;}
-  setStatus("reading registries…",false);
-  pollRegistries().then(function(r){
-    if(!r){setStatus("could not read the registries",true);return;}
-    var ov=document.getElementById("regov");
-    if(!ov){
-      ov=document.createElement("div");ov.id="regov";
-      ov.innerHTML='<div class="logbox"><div class="loghd"><span id="regttl"></span><button id="regx">✕ close</button></div><div class="regbody" id="regbody"></div></div>';
-      document.body.appendChild(ov);
-      ov.addEventListener("click",function(e){if(e.target===ov||e.target.id==="regx")closeRegistries();});
-      document.getElementById("regbody").addEventListener("click",onRegistryClick);
-    }
-    ov.dataset.box=box||"";
-    document.getElementById("regttl").textContent=(box?box+" · watch registries":"fleet-wide watch registries")
-      +" · "+r.config_dir;
-    document.getElementById("regbody").innerHTML=REGKINDS.map(function(k){
-      var kind=k[0],cell=box?r.boxes[box][kind]:r.fleet[kind],inherited=box?cell.inherited:false;
-      /* The fleet-wide file's own path when the box is inheriting: an override
-         has no file yet, and printing a path nothing has written would read as
-         a file the operator could go and open. */
-      var path=box?(inherited?r.fleet[kind].path+" (inherited)":cell.path):cell.path;
-      /* THE FLEET-WIDE FILE THE DEFINITION DOES NOT HAVE YET. `notify-repos.txt`
-         is optional in a hand-built definition and the CLI's config_file
-         resolves an absent one to the shipped examples/ file — nine live
-         repositories it stages to every box. Rendering that as an empty list
-         would invite an operator to "fill it in" and silently drop eight sweep
-         targets the fleet was working, so the fallback is said out loud, with
-         the path a save will actually write.
-         "the CLI" rather than the command's own name on purpose: the console's
-         named-verb roster reads `crew <word>` anywhere in this file as an
-         operator command the page offers, and a sentence about resolution is
-         not one. */
-      var fk=r.fleet[kind],note="";
-      if(fk.present===false&&fk.served_from){
-        note='<div class="regnote">'+esc(fk.path)+' does not exist in this fleet definition. '
-          +'The '+fk.entries.length+' entr'+(fk.entries.length===1?"y":"ies")+' below '
-          +'come from the shipped '+esc(fk.served_from)+', which is what <code>crew</code> '
-          +'stages to a box too. Saving writes the definition\'s own file, and it wins from then on.</div>';
-      }
-      /* The fleet-wide scope is a free list — it IS the universe, so there is
-         nothing to bound it by and an operator adding a board types its name.
-         A box's scope is a SELECTION from that universe (operator,
-         2026-08-29): it can never name a repository the fleet-wide list does
-         not, so the legal values are finite, known and already on screen, and
-         a textarea there would exist only for the collector to refuse. */
-      var editor;
-      if(!box){
-        editor='<textarea class="regta" spellcheck="false">'+esc(cell.entries.join("\n"))+'</textarea>';
-      }else if(!r.fleet[kind].entries.length){
-        /* Said as itself rather than drawn as an empty list of switches: with
-           no universe there is no selection to make, and the operator's next
-           move is a fleet-wide edit and not a narrower box. */
-        editor='<div class="regempty">the fleet-wide list names no repositories — there is nothing for this box to select. Edit the fleet-wide registry first.</div>';
-      }else{
-        var chosen={};cell.entries.forEach(function(e){chosen[e]=1;});
-        editor='<div class="regsel">'+r.fleet[kind].entries.map(function(e){
-          return '<label class="regopt"><input type="checkbox" value="'+esc(e)+'"'
-            +(chosen[e]?' checked':'')+'><span>'+esc(e)+'</span></label>';
-        }).join('')+'</div>';
-      }
-      return '<div class="regblk" data-kind="'+kind+'">'
-        +'<div class="wt"><span class="dot"></span>'+k[1]
-        +(box?'<span class="regsrc '+(inherited?"inherit":"override")+'">'+(inherited?"inherited":"selected")+'</span>':'')
-        +'</div>'
-        +'<div class="regpath" title="'+esc(k[2])+'">'+esc(path)+'</div>'
-        +note
-        +editor
-        +'<div class="regacts">'
-        +'<button class="lbtn" data-reg="save">'+(box?"Save selection":"Save")+'</button>'
-        +(box?'<button class="lbtn" data-reg="inherit"'+(inherited?' style="opacity:.5"':'')+'>Inherit the fleet-wide list</button>':'')
-        +'</div></div>';
-    }).join('');
-    ov.style.display="flex";
-    setStatus("registries: "+(box||"fleet-wide"),false);
+/* ===================== pages, not modals (#870) =====================
+
+   The fleet's definition is edited on PAGES, one hash route each, so the back
+   button, a reload and a pasted link all land where the operator was:
+
+     #/members           Add member, and a card per member with its next step
+     #/member/<box>      one member: lifecycle, logins, scope, edit, remove
+     #/repositories      the fleet's work and notify lists, the engine's reach
+     #/credentials       the engine's GitHub App (host-wide) and the pool
+
+   An empty hash (or #/) is the floor itself. Pages are live-only: until the
+   first poll answers they say so, and the route is taken again when it does.
+
+   NOTHING NEW ON THE WIRE. Every write is an action the collector already
+   has — roster-set (whole, etag-checked: adding or removing a member is the
+   roster read fresh, plus or minus that line), registry-set /
+   registry-override / registry-inherit, credentials-set, the pool actions,
+   the jobs and the box actions — so the refusals and journals are the ones
+   the overlays had.
+
+   A poll never repaints a page: an operator half-way through typing a name or
+   pasting a token keeps it. Only elements marked data-live (a member's state,
+   its logins' reading, its next step) are refreshed in place. */
+var PAGE={route:"",box:"",waiting:false,data:null};
+var ROSTER_OPTS={agents:[],roles:[],etag:""};
+var CREDS_OPTS={members:[],agents:{}};
+var POOL={entries:[],members:[]};
+function pageEl(){
+  var el=document.getElementById("page");
+  if(el)return el;
+  el=document.createElement("div");el.id="page";
+  el.innerHTML='<div class="pghd"><span class="pgbrand">◆ <b id="pgfleet"></b></span><nav class="pgtabs">'
+    +'<a href="#/" data-tab="">Floor</a><a href="#/members" data-tab="members">Members</a>'
+    +'<a href="#/repositories" data-tab="repositories">Repositories</a><a href="#/credentials" data-tab="credentials">Credentials</a>'
+    +'</nav></div><div id="pagebody"></div>';
+  document.body.appendChild(el);
+  var body=el.querySelector("#pagebody");
+  body.addEventListener("click",onPageClick);
+  body.addEventListener("change",onPageChange);
+  return el;
+}
+function parseRoute(h){
+  h=h||"";
+  var m=h.match(/^#\/(members|repositories|credentials)\/?$/);
+  if(m)return {route:m[1],box:""};
+  m=h.match(/^#\/member\/([A-Za-z0-9][A-Za-z0-9._%-]*)\/?$/);
+  if(m)return {route:"member",box:decodeURIComponent(m[1])};
+  return {route:"",box:""};
+}
+function pageRoute(){
+  var r=parseRoute(location.hash),el=pageEl();
+  PAGE.route=r.route;PAGE.box=r.box;
+  if(!r.route){
+    /* Leaving a page forgets what was typed into a secret field. */
+    [].forEach.call(el.querySelectorAll('input[type="password"],textarea'),function(i){i.value="";});
+    el.style.display="none";document.body.classList.remove("paged");return;
+  }
+  el.style.display="block";document.body.classList.add("paged");
+  document.getElementById("pgfleet").textContent=(homeFleet()||"fleet").toUpperCase();
+  [].forEach.call(el.querySelectorAll(".pgtabs a"),function(a){
+    a.classList.toggle("on",a.dataset.tab===r.route||(r.route==="member"&&a.dataset.tab==="members"));
+  });
+  var body=document.getElementById("pagebody");
+  if(!LIVE){
+    PAGE.waiting=true;
+    body.innerHTML='<div class="regnote">reading the fleet… these pages are live-only: they open once the collector answers.</div>';
+    return;
+  }
+  PAGE.waiting=false;
+  body.innerHTML='<div class="regnote">reading…</div>';
+  var fn={members:renderMembers,member:renderMember,repositories:renderRepositories,credentials:renderCredentials}[r.route];
+  return fn(r.box).catch(function(e){
+    if(PAGE.route===r.route&&PAGE.box===r.box)
+      body.innerHTML='<div class="regnote"><b>could not read this page</b>: '+esc((e&&e.message)||e||"no answer")+'</div>';
   });
 }
-function closeRegistries(){var ov=document.getElementById("regov");if(ov)ov.style.display="none";}
-function onRegistryClick(e){
-  var b=e.target.closest("[data-reg]");if(!b)return;
-  var blk=b.closest(".regblk"),kind=blk.dataset.kind,box=document.getElementById("regov").dataset.box||"";
-  if(b.dataset.reg==="inherit"){
-    /* Confirmed because it is a DELETION: the override file goes, and with it
-       whatever narrowing somebody applied to this box on purpose. Clearing is
-       a distinct act from writing the fleet-wide list into the override — the
-       cleared box follows a later widening and a pinned one does not — so the
-       question names the consequence rather than the file. */
-    if(!confirm("Clear "+box+"'s "+kind+" selection? It goes back to following the fleet-wide list, including any later widening."))return;
-    b.dataset.spin="1";
-    return act("ov:reg","registry-inherit",{box:box,kind:kind}).then(function(r){delete b.dataset.spin;if(r)openRegistries(box);});
-  }
-  /* Two editors, one submission shape: the switches when this is a box's
-     selection, the free list when it is the fleet-wide registry itself. An
-     empty selection is a real answer — a box deliberately watching nothing —
-     so this never falls back to "nothing checked means everything". */
-  var ta=blk.querySelector(".regta"),entries;
-  if(ta){
-    entries=ta.value.split("\n").map(function(s){return s.trim();}).filter(Boolean);
-  }else{
-    entries=[].map.call(blk.querySelectorAll(".regopt input:checked"),function(i){return i.value;});
-  }
-  var extra={kind:kind,entries:entries};
-  if(box)extra.box=box;
-  b.dataset.spin="1";
-  return act("ov:reg",box?"registry-override":"registry-set",extra).then(function(r){
-    delete b.dataset.spin;
-    /* Re-open on SUCCESS only. A refusal leaves the operator's text exactly as
-       they typed it, beside the reason the collector gave in the status line —
-       repainting from disk there would throw away the edit they now have to
-       correct, which is the one moment the field's contents matter most. */
-    if(r&&r.ok)openRegistries(box);
-  });
+/* After a write that succeeded: the page read again from the host. */
+function pageRefresh(){return PAGE.route?(pageRoute()||Promise.resolve()):Promise.resolve();}
+/* ---- every write says its verdict BESIDE ITS CONTROL (#874 finding) ---------
+   A refusal only in the status line read as success on dev-server-1: the
+   operator saw the page unchanged and took it for saved. So each write's
+   answer lands in a .pgverdict at the control — the reason in red with the
+   input kept as typed, or what was done in green on the re-read page — and
+   the status line keeps saying it too. */
+function replyWhy(r){
+  if(r===null)return "not sent — another action holds it (the status line names it)";
+  if(!r)return "no answer — nothing known to have changed";
+  var bad=(r.results||[]).filter(function(x){return x.ok===false;});
+  if(bad.length)return (bad[0].box?bad[0].box+": ":"")+(bad[0].out||"refused");
+  return r.error||((r.lines&&r.lines.join(" · "))||"refused");
 }
-/* ===================== the roster (#764) =====================
-
-   fleet.roster IS the fleet — one line per box: name, agent, role(s), and the
-   gold box/snapshot it is minted from — and it was the one piece of the
-   definition this console showed and could not change. It is edited here the
-   way the registries are: an overlay opened on demand, painted once from the
-   file as it is on disk right now (a hand edit between two clicks is picked
-   up), saved whole, refused whole with the line and the reason when a line is
-   wrong.
-
-   SAVING WRITES THE DEFINITION AND NOTHING ELSE. A new line becomes a box when
-   the operator runs `crew up` on the host (it creates, starts and hires every
-   roster box; the login is theirs, by hand). A removed line's box is left
-   alone: the console stops watching it, and nothing is ever deleted. The
-   collector reads the roster on every poll, so the edit is live at the next. */
-var ROSTER_OPTS={agents:[],roles:[]};
-function openRoster(){
-  if(!LIVE){setStatus("the roster is live-only — run the collector to edit it",true);return;}
-  setStatus("reading the roster…",false);
-  api("/api/roster").then(function(r){
-    if(!r||!r.members){setStatus("could not read the roster",true);return;}
-    var ov=document.getElementById("rosov");
-    if(!ov){
-      ov=document.createElement("div");ov.id="rosov";
-      ov.innerHTML='<div class="logbox"><div class="loghd"><span id="rosttl"></span><button id="rosx">✕ close</button></div><div class="regbody" id="rosbody"></div></div>';
-      document.body.appendChild(ov);
-      ov.addEventListener("click",function(e){if(e.target===ov||e.target.id==="rosx")closeRoster();});
-      document.getElementById("rosbody").addEventListener("click",onRosterClick);
-    }
-    /* The etag is what the file was when this overlay opened; the save hands
-       it back, and a roster edited since (by hand, another tab) is refused
-       rather than overwritten from this copy. */
-    ROSTER_OPTS={agents:r.agents||[],roles:r.roles||[],etag:r.etag||""};
-    document.getElementById("rosttl").textContent="fleet roster · "+r.path;
-    /* Each row's standing is read off the poll's own snapshot, never re-asked:
-       a line with no box yet is the TARGET fleet (the roster deliberately names
-       boxes the CLI has not created, #77), and that is said as such. */
-    var units={};((LIVEMETA&&LIVEMETA.units)||[]).forEach(function(u){units[u.box]=u;});
-    document.getElementById("rosbody").innerHTML=
-      '<div class="regnote">One line per box: its name, the agent it runs, its role(s), and the box/snapshot it is minted from (optional). '
-      +'Saving writes <code>fleet.roster</code> on the host and nothing else. A saved line becomes a box with its <b>Create</b> button (<code>crew up &lt;box&gt;</code>: that one member, created, started and hired — its plan is shown first); '
-      +'<b>Hire</b> and <b>Upgrade</b> run <code>crew hire</code> / <code>crew upgrade</code> on it. One job runs at a time on the host. The login is yours: the Credentials panel. A removed line\'s box is left alone — the console stops watching it, nothing is ever deleted.</div>'
-      +'<table class="rostbl"><thead><tr><th>box</th><th>agent</th><th>roles</th><th>from (box/snapshot)</th><th>pool</th><th>run</th><th></th></tr></thead><tbody id="roslist">'
-      +r.members.map(function(m){return rosterRow(m,units[m.box],true);}).join('')
-      +'</tbody></table>'
-      +'<div class="regacts"><button class="lbtn" data-ros="add">+ Add a box</button><button class="lbtn" data-ros="save">Save roster</button></div>';
-    ov.style.display="flex";
-    setStatus("roster: "+r.members.length+" member"+(r.members.length===1?"":"s"),false);
-  }).catch(function(){setStatus("could not read the roster",true);});
+function pgSay(scope,r,okText){
+  if(!scope)return;
+  var v=null;
+  for(var i=0;i<scope.children.length;i++)if(scope.children[i].classList.contains("pgverdict")){v=scope.children[i];break;}
+  if(!v){v=document.createElement("div");v.className="pgverdict";v.setAttribute("role","status");scope.appendChild(v);}
+  var ok=!!(r&&r.ok);
+  v.textContent=ok?okText:"refused — "+replyWhy(r);
+  if(!ok)setStatus(v.textContent,true);
+  v.classList.toggle("bad",!ok);v.classList.toggle("good",ok);
 }
+/* A write's answer: refused → said at SCOPE, nothing repainted (the input
+   stays as typed); done → the page re-read, then said at the scope FIND
+   names on the fresh page. */
+function pgAfter(r,scope,find,okText){
+  if(!(r&&r.ok)){pgSay(scope,r,okText);return r;}
+  return pageRefresh().then(function(){
+    var el=find?document.querySelector(find):null;
+    if(el&&el.tagName==="BUTTON")el=el.parentNode;
+    pgSay(el,r,okText);return r;});
+}
+function goto(h){if(location.hash===h)pageRoute();else location.hash=h;}
+window.addEventListener("hashchange",pageRoute);
+function unitOf(box){return ((LIVEMETA&&LIVEMETA.units)||[]).filter(function(u){return u.box===box;})[0]||null;}
 function rosterStanding(u){
   if(!u)return "new";
   if(u.hired==="yes")return "hired";
   if(/not created|inventory/.test(u.note||""))return "not created";
   return u.hired==="no"?"not hired":"";
 }
-function rosterRow(m,u,saved){
-  var chosen={};(m.room||"").split(",").forEach(function(x){if(x)chosen[x]=1;});
-  var st=rosterStanding(u);
-  var kept=(m.room||"").split(",").filter(function(x){return x&&ROSTER_OPTS.roles.indexOf(x)<0;});
-  return '<tr class="rosrow" data-room="'+esc(m.room||"")+'" data-creds="'+esc(m.creds||"")+'">'
-    +'<td><input class="rosin" data-k="box" value="'+esc(m.box||"")+'" placeholder="box-name" spellcheck="false"'+(u?' readonly title="an existing box keeps its name — a renamed line would be a second box"':'')+'>'
-    +(st?'<div class="rosst'+(st==="new"?" new":"")+'">'+esc(st)+'</div>':'')+'</td>'
-    +'<td><select class="rosin" data-k="agent">'+ROSTER_OPTS.agents.map(function(a){return '<option'+(a===m.agent?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></td>'
-    +'<td><div class="regsel rossel">'+ROSTER_OPTS.roles.map(function(x){return '<label class="regopt"><input type="checkbox" value="'+esc(x)+'"'+(chosen[x]?' checked':'')+'><span>'+esc(x)+'</span></label>';}).join('')+'</div>'
-    +(kept.length?'<div class="rosst">'+esc(kept.join(","))+' · kept as written, not editable here</div>':'')+'</td>'
-    +'<td><input class="rosin" data-k="from" value="'+esc(m.from||"")+'" placeholder="(blank mint)" spellcheck="false"></td>'
-    /* The pool assignment (#774) rides the row unedited: assigning is the
-       host's, where the per-repository gh rule is checked against the pool. */
-    +(m.creds?'<td><div class="rosst" title="credentials from the host pool — assigned on the host, carried through this save">'+esc(m.creds)+'</div></td>':'<td></td>')
-    +'<td>'+rosterJobButtons(m,u,saved)+'</td>'
-    +'<td><button class="lbtn rosdrop" data-ros="drop" title="remove this line (the box itself is left alone)">✕</button></td></tr>';
-}
-function closeRoster(){var ov=document.getElementById("rosov");if(ov)ov.style.display="none";}
-/* The roles a row saves, in the order the LINE was written: the box sources
+/* The roles a line saves, in the order the LINE was written: the box sources
    its roles in that order and the last one's figures win, so a hand-written
    `triage,builder` saved back as `builder,triage` on an unrelated save would
    re-size the box (#763 round 4). A newly ticked role is appended; an unticked
@@ -7585,104 +7595,354 @@ function rosterRoles(written,offered,checked){
   checked.forEach(function(x){if(out.indexOf(x)<0)out.push(x);});
   return out;
 }
-function onRosterClick(e){
-  var jb=e.target.closest("[data-job]");
-  if(jb){onJobButton(jb);return;}
-  var b=e.target.closest("[data-ros]");if(!b)return;
-  var list=document.getElementById("roslist");
-  if(b.dataset.ros==="add"){
-    list.insertAdjacentHTML("beforeend",rosterRow({box:"",agent:ROSTER_OPTS.agents[0]||"",room:"",from:""},null,false));
-    var inp=list.lastElementChild.querySelector('[data-k="box"]');if(inp)inp.focus();
-    return;
-  }
-  if(b.dataset.ros==="drop"){
-    var tr=b.closest("tr"),name=tr.querySelector('[data-k="box"]').value.trim();
-    /* Confirmed because it is a REMOVAL from the fleet's definition, even
-       though the box stays: the console stops watching it and the host tick
-       stops waking it. The question names what does and does not happen. */
-    if(name&&!confirm("Remove "+name+" from the roster? Its box is left exactly as it is — not stopped, not deleted — but the console stops watching it and the host tick stops waking it."))return;
-    tr.remove();
-    return;
-  }
-  /* Save: the whole table, as the file will read. The collector validates
-     every line before anything moves and refuses with the line and the
-     reason; a refusal leaves the operator's rows exactly as typed, beside
-     the reason in the status line — the one moment the contents matter most. */
-  var members=[].map.call(list.querySelectorAll("tr.rosrow"),function(tr){
-    return {box:tr.querySelector('[data-k="box"]').value.trim(),
-            agent:tr.querySelector('[data-k="agent"]').value,
-            roles:rosterRoles((tr.dataset.room||"").split(",").filter(Boolean),ROSTER_OPTS.roles,
-                              [].map.call(tr.querySelectorAll('.rossel input:checked'),function(i){return i.value;})),
-            from:tr.querySelector('[data-k="from"]').value.trim(),
-            creds:tr.dataset.creds||""};
-  });
-  return act("ov:roster","roster-set",{members:members,etag:ROSTER_OPTS.etag}).then(function(r){if(r&&r.ok)openRoster();});
+/* A roster line as roster-set takes it, its roles in the order written. */
+function rosterLine(m){
+  return {box:m.box,agent:m.agent,roles:(m.room||"").split(",").filter(Boolean),from:m.from||"",creds:m.creds||""};
 }
-/* ---- Credentials (#765) ------------------------------------------------------
-   SET, NEVER READ. A member's GitHub login and its agent's login are written
-   from here through the one credentials shell the CLI's login verb runs: the secret
-   leaves this page once, in the POST body, and the field is cleared before the
-   reply is read. Nothing on the page — no endpoint, no row, no reply — can show
-   a credential back; what a row shows is the poll's own reading (gh and the
-   vendor: flowing, missing, stale, waiting) and, after a set, the box's
-   verdict on it. */
-var CREDS_OPTS={members:[]};
-/* The host credential pool (#780; the pool is #774), managed from here through
-   the CLI's own creds verb on the collector: one implementation of the
-   per-repository gh rule and the fan-out, never a second one in the page.
-   The listing names entries, logins, holders and verdicts — never a value. */
-var POOL={entries:[],members:[]};
-function openCreds(){
-  if(!LIVE){setStatus("credentials are live-only — run the collector to set them",true);return;}
-  setStatus("reading the credential kinds…",false);
-  Promise.all([api("/api/credentials"),api("/api/pool").catch(function(){return null;}),api("/api/engine").catch(function(){return null;})]).then(function(rs){
-    var r=rs[0];ENGINE=rs[2]||{configured:false,error:"the engine's App could not be read"};
-    POOL=(rs[1]&&rs[1].entries)?rs[1]:{entries:[],members:[],error:(rs[1]&&rs[1].error)||"the pool could not be read"};
-    if(!r||!r.members){setStatus("could not read the credential kinds",true);return;}
-    var ov=document.getElementById("credov");
-    if(!ov){
-      ov=document.createElement("div");ov.id="credov";
-      ov.innerHTML='<div class="logbox"><div class="loghd"><span id="credttl"></span><button id="credx">✕ close</button></div><div class="regbody" id="credbody"></div></div>';
-      document.body.appendChild(ov);
-      ov.addEventListener("click",function(e){if(e.target===ov||e.target.id==="credx")closeCreds();});
-      document.getElementById("credbody").addEventListener("click",onCredsClick);
-      document.getElementById("credbody").addEventListener("change",onCredsChange);
-    }
-    CREDS_OPTS={members:r.members};
-    document.getElementById("credttl").textContent="credentials · set, never read back";
-    var units={};((LIVEMETA&&LIVEMETA.units)||[]).forEach(function(u){units[u.box]=u;});
-    document.getElementById("credbody").innerHTML=engineSection()
-      +'<div class="regnote">A member\'s GitHub token (one identity per box) and its agent\'s login. '
-      +'The value goes to the box once, as the input of the same shell the CLI\'s login verb runs, lands where its CLI reads it (0600), and is never shown, logged or kept on the host. '
-      +'A row shows what the last poll read (<b>flowing</b>, <b>missing</b>, <b>stale</b>, <b>waiting</b>) and, after Set, the box\'s own verdict. '
-      +'The box must be running. Each set is journalled by who and which kind — never the value.</div>'
-      +'<table class="rostbl"><thead><tr><th>box</th><th>reads</th><th>set</th><th></th><th>from the pool</th></tr></thead><tbody id="credlist">'
-      +r.members.map(function(m){return credsRow(m,units[m.box]);}).join('')
-      +'</tbody></table>'
-      +poolSection(r.members);
-    ov.style.display="flex";
-    setStatus("credentials: "+r.members.length+" member"+(r.members.length===1?"":"s"),false);
+/* A roster write: the file read FRESH (its etag is what it is now), changed by
+   EDIT, saved whole. A roster edited elsewhere since is refused by the etag. */
+function rosterWrite(edit){
+  return api("/api/roster").then(function(r){
+    if(!r||!r.members)throw new Error("could not read the roster");
+    var members=edit(r.members.map(rosterLine),r);
+    if(!members)return null;
+    return act("ov:roster","roster-set",{members:members,etag:r.etag||""});
+  });
+}
+/* ---- the live bits ---------------------------------------------------------- */
+function liveState(u){
+  if(!u)return '<span class="mst">no box yet</span>';
+  var st=u.state||"unknown";
+  return '<span class="mst s-'+esc(st)+'">'+esc(st)+'</span>'+(u.paused?' <span class="mst s-paused">paused</span>':'')
+    +' <span class="rosst">'+esc(rosterStanding(u))+'</span>';
+}
+/* The pool entries assigned to BOX that its box does not hold yet: never
+   delivered, or owing the current value after a rotate (#780). */
+function poolPending(box){
+  return (POOL.entries||[]).filter(function(e){
+    return (e.members||[]).some(function(m){return m.box===box&&(!m.verdict||m.owes);});
+  }).map(function(e){return e.id;});
+}
+function liveCreds(u,agent,box){
+  if(!u)return '<span class="rosst">logins: no box yet</span>';
+  /* Asleep (#875): the host tick stopped it, so nothing can be asked of it —
+     its logins are read at its next wake, and that is said, not "unknown".
+     "unknown" stays a running box whose probe did not answer. */
+  if(u.state==="asleep"){
+    var pend=poolPending(box||u.box);
+    return '<span class="mcred zz">gh: asleep — read at its next wake</span> '
+      +'<span class="mcred zz">'+esc(agent||"agent")+': asleep — read at its next wake</span>'
+      +(pend.length?' <span class="rosst">assigned: '+esc(pend.join(", "))+', delivered at its next wake</span>':'');
+  }
+  var ok=function(v){return /flowing|ok/.test(v||"");};
+  return '<span class="mcred'+(ok(u.gh)?' ok':'')+'">gh: '+esc(u.gh||"unknown")+'</span> '
+    +'<span class="mcred'+(ok(u.vendor)?' ok':'')+'">'+esc(agent||"agent")+': '+esc(u.vendor||"unknown")+'</span>';
+}
+function liveHTML(what,box,agent){
+  var u=unitOf(box);
+  if(what==="state")return liveState(u);
+  if(what==="creds")return liveCreds(u,agent,box);
+  if(what==="next")return rosterJobButtons({box:box},u,true);
+  if(what==="pause")return (u&&u.paused)?"▶ Resume":"⏸ Pause";
+  return "";
+}
+function pageOnPoll(){
+  if(PAGE.waiting&&LIVE)return pageRoute();
+  if(!PAGE.route)return;
+  [].forEach.call(document.querySelectorAll("#pagebody [data-live]"),function(el){
+    var h=liveHTML(el.dataset.live,el.dataset.box,el.dataset.agent);
+    if(el.innerHTML!==h)el.innerHTML=h;
+  });
+  applyBusy();
+}
+function live(what,box,agent){
+  return '<span data-live="'+what+'" data-box="'+esc(box)+'"'+(agent?' data-agent="'+esc(agent)+'"':'')+'>'+liveHTML(what,box,agent)+'</span>';
+}
+/* ---- #/members --------------------------------------------------------------- */
+function defaultName(agent,roles){return (agent||"agent")+"-"+(roles[0]||"member");}
+function renderMembers(){
+  return Promise.all([api("/api/roster"),api("/api/pool").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0];
+    if(rs[1]&&rs[1].entries)POOL=rs[1];
+    if(!r||!r.members)throw new Error("could not read the roster");
+    if(PAGE.route!=="members")return;
+    ROSTER_OPTS={agents:r.agents||[],roles:r.roles||[],etag:r.etag||""};
+    var a0=ROSTER_OPTS.agents[0]||"",r0=ROSTER_OPTS.roles[0]?[ROSTER_OPTS.roles[0]]:[];
+    var h='<div class="pgtitle">Members <span class="rosst">'+r.members.length+' · '+esc(r.path||"")+'</span></div>'
+      +'<div class="pgbar"><button class="lbtn" data-pg="add-open">＋ Add member</button></div>'
+      +'<div class="pgsec mform" id="addform" hidden>'
+      +'<div class="mfrow"><label>agent<select class="rosin" data-k="add-agent">'+ROSTER_OPTS.agents.map(function(a){return '<option>'+esc(a)+'</option>';}).join('')+'</select></label>'
+      +'<label>name<input class="rosin" data-k="add-name" spellcheck="false" placeholder="'+esc(defaultName(a0,r0))+'"></label></div>'
+      +'<div class="mfrow"><span class="mflab">roles</span><div class="regsel rossel" data-k="add-roles">'+ROSTER_OPTS.roles.map(function(x,i){return '<label class="regopt"><input type="checkbox" value="'+esc(x)+'"'+(i===0?' checked':'')+'><span>'+esc(x)+'</span></label>';}).join('')+'</div></div>'
+      +'<div class="mfrow"><label>mint from <span class="rosst">optional: a box or box/snapshot</span><input class="rosin" data-k="add-from" spellcheck="false" placeholder="(blank mint)"></label></div>'
+      +'<div class="regnote">Adding writes the line to <code>fleet.roster</code> and nothing else. The member\'s page then offers its next step: <b>Create</b> mints, starts and hires the box.</div>'
+      +'<div class="regacts"><button class="lbtn" data-pg="add-save">Add</button><button class="lbtn" data-pg="add-cancel">Cancel</button></div></div>';
+    if(!r.members.length)h+='<div class="regnote">No member yet: <b>Add member</b> names the first.</div>';
+    h+='<div class="mgrid">'+r.members.map(function(m){
+      return '<div class="mcard" data-box="'+esc(m.box)+'">'
+        +'<div class="mhead"><a href="#/member/'+encodeURIComponent(m.box)+'"><b>'+esc(m.box)+'</b></a><span class="rosst">'+esc(m.agent)+' · '+esc((m.room||"").split(",").join(", ")||"no role")+'</span></div>'
+        +'<div class="mline">'+live("state",m.box)+'</div>'
+        +'<div class="mline">'+live("creds",m.box,m.agent)+'</div>'
+        +'<div class="mline mnext">'+live("next",m.box)+' <a class="lbtn" href="#/member/'+encodeURIComponent(m.box)+'">Open →</a></div></div>';
+    }).join('')+'</div>';
+    document.getElementById("pagebody").innerHTML=h;
     applyBusy();
-  }).catch(function(){setStatus("could not read the credential kinds",true);});
+  });
+}
+function addForm(){return document.getElementById("addform");}
+function addRolesChecked(f){return [].map.call(f.querySelectorAll('[data-k="add-roles"] input:checked'),function(i){return i.value;});}
+function addNameSync(){
+  var f=addForm();if(!f)return;
+  f.querySelector('[data-k="add-name"]').placeholder=defaultName(f.querySelector('[data-k="add-agent"]').value,addRolesChecked(f));
+}
+function addSave(){
+  var f=addForm();if(!f)return;
+  var agent=f.querySelector('[data-k="add-agent"]').value,roles=addRolesChecked(f);
+  var name=f.querySelector('[data-k="add-name"]').value.trim()||defaultName(agent,roles);
+  var from=f.querySelector('[data-k="add-from"]').value.trim();
+  var acts=f.querySelector(".regacts");
+  if(!roles.length){pgSay(acts,{ok:false,error:"pick at least one role"},"");return;}
+  var dup=false;
+  return rosterWrite(function(members){
+    if(members.some(function(m){return m.box===name;})){dup=true;return null;}
+    return members.concat([{box:name,agent:agent,roles:roles,from:from,creds:""}]);
+  }).then(function(r){
+    if(dup){setStatus("add member: "+name+" is already on the roster",true);pgSay(acts,{ok:false,error:name+" is already on the roster"},"");return;}
+    if(r&&r.ok){goto("#/member/"+encodeURIComponent(name));return;}
+    pgSay(acts,r,"");
+  },function(e){setStatus("add member: "+e.message,true);pgSay(acts,{ok:false,error:e.message},"");});
+}
+/* ---- #/member/<box> ------------------------------------------------------------ */
+function renderMember(box){
+  return Promise.all([api("/api/roster"),api("/api/credentials").catch(function(){return null;}),
+                      api("/api/pool").catch(function(){return null;}),pollRegistries()]).then(function(rs){
+    var r=rs[0];if(!r||!r.members)throw new Error("could not read the roster");
+    if(PAGE.route!=="member"||PAGE.box!==box)return;
+    ROSTER_OPTS={agents:r.agents||[],roles:r.roles||[],etag:r.etag||""};
+    CREDS_OPTS={members:(rs[1]&&rs[1].members)||[],agents:(rs[1]&&rs[1].agents)||{}};
+    POOL=(rs[2]&&rs[2].entries)?rs[2]:{entries:[],members:[],error:(rs[2]&&rs[2].error)||"the pool could not be read"};
+    var regs=rs[3],m=r.members.filter(function(x){return x.box===box;})[0];
+    var body=document.getElementById("pagebody");
+    if(!m){
+      body.innerHTML='<div class="pgtitle"><a href="#/members">← Members</a> · '+esc(box)+'</div>'
+        +'<div class="regnote"><b>'+esc(box)+'</b> is not on this fleet\'s roster. <a href="#/members">Members</a> lists who is.</div>';
+      return;
+    }
+    var u=unitOf(box),cm=CREDS_OPTS.members.filter(function(x){return x.box===box;})[0]||{box:box,agent:m.agent,services:{gh:["token"],agent:(CREDS_OPTS.agents[m.agent]||[])}};
+    var written=(m.room||"").split(",").filter(Boolean),chosen={};written.forEach(function(x){chosen[x]=1;});
+    var kept=written.filter(function(x){return ROSTER_OPTS.roles.indexOf(x)<0;});
+    var hired=!!(u&&u.hired==="yes"),agentKinds=credsKinds(cm,"agent");
+    var h='<div class="pgtitle"><a href="#/members">← Members</a> · <b>'+esc(box)+'</b> <span class="rosst">'+esc(m.agent)+' · '+esc(written.join(", ")||"no role")+'</span></div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>LIFECYCLE</div>'
+      +'<div class="mline">'+live("state",box)+'</div>'
+      +'<div class="pgbar">'+live("next",box)
+      +'<button class="lbtn" data-pg="power-on">▶ Start</button><button class="lbtn" data-pg="power-off">■ Stop</button>'
+      +'<button class="lbtn" data-pg="restart">↻ Restart</button><button class="lbtn" data-pg="pause">'+live("pause",box)+'</button>'
+      +'<button class="lbtn" data-pg="logs">▤ Logs</button></div>'
+      +'<div class="regnote"><b>Create</b> mints, starts and hires the box (its plan is shown first); <b>Hire</b> puts a created box on duty; <b>Upgrade</b> re-installs this host\'s engine on it. One job runs at a time on the host.</div></div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>LOGINS <span class="rosst">set here, never read back</span></div>'
+      +'<div class="mline">'+live("creds",box,m.agent)+'</div>'
+      +'<table class="rostbl"><tbody><tr class="credrow" data-box="'+esc(box)+'"><td>'
+      +'<select class="rosin" data-k="service"><option value="gh">gh</option>'+(agentKinds.length?'<option value="agent"'+(hired?'':' disabled title="hire it first — the agent credential is set against the profile hire installs"')+'>'+esc(m.agent)+(hired?'':' (after hire)')+'</option>':'')+'</select>'
+      +'<select class="rosin" data-k="kind">'+credsKindOptions(cm,"gh")+'</select></td>'
+      +'<td><input class="rosin" data-k="secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="paste — never shown again">'
+      +'<div class="rosst credverdict"></div></td><td><button class="lbtn" data-cred="set">Set</button></td></tr></tbody></table>'
+      +'<div class="regnote">The value goes to the box once, as the input of the same shell the CLI\'s login verb runs, lands where its CLI reads it (0600), and is never shown, logged or kept on the host. The box must be running.</div>'
+      +'<div class="wt" style="margin-top:8px">FROM THE POOL</div>'
+      +'<table class="rostbl"><tbody><tr data-box="'+esc(box)+'">'+poolAssignCell(m)+'</tr></tbody></table>'
+      +'<div class="regnote">Pool entries are added on <a href="#/credentials">Credentials</a>.</div></div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>SCOPE <span class="rosst">the fleet\'s repositories this member watches</span></div>'
+      +memberScope(box,regs)+'</div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>EDIT</div>'
+      +'<div class="mfrow"><span class="mflab">roles</span><div class="regsel rossel" data-k="ed-roles" data-written="'+esc(written.join(","))+'">'+ROSTER_OPTS.roles.map(function(x){return '<label class="regopt"><input type="checkbox" value="'+esc(x)+'"'+(chosen[x]?' checked':'')+'><span>'+esc(x)+'</span></label>';}).join('')+'</div></div>'
+      +(kept.length?'<div class="rosst">'+esc(kept.join(","))+' · kept as written, not editable here</div>':'')
+      +'<div class="mfrow"><label>mint from<input class="rosin" data-k="ed-from" value="'+esc(m.from||"")+'" placeholder="(blank mint)" spellcheck="false"></label></div>'
+      +'<div class="regacts"><button class="lbtn" data-pg="ed-save">Save</button><button class="lbtn rosdrop" data-pg="remove">Remove from the roster</button></div>'
+      +'<div class="regnote">The name and agent are the box\'s: a different one is a new member. Removing writes the roster only — the box is left exactly as it is, and the console stops watching it.</div></div>';
+    body.innerHTML=h;
+    applyBusy();
+  });
+}
+function memberScope(box,regs){
+  if(!regs||!regs.boxes||!regs.boxes[box])return '<div class="regnote">the registries could not be read for '+esc(box)+'</div>';
+  return REGKINDS.map(function(k){
+    var kind=k[0],cell=regs.boxes[box][kind],fleet=regs.fleet[kind];
+    var head='<div class="regblk" data-kind="'+kind+'"><div class="wt">'+k[1]
+      +'<span class="regsrc '+(cell.inherited?"inherit":"override")+'">'+(cell.inherited?"inherited":"selected")+'</span></div>';
+    if(!fleet.entries.length)return head+'<div class="regempty">the fleet\'s list names no repositories — there is nothing to select. <a href="#/repositories">Repositories</a> adds them.</div></div>';
+    var on={};cell.entries.forEach(function(e){on[e]=1;});
+    return head+'<div class="regsel">'+fleet.entries.map(function(e){
+        return '<label class="regopt"><input type="checkbox" value="'+esc(e)+'"'+(on[e]?' checked':'')+'><span>'+esc(e)+'</span></label>';
+      }).join('')+'</div>'
+      +'<div class="regacts"><button class="lbtn" data-pg="scope-save">Save selection</button>'
+      +'<button class="lbtn" data-pg="scope-inherit"'+(cell.inherited?' style="opacity:.5"':'')+'>Inherit the fleet\'s list</button></div></div>';
+  }).join('');
+}
+/* ---- #/repositories ------------------------------------------------------------ */
+function renderRepositories(){
+  return Promise.all([pollRegistries(),api("/api/engine").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0],eng=rs[1]||{};
+    if(!r||!r.fleet)throw new Error("could not read the registries");
+    if(PAGE.route!=="repositories")return;
+    PAGE.data=r;
+    var owners={};(eng.owners||[]).forEach(function(o){owners[String(o.owner).toLowerCase()]=o;});
+    var reach=function(repo){
+      if(!eng.configured)return '<span class="rosst">engine: no GitHub App (<a href="#/credentials">Credentials</a>)</span>';
+      var o=owners[repo.split("/")[0].toLowerCase()];
+      if(!o)return '<span class="rosst">engine: not read yet</span>';
+      return o.ok?'<span class="mcred ok">engine ✓</span>':'<span class="mcred" title="'+esc(o.error)+'">engine ✗ not installed on '+esc(o.owner)+'</span>';
+    };
+    var h='<div class="pgtitle">Repositories <span class="rosst">this fleet\'s — '+esc(r.config_dir||"")+'</span></div>'
+      +'<div class="regnote">What this fleet works on. Each fleet has its own lists; only the engine\'s GitHub App is the host\'s (<a href="#/credentials">Credentials</a>). A member can narrow its scope to some of them on its own page.</div>';
+    h+=REGKINDS.map(function(k){
+      var kind=k[0],f=r.fleet[kind],note="";
+      if(f.present===false&&f.served_from){
+        note='<div class="regnote">'+esc(f.path)+' does not exist in this fleet definition. The '+f.entries.length+' entr'+(f.entries.length===1?"y":"ies")+' below come from the shipped '+esc(f.served_from)+', which is what the CLI stages to a box too. Saving writes the definition\'s own file, and it wins from then on.</div>';
+      }
+      var narrow=Object.keys(r.boxes||{}).filter(function(b){return !r.boxes[b][kind].inherited;});
+      return '<div class="pgsec regblk" data-kind="'+kind+'"><div class="wt"><span class="dot"></span>'+k[1]+'</div>'
+        +'<div class="regpath" title="'+esc(k[2])+'">'+esc(f.path)+'</div>'+note
+        +(f.entries.length?f.entries.map(function(e){
+            return '<div class="reporow"><span class="repo">'+esc(e)+'</span>'+reach(e)
+              +'<button class="lbtn rosdrop" data-pg="repo-rm" data-repo="'+esc(e)+'" title="remove from this fleet\'s list">✕</button></div>';
+          }).join(''):'<div class="regempty">no repository yet</div>')
+        +'<div class="reporow"><input class="rosin" data-k="repo-new" spellcheck="false" placeholder="owner/repo"><button class="lbtn" data-pg="repo-add">Add</button></div>'
+        +(narrow.length?'<div class="rosst">narrowed by: '+narrow.map(function(b){return '<a href="#/member/'+encodeURIComponent(b)+'">'+esc(b)+'</a>';}).join(", ")+'</div>':'')
+        +'</div>';
+    }).join('');
+    document.getElementById("pagebody").innerHTML=h;
+  });
+}
+function repoWrite(kind,entries,scope,okText){
+  return act("ov:reg","registry-set",{kind:kind,entries:entries}).then(function(r){
+    return pgAfter(r,scope,'#pagebody .regblk[data-kind="'+kind+'"]',okText);});
+}
+/* ---- #/credentials ------------------------------------------------------------- */
+function renderCredentials(){
+  return Promise.all([api("/api/credentials"),api("/api/pool").catch(function(){return null;}),api("/api/engine").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0];if(!r||!r.members)throw new Error("could not read the credential kinds");
+    if(PAGE.route!=="credentials")return;
+    CREDS_OPTS={members:r.members,agents:r.agents||{}};
+    POOL=(rs[1]&&rs[1].entries)?rs[1]:{entries:[],members:[],error:(rs[1]&&rs[1].error)||"the pool could not be read"};
+    ENGINE=rs[2]||{configured:false,error:"the engine's App could not be read"};
+    var h='<div class="pgtitle">Credentials <span class="rosst">set, never read back</span></div>'
+      +'<div class="pgsec" id="engsec"><div class="wt"><span class="dot"></span>ENGINE <span class="rosst">host-wide: every fleet on this host</span></div>'+engineSection()+'</div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>MEMBERS\' LOGINS <span class="rosst">each is set on the member\'s own page</span></div>'
+      +(r.members.length?'<table class="rostbl"><thead><tr><th>member</th><th>reads</th><th>from the pool</th></tr></thead><tbody>'
+        +r.members.map(function(m){
+          var held=poolAssigned(m.box);
+          return '<tr><td><a href="#/member/'+encodeURIComponent(m.box)+'">'+esc(m.box)+'</a><div class="rosst">'+esc(m.agent)+'</div></td>'
+            +'<td>'+live("creds",m.box,m.agent)+'</td><td><div class="rosst">'+(held.length?esc(held.join(", ")):'nothing assigned')+'</div></td></tr>';
+        }).join('')+'</tbody></table>':'<div class="regnote">No member yet. The pool below takes credentials before the first one.</div>')
+      +'</div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>THE POOL</div>'+poolSection()+'</div>';
+    document.getElementById("pagebody").innerHTML=h;
+    applyBusy();
+  });
+}
+/* ---- one click handler for every page ------------------------------------------ */
+function onPageClick(e){
+  var t=e.target;
+  var jb=t.closest("[data-job]");if(jb){onJobButton(jb);return;}
+  var eb=t.closest("[data-eng]");if(eb)return onEngineClick(eb);
+  var pb=t.closest("[data-pool-act]");if(pb)return onPoolClick(pb);
+  var cb=t.closest("[data-cred]");if(cb)return pageCredSet(cb);
+  var b=t.closest("[data-pg]");if(!b)return;
+  var what=b.dataset.pg,box=PAGE.box;
+  if(what==="add-open"){var f=addForm();if(f){f.hidden=false;addNameSync();f.querySelector('[data-k="add-name"]').focus();}return;}
+  if(what==="add-cancel"){var f2=addForm();if(f2)f2.hidden=true;return;}
+  if(what==="add-save")return addSave();
+  if(what==="power-on"||what==="power-off"){
+    if(boxBusy(box))return act("box:"+box,what,{});
+    if(what==="power-off"&&!confirm("Power off "+box+"? Any running session is lost."))return;
+    return act("box:"+box,what,{box:box});
+  }
+  if(what==="restart")return restartClick(box,dataOf(box));
+  if(what==="pause"){var u=unitOf(box);return act("box:"+box,(u&&u.paused)?"resume":"pause",{box:box});}
+  if(what==="logs")return openLogs(box,"");
+  if(what==="scope-save"||what==="scope-inherit"){
+    var blk=b.closest(".regblk"),kind=blk.dataset.kind;
+    if(what==="scope-inherit"){
+      if(!confirm("Clear "+box+"'s "+kind+" selection? It goes back to following the fleet's list, including any later widening."))return;
+      return act("ov:reg","registry-inherit",{box:box,kind:kind}).then(function(r){
+        return pgAfter(r,blk,'#pagebody .regblk[data-kind="'+kind+'"]',"saved — "+kind+" follows the fleet's list again");});
+    }
+    var entries=[].map.call(blk.querySelectorAll(".regopt input:checked"),function(i){return i.value;});
+    return act("ov:reg","registry-override",{box:box,kind:kind,entries:entries}).then(function(r){
+      return pgAfter(r,blk,'#pagebody .regblk[data-kind="'+kind+'"]',"saved — "+entries.length+" selected");});
+  }
+  if(what==="ed-save"){
+    var sel=document.querySelector('#pagebody [data-k="ed-roles"]');
+    var written=(sel.dataset.written||"").split(",").filter(Boolean);
+    var checked=[].map.call(sel.querySelectorAll("input:checked"),function(i){return i.value;});
+    var from=document.querySelector('#pagebody [data-k="ed-from"]').value.trim();
+    var roles=rosterRoles(written,ROSTER_OPTS.roles,checked);
+    var eacts=b.closest(".regacts");
+    if(!roles.length){pgSay(eacts,{ok:false,error:"a member keeps at least one role"},"");return;}
+    var gone=false;
+    return rosterWrite(function(members){
+      var hit=false;
+      members.forEach(function(m){if(m.box===box){m.roles=roles;m.from=from;hit=true;}});
+      if(!hit){gone=true;return null;}
+      return members;
+    }).then(function(r){
+      if(gone){pgSay(eacts,{ok:false,error:box+" is no longer on the roster"},"");return;}
+      return pgAfter(r,eacts,'#pagebody [data-pg="ed-save"]',"saved — roles "+roles.join(", "));
+    },function(e){setStatus("save: "+e.message,true);pgSay(eacts,{ok:false,error:e.message},"");});
+  }
+  if(what==="remove"){
+    if(!confirm("Remove "+box+" from the roster? Its box is left exactly as it is — not stopped, not deleted — but the console stops watching it and the host tick stops waking it."))return;
+    var racts=b.closest(".regacts");
+    return rosterWrite(function(members){return members.filter(function(m){return m.box!==box;});})
+      .then(function(r){if(r&&r.ok){goto("#/members");return;}pgSay(racts,r,"");},
+            function(e){setStatus("remove: "+e.message,true);pgSay(racts,{ok:false,error:e.message},"");});
+  }
+  if(what==="repo-add"||what==="repo-rm"){
+    var rb=b.closest(".regblk"),k=rb.dataset.kind,r0=PAGE.data;
+    if(!r0||!r0.fleet)return;
+    var cur=r0.fleet[k].entries.slice();
+    if(what==="repo-rm"){
+      var repo=b.dataset.repo;
+      if(!confirm("Remove "+repo+" from this fleet's "+k+" list?"))return;
+      return repoWrite(k,cur.filter(function(x){return x!==repo;}),rb,"saved — "+repo+" removed");
+    }
+    var inp=rb.querySelector('[data-k="repo-new"]');
+    var v=(inp.value||"").trim().replace(/^https?:\/\/github\.com\//,"").replace(/\.git$/,"").replace(/\/$/,"");
+    if(!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(v)){setStatus("add repository: owner/repo",true);pgSay(rb,{ok:false,error:"owner/repo"},"");return;}
+    if(cur.indexOf(v)>=0){pgSay(rb,{ok:false,error:v+" is already on the list"},"");return;}
+    return repoWrite(k,cur.concat([v]),rb,"saved — 1 added ("+v+")");
+  }
+}
+function onPageChange(e){
+  if(onPoolChange(e))return;
+  var t=e.target;
+  if(t.closest('[data-k="add-agent"],[data-k="add-roles"]'))return addNameSync();
+  var sel=t.closest('[data-k="service"]');if(!sel)return;
+  var tr=sel.closest("tr"),m=CREDS_OPTS.members.filter(function(x){return x.box===tr.dataset.box;})[0];
+  if(m)tr.querySelector('[data-k="kind"]').innerHTML=credsKindOptions(m,sel.value);
 }
 function credsKinds(m,svc){return (m.services&&m.services[svc])||[];}
 function credsKindOptions(m,svc){return credsKinds(m,svc).map(function(k){return '<option>'+esc(k)+'</option>';}).join('');}
-function credsRow(m,u){
-  var gh=u?(u.gh||"unknown"):"no box",ven=u?(u.vendor||"unknown"):"no box";
-  var agentKinds=credsKinds(m,"agent");
-  return '<tr class="credrow" data-box="'+esc(m.box)+'">'
-    +'<td>'+esc(m.box)+'<div class="rosst">'+esc(m.agent)+'</div></td>'
-    +'<td><div class="rosst">gh: '+esc(gh)+'</div><div class="rosst">'+esc(m.agent)+': '+esc(ven)+'</div></td>'
-    /* The agent half is set against the profile hire installs on the box:
-       an unhired box offers gh alone, and says why (round 10). */
-    +'<td><select class="rosin" data-k="service"><option value="gh">gh</option>'+(agentKinds.length?'<option value="agent"'+(u&&u.hired==="yes"?'':' disabled title="hire it first — the agent credential is set against the profile hire installs"')+'>'+esc(m.agent)+(u&&u.hired==="yes"?'':' (after hire)')+'</option>':'')+'</select>'
-    +'<select class="rosin" data-k="kind">'+credsKindOptions(m,"gh")+'</select>'
-    +'<input class="rosin" data-k="secret" type="password" autocomplete="new-password" spellcheck="false" placeholder="paste — never shown again">'
-    +'<div class="rosst credverdict"></div></td>'
-    +'<td><button class="lbtn" data-cred="set">Set</button></td>'
-    +poolAssignCell(m)+'</tr>';
+/* A member's login, SET NEVER READ (#765): the field is cleared before the
+   reply is read, and the reply is the box's own verdict. */
+function pageCredSet(b){
+  var tr=b.closest("tr"),box=tr.dataset.box,inp=tr.querySelector('[data-k="secret"]');
+  var svc=tr.querySelector('[data-k="service"]').value,kind=tr.querySelector('[data-k="kind"]').value;
+  var secret=inp.value,out=tr.querySelector(".credverdict");
+  if(!secret.trim()){setStatus("credentials-set: paste the value first — nothing set",true);return;}
+  /* A box another action holds keeps the value in its field: refused here. */
+  if(boxBusy(box)){act("box:"+box,"credentials-set",{});return;}
+  inp.value="";
+  out.textContent="setting…";
+  return act("box:"+box,"credentials-set",{box:box,service:svc,kind:kind,secret:secret}).then(function(r){
+    /* Refused busy before anything was sent (round 11): the value goes back. */
+    if(r&&r.busy&&!inp.value)inp.value=secret;
+    secret="";
+    out.textContent=(r&&(r.verdict||r.error))||"no answer";
+    out.classList.toggle("bad",!(r&&r.ok));
+  });
 }
-/* ---- the engine's GitHub App, in the same overlay (#864) ---------------------
+/* ---- the engine's GitHub App, on the Credentials page (#864) ------------------
    The engine is what reads GitHub from the host — the tick's board reads — and
    it reads as one GitHub App per host, never a member's login. Create runs
    GitHub's manifest flow: a form POSTed to GitHub, which sends the browser back
@@ -7708,17 +7968,25 @@ function engineSection(){
     +'<div class="regnote"><b>Create one</b> — GitHub asks you to confirm, then sends you back here. '
     +'Owner: <input class="rosin" id="eng-org" placeholder="your account — or an organization name" spellcheck="false" style="width:16em"> '
     +'<button class="lbtn" data-eng="create">Create GitHub App</button>'
-    +'<br><b>Or use an existing App</b> — permissions: metadata, issues, pull requests, checks, commit statuses and discussions, read-only. '
+    +'<br><b>Or use an existing App</b> — permissions'+enginePermsWords(e.permissions)+'. '
     +'App ID <input class="rosin" id="eng-id" inputmode="numeric" style="width:7em"> '
     +'private key <textarea class="rosin" id="eng-key" rows="2" spellcheck="false" autocomplete="off" placeholder="paste the .pem — never shown again" style="width:18em;vertical-align:middle"></textarea> '
     +'<button class="lbtn" data-eng="paste">Use it</button><div class="rosst" id="eng-verdict"></div></div>';
   return h;
 }
-function engineRedraw(){
-  var body=document.getElementById("credbody");if(!body)return;
-  var first=body.firstElementChild;
-  while(first&&first.classList.contains("regnote")&&!/A member/.test(first.textContent)){var n=first.nextElementSibling;first.remove();first=n;}
-  body.insertAdjacentHTML("afterbegin",engineSection());
+function engineRedraw(){pageRefresh();}
+/* The App's permissions, as the collector serves them (engine.status()
+   always carries `permissions`, configured or not), never a copy in the page:
+   the list grows server-side and this sentence follows. */
+var ENGINE_PERM_WORDS={pull_requests:"pull requests",statuses:"commit statuses"};
+function enginePermsWords(perms){
+  var keys=Object.keys(perms||{});
+  if(!keys.length)return ": as the collector lists them (it did not answer)";
+  var ro=keys.every(function(k){return perms[k]==="read";});
+  return (ro?" (all read-only): ":": ")+keys.map(function(k){
+    var w=ENGINE_PERM_WORDS[k]||k.replace(/_/g," ");
+    return ro?w:w+" ("+perms[k]+")";
+  }).join(", ");
 }
 function enginePost(path,payload){
   return fetch(apiURL(path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})})
@@ -7730,7 +7998,7 @@ function onEngineClick(b){
     var org=(document.getElementById("eng-org")||{}).value||"";
     setStatus("engine: opening GitHub…",false);
     enginePost("/api/engine/manifest",{org:org.trim()}).then(function(r){
-      if(!r.ok){setStatus("engine: "+(r.error||"could not start"),true);return;}
+      if(!r.ok){setStatus("engine: "+(r.error||"could not start"),true);pgSay(b.parentNode,r,"");return;}
       var f=document.createElement("form");f.method="post";f.action=r.action;f.style.display="none";
       var i=document.createElement("input");i.type="hidden";i.name="manifest";i.value=r.manifest;f.appendChild(i);
       document.body.appendChild(f);f.submit();
@@ -7745,19 +8013,21 @@ function onEngineClick(b){
     enginePost("/api/engine/app",{app_id:id,key:key}).then(function(r){
       key=null;
       if(!r.ok){out.textContent=r.error||"refused";setStatus("engine: "+(r.error||"refused"),true);return;}
-      ENGINE=r.engine;engineRedraw();setStatus("engine: App "+(ENGINE.slug||"")+" set",false);
+      ENGINE=r.engine;setStatus("engine: App "+(ENGINE.slug||"")+" set",false);
+      pageRefresh().then(function(){pgSay(document.getElementById("engsec"),{ok:true},"done — App "+(ENGINE.slug||"")+" set");});
     },function(){out.textContent="the floor did not answer — nothing known to be set";});
     return;
   }
   if(what==="remove"){
     if(!confirm("Remove the engine's GitHub App from this host? The tick falls back to the host's own gh login, if it has one."))return;
     enginePost("/api/engine/remove",{}).then(function(r){
-      if(!r.ok){setStatus("engine: "+(r.error||"refused"),true);return;}
-      ENGINE=r.engine;engineRedraw();setStatus("engine: App removed",false);
+      if(!r.ok){setStatus("engine: "+(r.error||"refused"),true);pgSay(b.parentNode,r,"");return;}
+      ENGINE=r.engine;setStatus("engine: App removed",false);
+      pageRefresh().then(function(){pgSay(document.getElementById("engsec"),r,"done — the App is removed");});
     });
   }
 }
-/* ---- the pool, in the same overlay (#780) ---------------------------------- */
+/* ---- the pool, on the Credentials page (#780) ------------------------------ */
 function poolAssigned(box){
   var m=(POOL.members||[]).filter(function(x){return x.box===box;})[0];
   return (m&&m.creds)||[];
@@ -7795,8 +8065,11 @@ function poolEntryRow(e){
     +'<button class="lbtn" data-pool-act="rm"'+((e.members||[]).length?' disabled title="assigned — clear it from every member first"':'')+'>Remove</button>'
     +'<div class="rosst poolverdict"></div></td></tr>';
 }
-function poolSection(members){
-  var agents={};members.forEach(function(m){agents[m.agent]=credsKinds(m,"agent");});
+/* Every agent profile resolved here (#871), never only the roster's: an empty
+   fleet adds its agent's login to the pool before its first member. */
+function poolSection(){
+  var agents={},src=CREDS_OPTS.agents||{};
+  Object.keys(src).sort().forEach(function(a){if((src[a]||[]).length)agents[a]=src[a];});
   POOL.kinds=agents;
   var names=Object.keys(agents);
   return '<div class="regnote">The <b>pool</b>: a credential stored once on the host, assigned to members above, and carried to each box by the system — at hire, when the host tick wakes it, after a reset, and at once to every running member when you rotate. '
@@ -7817,9 +8090,16 @@ function poolSection(members){
     +'<button class="lbtn" data-pool-act="add">Add to the pool</button><div class="rosst poolverdict"></div></td></tr>'
     +'</tbody></table>';
 }
+/* A pool write that took: the page re-read, its verdict at the pool's head. */
+function poolDone(r){
+  return pageRefresh().then(function(){
+    var t=document.getElementById("poollist");
+    pgSay(t?t.parentNode.parentNode:null,r,"done — "+((r.lines&&r.lines.join(" · "))||"saved"));
+  });
+}
 function poolSay(cell,r){
   var out=cell.querySelector(".poolverdict");if(!out)return;
-  out.textContent=(r&&((r.lines&&r.lines.join(" · "))||r.error))||"no answer";
+  out.textContent=(r&&r.ok)?((r.lines&&r.lines.join(" · "))||"done"):"refused — "+replyWhy(r);
   out.classList.toggle("bad",!(r&&r.ok));
 }
 function onPoolClick(b){
@@ -7830,17 +8110,17 @@ function onPoolClick(b){
     if(what==="assign"&&!picked.length){setStatus("pool-assign: pick an entry first",true);return;}
     if(what==="unassign"&&!confirm("Clear "+box+"'s pool assignment? Its box keeps the values it holds until they are set again."))return;
     return act("box:"+box,"pool-"+what,what==="assign"?{box:box,entries:picked}:{box:box})
-      .then(function(r){poolSay(tr,r);if(r&&r.ok)openCreds();});
+      .then(function(r){poolSay(tr,r);if(r&&r.ok)poolDone(r);});
   }
   if(what==="chat"){
     var row=b.closest(".poolchat"),chat=row.querySelector('[data-k="pool-chat"]').value.trim();
     if(!/^-?[0-9]{1,20}$/.test(chat)){setStatus("pool-chat: a Telegram chat id is digits, negative for a group",true);return;}
-    return act("ov:pool","pool-chat",{chat:chat}).then(function(r){poolSay(row,r);if(r&&r.ok)openCreds();});
+    return act("ov:pool","pool-chat",{chat:chat}).then(function(r){poolSay(row,r);if(r&&r.ok)poolDone(r);});
   }
   var inp=tr.querySelector('[data-k="pool-secret"]'),secret=inp?inp.value:"";
   if(what==="rm"){
     if(!confirm("Remove "+tr.dataset.entry+" from the pool? No box loses the value it holds."))return;
-    return act("ov:pool","pool-rm",{entry:tr.dataset.entry}).then(function(r){poolSay(tr,r);if(r&&r.ok)openCreds();});
+    return act("ov:pool","pool-rm",{entry:tr.dataset.entry}).then(function(r){poolSay(tr,r);if(r&&r.ok)poolDone(r);});
   }
   if(!secret.trim()){setStatus("pool-"+what+": paste the value first — nothing set",true);return;}
   /* Cleared BEFORE the request resolves, as a member's set is (#765). */
@@ -7856,7 +8136,7 @@ function onPoolClick(b){
   return act("ov:pool","pool-"+what,body).then(function(r){
     body.secret="";
     poolSay(tr,r);
-    if(r&&r.ok)openCreds();
+    if(r&&r.ok)poolDone(r);
   });
 }
 function onPoolChange(e){
@@ -7872,42 +8152,6 @@ function onPoolChange(e){
     return true;
   }
   return false;
-}
-function closeCreds(){
-  var ov=document.getElementById("credov");if(!ov)return;
-  /* Closing forgets what was typed: a value left in a hidden field is a value
-     the next person at this browser can reveal. */
-  [].forEach.call(ov.querySelectorAll('[data-k="secret"],[data-k="pool-secret"]'),function(i){i.value="";});
-  ov.style.display="none";
-}
-function onCredsChange(e){
-  if(onPoolChange(e))return;
-  var sel=e.target.closest('[data-k="service"]');if(!sel)return;
-  var tr=sel.closest("tr"),m=CREDS_OPTS.members.filter(function(x){return x.box===tr.dataset.box;})[0];
-  if(m)tr.querySelector('[data-k="kind"]').innerHTML=credsKindOptions(m,sel.value);
-}
-function onCredsClick(e){
-  var eb=e.target.closest("[data-eng]");if(eb)return onEngineClick(eb);
-  var pb=e.target.closest("[data-pool-act]");if(pb)return onPoolClick(pb);
-  var b=e.target.closest("[data-cred]");if(!b)return;
-  var tr=b.closest("tr"),box=tr.dataset.box,inp=tr.querySelector('[data-k="secret"]');
-  var svc=tr.querySelector('[data-k="service"]').value,kind=tr.querySelector('[data-k="kind"]').value;
-  var secret=inp.value,out=tr.querySelector(".credverdict");
-  if(!secret.trim()){setStatus("credentials-set: paste the value first — nothing set",true);return;}
-  /* A box another action holds keeps the value in its field: refused here. */
-  if(boxBusy(box)){act("box:"+box,"credentials-set",{});return;}
-  /* Cleared BEFORE the request resolves: whatever the box answers, the value
-     is not on this page any more. */
-  inp.value="";
-  out.textContent="setting…";
-  return act("box:"+box,"credentials-set",{box:box,service:svc,kind:kind,secret:secret}).then(function(r){
-    /* Refused busy before anything was sent (round 11): the value goes back in
-       its field rather than having to be pasted again. */
-    if(r&&r.busy&&!inp.value)inp.value=secret;
-    secret="";
-    out.textContent=(r&&(r.verdict||r.error))||"no answer";
-    out.classList.toggle("bad",!(r&&r.ok));
-  });
 }
 document.getElementById("filters").addEventListener("click",function(e){var b=e.target.closest(".fchip");if(!b)return;var f=b.dataset.f;floorFilter[f]=b.dataset.v;[].forEach.call(this.querySelectorAll('.fchip[data-f="'+f+'"]'),function(x){x.classList.toggle("on",x===b);});});
 /* Pause/Resume is the box's crontab, not its power: the engine stops being
@@ -7964,8 +8208,6 @@ document.addEventListener("keydown",function(e){
   if(e.key!=="Escape")return;
   /* Esc closes the log overlay first — otherwise it dismisses the room behind
      it and leaves the logs floating over the wrong view. */
-  var rv=document.getElementById("regov");
-  if(rv&&rv.style.display==="flex")return closeRegistries();
   var ov=document.getElementById("logov");
   if(ov&&ov.style.display==="flex")return closeLogs();
   if(VIEW==="room")toFloor();
@@ -7979,6 +8221,8 @@ pollFleet();setInterval(pollFleet,POLL_MS);
    never reads this cache — it re-reads on open — so a stale count here costs
    a row that is one poll old, never an edit applied to the wrong list. */
 pollRegistries();setInterval(pollRegistries,POLL_MS);
+/* A page's address (#870) opens that page, now or once the fleet answers. */
+pageRoute();
 
 /* ---- dev hook: the room renderer, addressable one unit at a time ----------
    dev/whiteboard.html lays every agent x room x state out as a single image so
