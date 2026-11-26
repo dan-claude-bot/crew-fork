@@ -122,3 +122,4 @@ JS
 fi
 t "asleep: the members page reads the pool for it" 1 \
   "$(sed -n '/^function renderMembers(){/,/^}/p' "$APP" | grep -c 'api("/api/pool")')"
+t "asleep: the room's current-session card says ASLEEP, not STANDBY" 1 "$(grep -c 'else if(STATE==="asleep")cs+=' "$APP")"

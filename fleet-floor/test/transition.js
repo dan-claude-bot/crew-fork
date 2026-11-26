@@ -131,9 +131,14 @@ const ok = (name, cond, detail = '') => {
   // The running-session timer must be GONE: a counter still ticking up for a
   // box that is off is the most convincing wrong thing the console can show.
   ok('transition: the running-session timer is gone', !after.hasTimer, after.current);
-  ok('transition: it says SILENT', /SILENT/i.test(after.current + ' ' + after.state),
+  /* #875: a hired box taken down cleanly is ASLEEP — 0.1.4's host tick
+     starts a stopped member when its board has work, so this is the calm
+     state, not the SILENT alarm. A box that stops ANSWERING while it should
+     be up is still offline/SILENT (units.py: only a cleanly stopped box the
+     store saw hired is asleep). */
+  ok('transition: it says ASLEEP', /ASLEEP/.test(after.current + ' ' + after.state) && !/SILENT/.test(after.current + ' ' + after.state),
      `state=${after.state} current=${after.current}`);
-  ok('transition: it says WHY', /stopped|unreachable|crew up|paused|cron/i.test(after.current + ' ' + after.vitals),
+  ok('transition: it says WHY', /stopped|unreachable|crew up|paused|cron|host tick wakes/i.test(after.current + ' ' + after.vitals),
      after.current);
   /* The Pause label names the ACTION the click will send, not the box's
      liveness: a powered-off box is not paused, so the click still sends

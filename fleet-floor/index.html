@@ -2569,6 +2569,9 @@ function populateDash(){
   else if(suppressed)cs+='<div class="big" style="color:#f28b54">SUPPRESSED</div><div class="task">'+esc(d.note||"zero-action resume breaker")+'</div>';
   else if(limited)cs+='<div class="big" style="color:#ff5147">LIMITED</div><div class="task">'+esc(d.note||"operating limit")+'</div>';
   else if(work)cs+='<div class="big" id="cur-el">'+fmtDur(Math.floor(Date.now()/1000)-d.cur.start)+'</div><div class="task">'+esc(d.kind)+' · '+esc(d.cur.key)+'</div><div class="pbar"><i></i></div>';
+  /* ASLEEP (#875): stopped, and the host tick starts it on work — said calm,
+     with the collector's note, never STANDBY (it is not running) nor SILENT. */
+  else if(STATE==="asleep")cs+='<div class="big" style="color:#7f97b0">ASLEEP</div><div class="task">'+esc(LIVE&&d.note?d.note:"the host tick wakes it when its board has work")+'</div>';
   else cs+='<div class="big" style="color:#5fce9b">STANDBY</div><div class="task">idle · awaiting next tick</div>';
   document.getElementById("w-current").innerHTML=cs+'</div>';
   var mk=d.kind==="build"?"Build":d.kind==="review"?"Review":"Triage";

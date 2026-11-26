@@ -1462,9 +1462,15 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
          stays in its field. */
       const wblk = '#pagebody .regblk[data-kind="work"] ';
       const bogus = 'crew-floor-walk-nobody/never-874';
+      const ceBefore = consoleErrors.length;
       await page.fill(`${wblk}[data-k="repo-new"]`, bogus);
       await page.click(`${wblk}[data-pg="repo-add"]`);
       await settle(async () => (await page.locator(`${wblk}.pgverdict.bad`).count()) > 0, 30000);
+      /* The refusal answers 400, and Chromium logs every 4xx resource as a
+         console error. That one 400 IS the answer under test, not a page
+         fault: exactly one is excused, and anything else still counts. */
+      const refusal = consoleErrors.slice(ceBefore).findIndex((m) => /status of 400/.test(m));
+      if (refusal >= 0) consoleErrors.splice(ceBefore + refusal, 1);
       const verdict = ((await page.locator(`${wblk}.pgverdict`).first().textContent().catch(() => '')) || '').trim();
       eq('registry: a refused Add is said beside it, in red (#874)', 1,
          await page.locator(`${wblk}.pgverdict.bad`).count());
