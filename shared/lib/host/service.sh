@@ -170,6 +170,15 @@ service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] 
   # neither root under sudo nor the service can run.
   PATH="$SERVICE_UNIT_PATH" command -v box >/dev/null 2>&1 ||
     die "crew service setup needs box installed system-wide, on the PATH its units run with ($SERVICE_UNIT_PATH) — box's installer run as root puts it in /usr/local/bin; a per-user box under a home directory is one the service account cannot run"
+  # The engine reads GitHub from the host, as the account (#864): gh with its
+  # App's token, python3 to mint it, openssl to sign it. A host without them
+  # would run a floor whose pool refuses every GitHub token and a tick that
+  # reads no board, each blaming the wrong thing.
+  local tool
+  for tool in gh python3 openssl; do
+    PATH="$SERVICE_UNIT_PATH" command -v "$tool" >/dev/null 2>&1 ||
+      die "crew service setup needs '$tool' installed system-wide, on the PATH its units run with ($SERVICE_UNIT_PATH): the engine reads GitHub with gh, minting its App's token with python3 and openssl — install it from the distribution (apt-get install $tool) and re-run"
+  done
   need_box
   [ "$BOX_ENTRY_MODE_CACHED" = user ] ||
     die "crew service setup needs box 0.11.0 or later (its service grants, box#281); this host's box is older"

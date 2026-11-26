@@ -5321,6 +5321,8 @@ creds_add() {
       [ -z "$agent" ] || usage_error "usage: crew creds add gh <name>"
       kind=token
       secret="$(creds_read_secret "$id: a GitHub personal access token" token)"
+      command -v gh >/dev/null 2>&1 \
+        || { secret=""; die "gh is not installed on this host for the $(id -un) account, so the token for $id could not be checked — install gh system-wide (apt-get install gh); nothing stored"; }
       login="$(creds_gh_login "$secret")" || login="" # Decision-path empty fallback: a token GitHub refuses has no login, and is refused just below
       [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
         || { secret=""; die "GitHub refused the token for $id — nothing stored"; } ;;
@@ -5357,6 +5359,8 @@ creds_rotate() {
   secret="$(creds_read_secret "$id: the new value" "$kind")"
   login=""
   if [ "${id%%:*}" = gh ]; then
+    command -v gh >/dev/null 2>&1 \
+      || { secret=""; die "gh is not installed on this host for the $(id -un) account, so the new token for $id could not be checked — install gh system-wide (apt-get install gh); the old value stands"; }
     login="$(creds_gh_login "$secret")" || login="" # Decision-path empty fallback: a token GitHub refuses has no login, and is refused just below
     [[ "$login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$ ]] \
       || { secret=""; die "GitHub refused the new token for $id — the old value stands"; }

@@ -82,6 +82,11 @@ OUT="$(CREW_SERVICE_ASSUME_ROOT=1 CREW_SERVICE_UNIT_PATH=/nonexistent bash "$CLI
 t setup-refuses-a-box-off-the-units-path 1 "$RC"
 t setup-...naming-a-system-wide-install 1 "$(grep -c 'needs box installed system-wide, on the PATH its units run with (/nonexistent)' <<<"$OUT")"
 t setup-...before-any-account 0 "$(calls '^useradd\|^groupadd')"
+# The engine's tools on the units' PATH (#864): $TMP/bin holds box and no gh.
+OUT="$(CREW_SERVICE_ASSUME_ROOT=1 CREW_SERVICE_UNIT_PATH="$TMP/bin" bash "$CLI" service setup 2>&1)"; RC=$?
+t setup-refuses-a-host-without-gh 1 "$RC"
+t setup-names-gh-and-why 1 "$(grep -c "needs 'gh' installed system-wide, on the PATH its units run with ($TMP/bin): the engine reads GitHub with gh" <<<"$OUT")"
+t setup-without-gh-makes-nothing 0 "$(calls '^useradd\|^groupadd')"
 OUT="$(CREW_SERVICE_ASSUME_ROOT=1 SV_BOX=0.10.0 bash "$CLI" service setup 2>&1)"; RC=$?
 t setup-refuses-box-below-0.11 1 "$RC"
 t setup-names-the-grant-it-needs 1 "$(grep -c 'needs box 0.11.0 or later (its service grants' <<<"$OUT")"
