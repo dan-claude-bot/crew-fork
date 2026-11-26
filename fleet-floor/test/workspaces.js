@@ -95,7 +95,9 @@ const stubLines = () => (fs.existsSync(STUB_LOG) ? fs.readFileSync(STUB_LOG, 'ut
   ok('plan: confirming is a button on the plan', /Run crew up ws-two/.test(await a.textContent('#jobacts')));
 
   // The confirmed run: a spinner and the step while it runs, in every tab.
-  fs.writeFileSync(SLEEP_FILE, '4');
+  // HELD until both tabs have seen it: a job of fixed length ended before the
+  // other tab's poll on a slow runner, and the walk read that as no job bar.
+  fs.writeFileSync(SLEEP_FILE, 'hold');
   await a.click('[data-jobconfirm]');
   await a.waitForFunction(() => document.querySelector('#jobbar.run .spin'), null, { timeout: 15000 });
   ok('job bar: a running job shows a spinner', true);
@@ -104,6 +106,7 @@ const stubLines = () => (fs.existsSync(STUB_LOG) ? fs.readFileSync(STUB_LOG, 'ut
   ok('job bar: another fleet\'s tab shows the host\'s running job', /fleet second/.test(await b.textContent('#jobbar')));
   ok('job bar: every job button there is held', await b.$eval('#g-up', (e) => e.disabled && e.classList.contains('jheld')));
   ok('job panel: a spinner while it runs', !!(await a.$('#jobstate .spin')));
+  fs.writeFileSync(SLEEP_FILE, '1');            // release it: one step, then done
   await a.waitForFunction(() => document.querySelector('#jobbar.ok'), null, { timeout: 30000 });
   ok('job bar: a finished job shows its exit status', /exit 0/.test(await a.textContent('#jobbar')));
   ok('job panel: the output is the run\'s', /stub: crew up ws-two$/m.test(await a.textContent('#jobout')));

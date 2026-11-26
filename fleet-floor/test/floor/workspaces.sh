@@ -28,7 +28,10 @@ cat >"$WS_CLI" <<EOF
 if [ "\${1:-}" = init ]; then exec bash "$FLOOR/../cli/crew" "\$@"; fi
 printf '%s|%s|%s\n' "\$*" "\${CREW_CONFIG_DIR:-}" "\${CREW_FLEET_WALK:-}" >>"$WS_LOG"
 echo "stub: crew \$*"
-for i in \$(seq 1 "\$(cat "$WS/sleep" 2>/dev/null || echo 0)"); do echo "stub: step \$i"; sleep 1; done
+# "hold" keeps the job running until the walk releases it (writes a number):
+# a fixed length raced the other tab's poll on a slow runner (#877's CI).
+n=0; while [ "\$(cat "$WS/sleep" 2>/dev/null)" = hold ] && [ "\$n" -lt 480 ]; do echo "stub: held"; sleep 0.25; n=\$((n + 1)); done
+for i in \$(seq 1 "\$(cat "$WS/sleep" 2>/dev/null || echo 0)" 2>/dev/null); do echo "stub: step \$i"; sleep 1; done
 case "\$*" in *--dry-run*) echo "ws-two: WOULD create (claude/triage)" ;; esac
 exit "\$(cat "$WS/rc" 2>/dev/null || echo 0)"
 EOF
