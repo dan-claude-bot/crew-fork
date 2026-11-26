@@ -424,6 +424,7 @@ t store-a-released-pull-lands-again 0 "$(grep -c 'memory pending' <<<"$HT_HELD_O
 t store-a-released-pull-is-the-truth-again old-login "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" state --box alpha --name .identity)"
 t store-a-hold-without-a-store-is-3 3 "$(CREW_CONFIG_DIR="$CONF" CREW_FLOOR_STORE="$TMP/no-store/fleet.sqlite" python3 "$ROOT/fleet-floor/server/floor/store.py" memory-hold --box alpha 2>/dev/null; echo $?)"
 t store-a-hold-never-creates-a-store 0 "$([ -e "$TMP/no-store/fleet.sqlite" ] && echo 1 || echo 0)"
+# shellcheck disable=SC2016  # the literal text of probe.sh's list
 t probe-ships-the-marker 1 "$(grep -cF '/.memory-pending "$DUTY_DIR"/.mentions-since; do' "$ROOT/fleet-floor/server/probe.sh")"
 t store-peaks-without-sessions-is-1 1 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" peaks --box alpha >/dev/null 2>&1; echo $?)"
 

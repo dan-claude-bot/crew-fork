@@ -332,6 +332,18 @@ t triage887-the-backlog-is-not-marked-read 0 "$(trc 'notifications/threads/n3')"
 t triage887-handled-are-marked-read 2 "$(grep -c 'api -X PATCH notifications/threads/n[89]' "$TR_CALLS")"
 t triage887-the-tick-says-it 1 "$(grep -c 'mentions: 2 addressed to me, 1 not (marked read), 1 backlog from before 2026-01-01T00:00:00Z' "$TR_LOG")"
 t triage887-comments-read-since-last-read 1 "$(trc 'issues/7/comments?since=2026-08-30T00:00:00Z')"
+# A team mention (`@org/team` never names the member): anything new by
+# someone else since the thread was read counts.
+tr887_team="$(jq -nc --arg u "$TR887_URL" '[
+  {id:"nT",reason:"team_mention",updated_at:"2026-09-02T10:00:00Z",last_read_at:null,
+   repository:{full_name:"o/r"},subject:{url:($u+"/7"),type:"Issue"}}]')"
+printf '%s' "$tr887_team" >"$TRF/notif.json"
+tr_run 0
+if grep -q '"thread":"nT"' "$TR_PROMPT.mention" 2>/dev/null; then r1=addressed; else r1=DROPPED; fi
+t triage887-a-team-mention-counts-any-new-comment addressed "$r1"
+printf '%s' "$tr887_notif" >"$TRF/notif.json"
+rm -f "$TR_PROMPT.mention"
+
 # A thread that cannot be read is kept, as before #887.
 : >"$TRF/thread.8.fail"
 tr_run 0

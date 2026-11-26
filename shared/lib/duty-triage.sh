@@ -359,13 +359,14 @@ mentions_since() {
   printf '%s\n' "$v"
 }
 
-# mention_addressed REPO SUBJECT_URL SINCE — 0 when the thread holds, since
-# SINCE, an item by someone else that @-mentions ME, or any item by someone
-# else in a thread ME opened; 1 when it does not; 2 when it cannot be read
-# (the caller then keeps it, as before #887: a dropped mention is worse than
-# an extra one).
+# mention_addressed REPO SUBJECT_URL SINCE [ANY] — 0 when the thread holds,
+# since SINCE, an item by someone else that @-mentions ME, or any item by
+# someone else in a thread ME opened; 1 when it does not; 2 when it cannot be
+# read (the caller then keeps it, as before #887: a dropped mention is worse
+# than an extra one). ANY=1 (a team mention: `@org/team` never names ME)
+# counts any item by someone else since SINCE.
 mention_addressed() {
-  local repo="$1" url="$2" since="$3" kind num thread items author
+  local repo="$1" url="$2" since="$3" any="${4:-0}" kind num thread items author
   if [[ "$url" =~ /repos/([^/]+/[^/]+)/(issues|pulls)/([0-9]+)$ ]]; then
     repo="${BASH_REMATCH[1]}"; kind="${BASH_REMATCH[2]}"; num="${BASH_REMATCH[3]}"
   else
@@ -379,13 +380,14 @@ $(gh api --paginate "repos/$repo/pulls/$num/comments?since=$since&per_page=100" 
 $(gh api --paginate "repos/$repo/pulls/$num/reviews?per_page=100" 2>/dev/null || echo '[]')"
   fi
   author="$(jq -r '.user.login // ""' <<<"$thread" 2>/dev/null)"
-  printf '%s\n%s\n' "[$thread]" "$items" | jq -e -s --arg me "$ME" --arg since "$since" --arg author "$author" '
+  printf '%s\n%s\n' "[$thread]" "$items" | jq -e -s --arg me "$ME" --arg since "$since" --arg author "$author" --arg any "$any" '
     ($me | ascii_downcase) as $m
     | [ add[]?
         | select(((.created_at // .submitted_at // "") > $since)
                  and ((.user.login // "" | ascii_downcase) != $m)) ]
     | any(.[];
-          ((.body // "") | ascii_downcase | test("(^|[^a-z0-9-])@" + ($m | gsub("[-]"; "\\-")) + "($|[^a-z0-9-])"))
+          ($any == "1")
+          or ((.body // "") | ascii_downcase | test("(^|[^a-z0-9-])@" + ($m | gsub("[-]"; "\\-")) + "($|[^a-z0-9-])"))
           or (($author | ascii_downcase) == $m))
   ' >/dev/null 2>&1 && return 0
   return 1
@@ -442,12 +444,13 @@ duty_triage() {
   addressed='[]'
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    local t_sub t_read t_since t_type t_id rc
+    local t_sub t_read t_since t_type t_id t_any rc
     t_id="$(jq -r .thread <<<"$row")"; t_sub="$(jq -r .subject <<<"$row")"
+    t_any=0; [ "$(jq -r .reason <<<"$row")" != team_mention ] || t_any=1
     t_read="$(jq -r .read <<<"$row")"; t_type="$(jq -r .type <<<"$row")"
     t_since="$since"; [ -z "$t_read" ] || ! [[ "$t_read" > "$t_since" ]] || t_since="$t_read"
     if [ "$t_type" = Discussion ]; then rc=0
-    else rc=0; mention_addressed "" "$t_sub" "$t_since" || rc=$?; fi
+    else rc=0; mention_addressed "" "$t_sub" "$t_since" "$t_any" || rc=$?; fi
     if [ "$rc" -eq 1 ]; then noise_ids+=("$t_id")
     else addressed="$(jq -c --argjson r "$row" '. + [$r]' <<<"$addressed")"; fi
   done < <(jq -c '.[]' <<<"$all_mentions" 2>/dev/null)
