@@ -73,3 +73,28 @@ t "pages: the pool and the engine say theirs inline too" "1 1" \
   "$(grep -c 'out.textContent=(r&&r.ok)?((r.lines&&r.lines.join(" · "))||"done"):"refused — "+replyWhy(r);' "$APP") $(grep -c 'pgSay(b.parentNode,r,"");return;}' "$APP" | awk '{print ($1>=2)}')"
 t "pages: cmd() hands a failed request's reason back to the caller" 1 \
   "$(grep -c 'return {ok:false,failed:true,late:late,' "$APP")"
+
+# #875: asleep is its own case in the renderer — calm, never SIGNAL LOST.
+t "asleep: the HUD vocabulary has it, before the offline split" 1 \
+  "$(grep -c 'if(u.state==="asleep")return "asleep";' "$APP")"
+t "asleep: it is counted, and a chip filters it" "1 1" \
+  "$(grep -c 'var c={working:0,idle:0,asleep:0,' "$APP") $(grep -c 'data-v="asleep">Asleep<' "$FLOOR/src/body.html")"
+t "asleep: the tile has its own case: dimmed, ASLEEP, no SIGNAL LOST" "1 1" \
+  "$(grep -c 'var asleep=unit.state==="asleep";' "$APP") $(grep -c 'off?"— BPM":asleep?"ASLEEP":' "$APP")"
+t "asleep: SIGNAL LOST stays offline's alone" 1 \
+  "$(awk '/^function drawCamCell/{f=1} f&&/if\(off\)\{/{print 1; exit}' "$APP")"
+t "asleep: the room veils it calm and says why" "1 1" \
+  "$(grep -c 'if(STATE==="asleep")asleepVeil();' "$APP") $(grep -c '^function asleepVeil(){' "$APP")"
+t "asleep: the room's card says ASLEEP, not SILENT" 1 \
+  "$(grep -c ',sl=asleep?"ASLEEP":stw||(off?"SILENT":' "$APP")"
+t "asleep: member cards draw it calm" 1 "$(grep -c '^.mst.s-asleep{' "$FLOOR/src/style.css")"
+
+# The engine's permissions sentence is the collector's list, not a copy.
+t "engine: the existing-App permissions come from /api/engine, not the page" "0 1" \
+  "$(grep -c 'permissions: metadata, issues' "$APP") $(grep -c "permissions'+enginePermsWords(e.permissions)+'" "$APP")"
+if command -v node >/dev/null 2>&1; then
+  t "engine: ...said in words, all read-only" \
+    "permissions (all read-only): metadata, contents, actions, issues, pull requests, checks, commit statuses, discussions" \
+    "$(node -e "$(sed -n '/^var ENGINE_PERM_WORDS=/p;/^function enginePermsWords(/,/^}/p' "$APP")
+console.log('permissions'+enginePermsWords({metadata:'read',contents:'read',actions:'read',issues:'read',pull_requests:'read',checks:'read',statuses:'read',discussions:'read'}));")"
+fi

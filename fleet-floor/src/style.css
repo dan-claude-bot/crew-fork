@@ -195,6 +195,8 @@ input.woff{color:#5a6a80}
 .mst.s-idle{color:#5fd6ff;background:#5fd6ff1f}
 .mst.s-offline,.mst.s-stopped{color:#ff8a7c;background:#ff8a7c1f}
 .mst.s-paused{color:#f7bd4e;background:#f7bd4e1f}
+/* asleep (#875): the host tick stopped it and wakes it on work — calm, never an alarm */
+.mst.s-asleep{color:#7f97b0;background:#7f97b014}
 .mcred{font-size:10px;color:#ff8a7c}
 .mcred.ok{color:#5fce9b}
 .mform .mfrow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}

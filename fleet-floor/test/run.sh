@@ -174,6 +174,13 @@ else
   fail "fleet-wide actions run concurrently in stable order" "see output above"
 fi
 
+# #875: a member the host tick stopped is asleep, not a lost signal.
+if python3 "$HERE/asleep.py"; then
+  ok "units: a stopped member the store saw hired is asleep; paused stays offline (#875)"
+else
+  fail "units: a stopped member the store saw hired is asleep; paused stays offline (#875)" "see output above"
+fi
+
 # #847: a job that reads finished has released its slot, so the next one starts.
 if python3 "$HERE/job-slot.py"; then
   ok "jobs: a job that reads finished has released its slot (#847)"

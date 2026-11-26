@@ -363,7 +363,7 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
   const stateChipWords = await page.locator('.fchip[data-f="state"]').evaluateAll((chips) =>
     chips.map((c) => c.textContent.trim()));
   eq('filter: state chips mirror the tile vocabulary',
-     JSON.stringify(['All', 'Working', 'Idle', 'Suppressed', 'Limited', 'Disarmed', 'Silent']),
+     JSON.stringify(['All', 'Working', 'Idle', 'Asleep', 'Suppressed', 'Limited', 'Disarmed', 'Silent']),
      JSON.stringify(stateChipWords));
   const stateChipBounds = await page.locator('.fchip[data-f="state"]').evaluateAll((chips) =>
     chips.map((chip) => {
@@ -375,7 +375,7 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
      stateChipBounds.every((rect) => rect.left >= 0 && rect.top >= 0
        && rect.right <= rect.width && rect.bottom <= rect.height),
      JSON.stringify(stateChipBounds));
-  for (const state of ['all', 'working', 'idle', 'suppressed', 'limited', 'disarmed', 'silent']) {
+  for (const state of ['all', 'working', 'idle', 'asleep', 'suppressed', 'limited', 'disarmed', 'silent']) {
     await stateMatches(state);
   }
   await stateMatches('all');

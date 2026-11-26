@@ -201,6 +201,8 @@ input.woff{color:#5a6a80}
 .mst.s-idle{color:#5fd6ff;background:#5fd6ff1f}
 .mst.s-offline,.mst.s-stopped{color:#ff8a7c;background:#ff8a7c1f}
 .mst.s-paused{color:#f7bd4e;background:#f7bd4e1f}
+/* asleep (#875): the host tick stopped it and wakes it on work — calm, never an alarm */
+.mst.s-asleep{color:#7f97b0;background:#7f97b014}
 .mcred{font-size:10px;color:#ff8a7c}
 .mcred.ok{color:#5fce9b}
 .mform .mfrow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
@@ -367,6 +369,7 @@ body { margin: 0; background: #05080f; color: #cfe0f2; font-family: var(--mono);
       <button class="fchip on" data-f="state" data-v="all">All</button>
       <button class="fchip" data-f="state" data-v="working">Working</button>
       <button class="fchip" data-f="state" data-v="idle">Idle</button>
+      <button class="fchip" data-f="state" data-v="asleep">Asleep</button>
       <button class="fchip" data-f="state" data-v="suppressed">Suppressed</button>
       <button class="fchip" data-f="state" data-v="limited">Limited</button>
       <button class="fchip" data-f="state" data-v="disarmed">Disarmed</button>
@@ -1451,6 +1454,10 @@ function camHeadroomRows(v){
    the video is the whole card, and the facts sit on top of it. */
 function drawCamCell(t,x,y,w,h,unit){
   var off=unit.state==="offline", work=unit.state==="working", suppressed=unit.state==="suppressed";
+  /* ASLEEP (#875) is not offline: the host tick stopped it on purpose and wakes
+     it on work. No SIGNAL LOST, no red flatline, no alarm ring — a dimmed feed,
+     a slow quiet trace and the word. */
+  var asleep=unit.state==="asleep";
   var box=UNITID(unit), d=dataOf(box,unit.room), vc=VENDORCOL(unit.agent);
   var bp=strPhase(box);
   X.save();X.textBaseline="alphabetic";X.textAlign="left";
@@ -1470,8 +1477,8 @@ function drawCamCell(t,x,y,w,h,unit){
        subject moves inside a mounted camera's frame, which is the webcam
        grammar the cadence never delivered. Dead is still; reduced is still. */
     var fb=CAMFRAME[unit.agent]||CAMFRAME.claude, bsc=(w-2)/fb.w;
-    var by=(off||reduced)?0:fb.ba*bsc*Math.sin(t*fb.bf+bp);
-    var bx3=(off||reduced||!fb.bx)?0:fb.bx*bsc*Math.sin(t*(fb.bxf||1.3)+bp*1.7);
+    var by=(off||reduced)?0:fb.ba*bsc*Math.sin(t*fb.bf*(asleep?0.35:1)+bp)*(asleep?0.5:1);
+    var bx3=(off||asleep||reduced||!fb.bx)?0:fb.bx*bsc*Math.sin(t*(fb.bxf||1.3)+bp*1.7);
     X.drawImage(still.cv,x+1+bx3,y+1+by,w-2,h-2);
   }
   /* Live sensor grain — the one per-frame texture, and the base coat of the
@@ -1638,11 +1645,20 @@ function drawCamCell(t,x,y,w,h,unit){
     }
   }
   // heartbeat, bottom-right: rate follows state, flatlines with the box
-  var hr=off?0:work?(1.35+0.25*Math.sin(bp)):0.72;
+  var hr=off?0:asleep?0.22:work?(1.35+0.25*Math.sin(bp)):0.72;
   var hw=Math.min(140,w*0.32);
+  if(asleep){
+    X.fillStyle="rgba(4,8,14,0.46)";X.fillRect(x+1,y+1,w-2,h-2);
+    X.font="700 11px ui-monospace,monospace";X.textAlign="center";
+    var zw=X.measureText("ASLEEP — WAKES ON WORK").width;
+    X.fillStyle="rgba(6,10,18,0.70)";rr(X,x+(w-zw)/2-10,y+h*0.5-11,zw+20,22,4);X.fill();
+    X.fillStyle="rgba(150,175,205,0.85)";
+    X.fillText("ASLEEP — WAKES ON WORK",x+w/2,y+h*0.5);
+    X.textAlign="left";
+  }
   drawEKG(x+w-pad-6-hw,y+h-pad-26,hw,24,t+bp,hr,
-          off?"rgba(255,81,71,0.85)":work?"rgba(120,225,255,0.9)":"rgba(95,206,155,0.8)",
-          off?"— BPM":Math.round(hr*60+2*Math.sin(t*0.7+bp))+" BPM");
+          off?"rgba(255,81,71,0.85)":asleep?"rgba(127,151,176,0.55)":work?"rgba(120,225,255,0.9)":"rgba(95,206,155,0.8)",
+          off?"— BPM":asleep?"ASLEEP":Math.round(hr*60+2*Math.sin(t*0.7+bp))+" BPM");
   if(off){
     X.font="700 11px ui-monospace,monospace";X.textAlign="center";
     var slw=X.measureText("SIGNAL LOST — RECONNECTING").width;
@@ -1823,6 +1839,9 @@ function fleetStateData(u,d){
      over-spending it cost — the word an operator learns not to trust. */
   if(u.state==="working")return "working";
   if(u.state==="suppressed")return "suppressed";
+  /* Asleep (#875): the host tick stopped an idle member and starts it when its
+     board has work — 0.1.4's "the box sleeps". Its own word, never SILENT. */
+  if(u.state==="asleep")return "asleep";
   if(u.state==="offline")return stoppedWord(d)?"disarmed":"silent";
   /* Past the dispatch, this is the `idle` cell `applyFleet` normalised a
      working unit with no current-session object into — the only path either
@@ -1849,7 +1868,7 @@ function matchedFloorUnits(){return ROSTER.filter(matchesFloorFilter);}
    that disagreed about what SILENT means would be worse than one that was
    wrong. */
 function fleetCounts(){
-  var c={working:0,idle:0,suppressed:0,limited:0,disarmed:0,silent:0};
+  var c={working:0,idle:0,asleep:0,suppressed:0,limited:0,disarmed:0,silent:0};
   ROSTER.forEach(function(u){c[fleetState(u)]++;});
   return c;
 }
@@ -1860,6 +1879,7 @@ function stageCounts(){
   var c=fleetCounts();
   var stat=[[c.silent+" SILENT","#ff5147"],[c.idle+" IDLE","#5fce9b"],[c.working+" WORKING","#f7bd4e"]];
   if(c.suppressed)stat.splice(1,0,[c.suppressed+" SUPPRESSED","#f28b54"]);
+  if(c.asleep)stat.splice(2,0,[c.asleep+" ASLEEP","#7f97b0"]);
   if(c.limited)stat.splice(1,0,[c.limited+" LIMITED","#ff5147"]);
   /* Only when non-zero, on the ALERT counter's rule below: a permanent
      "0 DISARMED" is furniture. SILENT stays unconditional either way — an
@@ -2548,7 +2568,7 @@ function buildTiles(){var ct=fleetCounts(),q=0;ROSTER.forEach(function(u){q+=dat
     hidden+(hidden===1?" declared box has":" declared boxes have")
     +" no console: not hired — crew hire <box>"):"";
   var limited=ct.limited?tl(ct.limited,"limited","#ff5147",true):"";
-  var el=document.getElementById("tiles");if(el)el.innerHTML=tl(declared,"units","#c7d4e4")+hire+tl(ct.working,"working","#f7bd4e")+tl(ct.idle,"idle","#5fce9b")+tl(ct.suppressed,"suppressed","#f28b54",ct.suppressed>0)+limited+tl(ct.disarmed,"disarmed","#8aa0b8")+tl(ct.silent,"silent","#ff5147",ct.silent>0)+tl(q,"queued","#5fd6ff");}
+  var el=document.getElementById("tiles");if(el)el.innerHTML=tl(declared,"units","#c7d4e4")+hire+tl(ct.working,"working","#f7bd4e")+tl(ct.idle,"idle","#5fce9b")+(ct.asleep?tl(ct.asleep,"asleep","#7f97b0"):"")+tl(ct.suppressed,"suppressed","#f28b54",ct.suppressed>0)+limited+tl(ct.disarmed,"disarmed","#8aa0b8")+tl(ct.silent,"silent","#ff5147",ct.silent>0)+tl(q,"queued","#5fd6ff");}
 function populateDash(){
   if(VIEW!=="room")return;
   /* The art-preview toggles can set any STATE; live data may disagree. Only
@@ -2559,7 +2579,9 @@ function populateDash(){
      asks this first; `off` still decides the shape of the panel, this decides
      what it is allowed to shout (#203). */
   var stw=off?stoppedWord(d):"";
-  var sc=stw?"#8aa0b8":off?"#ff5147":suppressed?"#f28b54":limited?"#ff5147":work?"#f7bd4e":"#5fce9b",sl=stw||(off?"SILENT":suppressed?"SUPPRESSED":limited?"LIMITED":work?(d.kind==="build"?"BUILDING":d.kind==="review"?"REVIEWING":"DISPATCHING"):"STANDBY");
+  /* ASLEEP (#875): the host tick's own stop, said calm — never SILENT. */
+  var asleep=STATE==="asleep";
+  var sc=asleep?"#7f97b0":stw?"#8aa0b8":off?"#ff5147":suppressed?"#f28b54":limited?"#ff5147":work?"#f7bd4e":"#5fce9b",sl=asleep?"ASLEEP":stw||(off?"SILENT":suppressed?"SUPPRESSED":limited?"LIMITED":work?(d.kind==="build"?"BUILDING":d.kind==="review"?"REVIEWING":"DISPATCHING"):"STANDBY");
   document.getElementById("w-id").innerHTML='<div class="idc"><div class="av" style="background:'+hexA(vc,0.16)+';box-shadow:inset 0 0 0 1px '+hexA(vc,0.5)+';color:'+vc+'">'+AGENT[0].toUpperCase()+'</div><div><div class="nm">'+id+'</div><div class="rl">'+AGENT+' · '+ROOM+'</div><span class="pill" style="color:'+sc+';background:'+hexA(sc,0.14)+';box-shadow:inset 0 0 0 1px '+hexA(sc,0.4)+'">● '+sl+'</span></div></div><div class="spark" title="24h activity">'+(off?"":d.spark.map(function(v,i){return '<span style="height:'+Math.round(v*100)+'%;background:'+hexA(vc,i>=d.spark.length-4?0.95:0.42)+'"></span>';}).join(''))+'</div>';
   /* In LIVE mode every value here is what the box reported this poll; the
      DEMO strings it replaces were the placeholders #38 was filed about. */
@@ -2570,7 +2592,7 @@ function populateDash(){
        half-right here and disarmed was not started: this vital named the
        operator's pause and then fell through to SILENT for a box with no cron
        line at all. */
-    vCron=stw||((d.cron.age===null||d.cron.age===undefined)?"no ticks yet":(d.cron.ok?fmtDur(d.cron.age)+" ago":"SILENT · "+fmtDur(d.cron.age)));
+    vCron=asleep?"ASLEEP · wakes on work":stw||((d.cron.age===null||d.cron.age===undefined)?"no ticks yet":(d.cron.ok?fmtDur(d.cron.age)+" ago":"SILENT · "+fmtDur(d.cron.age)));
     if(d.note&&!d.engine)vBox=esc(d.note);
   }
   document.getElementById("w-vitals").innerHTML='<div class="wt"><span class="dot"></span>VITALS</div><div class="kv">'
@@ -7103,7 +7125,17 @@ var lastT=0;
    not once a cell renders rooms: the map's tiles would queue behind the hidden
    view's. FLOORDEV.pause stops the painting, not the page. */
 var devPaused=false;
-function frame(ms){var t=ms/1000,dt=Math.min(0.05,(ms-lastT)/1000)||0.016;lastT=ms;if(!devPaused){if(VIEW==="floor"){drawFloor(t);}else{drawTarget(t,dt);blit();}}requestAnimationFrame(frame);}
+function frame(ms){var t=ms/1000,dt=Math.min(0.05,(ms-lastT)/1000)||0.016;lastT=ms;if(!devPaused){if(VIEW==="floor"){drawFloor(t);}else{drawTarget(t,dt);blit();if(STATE==="asleep")asleepVeil();}}requestAnimationFrame(frame);}
+/* ASLEEP (#875) in the room: the art draws the unit at rest (it is neither
+   working nor lost), and this dims the cell and says why — the calm reading of
+   a box the host tick stopped and will wake on work. Never SIGNAL LOST. */
+function asleepVeil(){
+  X.save();X.fillStyle="rgba(4,8,14,0.42)";X.fillRect(dstX,dstY,dstW,dstH);
+  X.font="700 12px ui-monospace,monospace";X.textAlign="center";
+  X.fillStyle="rgba(150,175,205,0.85)";
+  X.fillText("ASLEEP — THE HOST TICK WAKES IT WHEN ITS BOARD HAS WORK",dstX+dstW/2,dstY+dstH*0.14);
+  X.restore();
+}
 
 function refreshChrome(){
   document.getElementById("modelabel").textContent=STATE.toUpperCase();
@@ -7914,13 +7946,26 @@ function engineSection(){
     +'<div class="regnote"><b>Create one</b> — GitHub asks you to confirm, then sends you back here. '
     +'Owner: <input class="rosin" id="eng-org" placeholder="your account — or an organization name" spellcheck="false" style="width:16em"> '
     +'<button class="lbtn" data-eng="create">Create GitHub App</button>'
-    +'<br><b>Or use an existing App</b> — permissions: metadata, issues, pull requests, checks, commit statuses and discussions, read-only. '
+    +'<br><b>Or use an existing App</b> — permissions'+enginePermsWords(e.permissions)+'. '
     +'App ID <input class="rosin" id="eng-id" inputmode="numeric" style="width:7em"> '
     +'private key <textarea class="rosin" id="eng-key" rows="2" spellcheck="false" autocomplete="off" placeholder="paste the .pem — never shown again" style="width:18em;vertical-align:middle"></textarea> '
     +'<button class="lbtn" data-eng="paste">Use it</button><div class="rosst" id="eng-verdict"></div></div>';
   return h;
 }
 function engineRedraw(){pageRefresh();}
+/* The App's permissions, as the collector serves them (engine.status()
+   always carries `permissions`, configured or not), never a copy in the page:
+   the list grows server-side and this sentence follows. */
+var ENGINE_PERM_WORDS={pull_requests:"pull requests",statuses:"commit statuses"};
+function enginePermsWords(perms){
+  var keys=Object.keys(perms||{});
+  if(!keys.length)return ": as the collector lists them (it did not answer)";
+  var ro=keys.every(function(k){return perms[k]==="read";});
+  return (ro?" (all read-only): ":": ")+keys.map(function(k){
+    var w=ENGINE_PERM_WORDS[k]||k.replace(/_/g," ");
+    return ro?w:w+" ("+perms[k]+")";
+  }).join(", ");
+}
 function enginePost(path,payload){
   return fetch(apiURL(path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})})
     .then(function(r){return r.json().catch(function(){return {ok:false,error:"HTTP "+r.status};});});
