@@ -37,6 +37,9 @@ cp -r "$SHARED/prompts" "$TRD/prompts"
 # cannot silently supply on its behalf.
 cp "$SHARED/conf/fleet.defaults.conf" "$TRD/conf/"
 printf 'o/r\n' >"$TRD/repos.txt"
+# The mention cue's starting point (#887): these fixtures' threads are from
+# 2026-08, so the member started before them.
+printf '2026-01-01T00:00:00Z\n' >"$TRD/.mentions-since"
 TR_CALLS="$TMP/tr-calls.log"; TR_PHASE="$TMP/tr-phase"
 TR_LOG="$TMP/tr-log.txt"; TR_PROMPT="$TMP/tr-prompt"; TR_CHECKOUT="$TMP/tr-checkout"
 
@@ -79,6 +82,16 @@ case "$*" in
   *"--state all"*)          cat "$TR_FIX/numstates.json" ;;
   *"number,body,labels,updatedAt"*) cat "$TR_FIX/board.$p.json" ;;
   *"issue list"*)           cat "$TR_FIX/stray.$p.json" ;;
+  # The mention cue (#887): a thread and its comments, by number; `.fail` makes
+  # the read itself fail.
+  *"repos/o/r/issues/"*"/comments"*)
+    a="$*"; n="${a#*repos/o/r/issues/}"; n="${n%%/*}"
+    [ ! -f "$TR_FIX/thread.$n.fail" ] || exit 1
+    cat "$TR_FIX/comments.$n.json" 2>/dev/null || printf '[]\n' ;;
+  *"api repos/o/r/issues/"*)
+    a="$*"; n="${a#*repos/o/r/issues/}"; n="${n%% *}"
+    [ ! -f "$TR_FIX/thread.$n.fail" ] || exit 1
+    cat "$TR_FIX/thread.$n.json" 2>/dev/null || printf '{}\n' ;;
   *)                        printf '[]\n' ;;
 esac
 exit 0
@@ -250,7 +263,9 @@ tr_run 0
 t triage253-reads-notifications-once 1 "$(trc 'api notifications')"
 t triage253-reads-open-board-once     1 "$(trc 'number,body,updatedAt,labels')"
 t triage253-reads-discussions-once    1 "$(trc 'api graphql')"
-t triage253-gh-calls-with-mention     3 "$(grep -vc '^SESSION' "$TR_CALLS")"
+# 3 reads, plus the handled thread marked read on GitHub (#887).
+t triage253-gh-calls-with-mention     4 "$(grep -vc '^SESSION' "$TR_CALLS")"
+t triage887-handled-thread-marked-read 1 "$(trc 'api -X PATCH notifications/threads/t1')"
 tr_fix '[]' '[]' '[]' '[]' '[]' '[]'
 tr_run 0
 t triage253-gh-calls-without-mention  3 "$(grep -vc '^SESSION' "$TR_CALLS")"
@@ -280,6 +295,59 @@ t triage253-mention-ledger-on-rc0 committed "$r1"
 tr_run 1
 if [ -f "$TRD/.seen-mentions" ]; then r1=COMMITTED; else r1=withheld; fi
 t triage253-mention-ledger-not-on-rcfail withheld "$r1"
+
+# --- #887: the cue is a new comment that names the member ------------------------
+TR887_URL='https://api.github.com/repos/o/r/issues'
+tr887_notif="$(jq -nc --arg u "$TR887_URL" '[
+  {id:"n7",reason:"mention",updated_at:"2026-09-01T10:00:00Z",last_read_at:"2026-08-30T00:00:00Z",
+   repository:{full_name:"o/r"},subject:{url:($u+"/7"),type:"Issue"}},
+  {id:"n8",reason:"mention",updated_at:"2026-09-01T11:00:00Z",last_read_at:null,
+   repository:{full_name:"o/r"},subject:{url:($u+"/8"),type:"Issue"}},
+  {id:"n9",reason:"mention",updated_at:"2026-09-01T12:00:00Z",last_read_at:null,
+   repository:{full_name:"o/r"},subject:{url:($u+"/9"),type:"Issue"}},
+  {id:"n3",reason:"mention",updated_at:"2025-12-01T00:00:00Z",last_read_at:null,
+   repository:{full_name:"o/r"},subject:{url:($u+"/3"),type:"Issue"}}
+]')"
+tr_fix "$tr887_notif" '[]' '[]' '[]' '[]' '[]'
+printf '%s' '{"user":{"login":"someone"},"created_at":"2026-01-02T00:00:00Z","body":"an old ask, @me-bot"}' >"$TRF/thread.7.json"
+# #7: an old mention, and after the thread was last read only a comment
+# between two people — the sticky reason, not a new ask.
+printf '%s' '[{"user":{"login":"a"},"created_at":"2026-09-01T09:00:00Z","body":"thanks b, merged"}]' >"$TRF/comments.7.json"
+printf '%s' '{"user":{"login":"someone"},"created_at":"2026-01-02T00:00:00Z","body":"x"}' >"$TRF/thread.8.json"
+# #8: a new comment that names the member.
+printf '%s' '[{"user":{"login":"a"},"created_at":"2026-09-01T10:59:00Z","body":"@Me-Bot can you look?"}]' >"$TRF/comments.8.json"
+# #9: the member opened it; anyone else's new comment is addressed to it.
+printf '%s' '{"user":{"login":"me-bot"},"created_at":"2026-08-01T00:00:00Z","body":"a question"}' >"$TRF/thread.9.json"
+printf '%s' '[{"user":{"login":"human"},"created_at":"2026-09-01T11:59:00Z","body":"answered"}]' >"$TRF/comments.9.json"
+tr_run 0
+t triage887-one-mention-session 1 "$(trc '^SESSION mention$')"
+if grep -q '"thread":"n8"' "$TR_PROMPT.mention" && grep -q '"thread":"n9"' "$TR_PROMPT.mention"; then r1=both; else r1=MISSING; fi
+t triage887-a-new-comment-naming-me-and-my-own-thread-are-addressed both "$r1"
+if grep -q '"thread":"n7"' "$TR_PROMPT.mention"; then r1=ANSWERED; else r1=not; fi
+t triage887-the-sticky-reason-alone-is-not-addressed not "$r1"
+t triage887-not-addressed-is-marked-read 1 "$(trc 'api -X PATCH notifications/threads/n7')"
+if grep -q '"thread":"n3"' "$TR_PROMPT.mention"; then r1=ANSWERED; else r1=not; fi
+t triage887-the-backlog-is-not-answered not "$r1"
+t triage887-the-backlog-is-not-marked-read 0 "$(trc 'notifications/threads/n3')"
+t triage887-handled-are-marked-read 2 "$(grep -c 'api -X PATCH notifications/threads/n[89]' "$TR_CALLS")"
+t triage887-the-tick-says-it 1 "$(grep -c 'mentions: 2 addressed to me, 1 not (marked read), 1 backlog from before 2026-01-01T00:00:00Z' "$TR_LOG")"
+t triage887-comments-read-since-last-read 1 "$(trc 'issues/7/comments?since=2026-08-30T00:00:00Z')"
+# A thread that cannot be read is kept, as before #887.
+: >"$TRF/thread.8.fail"
+tr_run 0
+if grep -q '"thread":"n8"' "$TR_PROMPT.mention"; then r1=kept; else r1=DROPPED; fi
+t triage887-an-unreadable-thread-is-kept kept "$r1"
+rm -f "$TRF/thread.8.fail"
+# A failed session marks nothing read.
+tr_run 1
+t triage887-a-failed-session-marks-nothing-handled 0 "$(grep -c 'api -X PATCH notifications/threads/n[89]' "$TR_CALLS")"
+# The starting point: written at the first run when absent.
+mv "$TRD/.mentions-since" "$TMP/tr887-since.bak"
+tr_run 0
+if [[ "$(cat "$TRD/.mentions-since" 2>/dev/null)" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]]; then r1=written; else r1=MISSING; fi
+t triage887-the-starting-point-is-written-at-the-first-run written "$r1"
+t triage887-a-new-member-answers-no-backlog 0 "$(trc '^SESSION mention$')"
+mv "$TMP/tr887-since.bak" "$TRD/.mentions-since"
 
 # --- #466: one tick-wide mention batch across every configured repository --
 tr466_mentions="$(jq -nc '[
