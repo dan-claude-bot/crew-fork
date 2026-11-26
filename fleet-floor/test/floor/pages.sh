@@ -24,7 +24,7 @@ t "pages: the poll calls it" 2 "$(grep -c 'pageOnPoll();' "$APP")"
 # Nothing new on the wire: every action the pages send is one the collector has.
 PG_ACTS="$(sed -n '/^\/\* ===================== pages, not modals (#870)/,/^function pageCredSet/p' "$APP" \
   | grep -oE 'act\("[a-z:]+"(\+box)?,"[a-z-]+"' | sed -E 's/.*,"([a-z-]+)"$/\1/' | sort -u | paste -sd' ' -)"
-t "pages: every write is an existing action" "registry-inherit registry-override registry-set roster-set" "$PG_ACTS"
+t "pages: every write is an existing action" "panel-set registry-inherit registry-override registry-set roster-set" "$PG_ACTS"
 for a in roster-set registry-set registry-override registry-inherit credentials-set power-on power-off pause resume; do
   t "pages: the collector has $a" 1 "$(grep -c "\"$a\"" "$FLOOR/server/floor/actions.py" | awk '{print ($1>0)}')"
 done

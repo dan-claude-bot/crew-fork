@@ -790,6 +790,29 @@ if [ -n "${REHEARSAL_CREDS:-}" ]; then
       fail "creds: the box holds $creds_entry's bot and the fleet's group chat (pool chat ${creds_want:-unset}; the box holds ${creds_have:-nothing})"
     fi
   done
+  # A push the moment a box is started (#880): the host tick delivers a
+  # member's pool entries right after `box start`, before the VM agent is up,
+  # and on rc19 every one was refused ("VM agent isn't currently running").
+  # Real Incus boot timing, which no stub reproduces: once per round (the
+  # triage section, the smallest box), stop, start, push at once.
+  if [ "$ROLE" = triage ]; then
+    if box down "$BOX_NAME" </dev/null >/dev/null 2>&1 && box start "$BOX_NAME" </dev/null >/dev/null 2>&1; then
+      creds_conf_tmp="$(mktemp -d)"
+      cold_out=""
+      if "$CREW_BIN" init "$creds_conf_tmp/config" >/dev/null 2>&1 \
+         && cold_out="$(CREW_CONFIG_DIR="$creds_conf_tmp/config" "$CREW_BIN" creds push "$BOX_NAME" \
+              --entries "$REHEARSAL_CREDS" 2>&1)" \
+         && ! grep -q 'REFUSED' <<<"$cold_out"; then
+        ok "creds: a push the moment the box is started waits for its agent and lands (#880)"
+      else
+        printf '%s\n' "$cold_out"
+        fail "creds: a push the moment the box is started waits for its agent and lands (#880)"
+      fi
+      rm -rf "$creds_conf_tmp"
+    else
+      fail "creds: a push the moment the box is started waits for its agent and lands (#880)" "the box could not be stopped and started"
+    fi
+  fi
   GH_AUTHED=0
   bx "gh auth status >/dev/null 2>&1" && GH_AUTHED=1
   # The push logged the box in AFTER the phase 1 tick decided isolation (#793):

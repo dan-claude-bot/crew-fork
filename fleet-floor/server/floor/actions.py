@@ -15,6 +15,7 @@ from floor.registry import KINDS, clear_override, set_fleet, set_override
 from floor.roster import CONFIG_DIR, CREW_ROOT, RosterChanged, box_states, read_roster, roster_set
 from floor.credentials import credentials_set
 from floor.pool import ACTIONS as POOL_ACTIONS, pool_command
+from floor.panel import set_panel
 from floor.inflight import INFLIGHT, busy_reply
 from floor.boxentry import box_exec
 
@@ -339,7 +340,7 @@ def _do_command(fleet, body, actor=""):
 
     roster = {u["box"]: u for u in read_roster()}
     fleet_wide = {"start-all", "stop-all", "wake-silent", "registry-set", "roster-set",
-                  "pool-add", "pool-rotate", "pool-rm", "pool-chat"}
+                  "pool-add", "pool-rotate", "pool-rm", "pool-chat", "panel-set"}
     registry = {"registry-set", "registry-override", "registry-inherit"}
 
     if action not in fleet_wide:
@@ -370,6 +371,11 @@ def _do_command(fleet, body, actor=""):
         if reply.get("ok"):
             fleet.request_refresh()
         return code, reply
+    if action == "panel-set":
+        # The fleet's review panel and triage actor (#879): two lines of
+        # fleet.conf, rewritten in place and journalled. Nothing reaches a box
+        # until it is next staged (hire, upgrade), which the page says.
+        return set_panel(body, actor)
     if action == "roster-set":
         # The roster, whole (#764): the registry writers' three
         # outcomes, with the same codes. A refusal is 400 and nothing moved; a

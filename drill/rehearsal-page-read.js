@@ -64,6 +64,36 @@ const [, , url, user, pass] = process.argv;
   const disarmed = await group('disarmed');
   const silent = await group('silent');
   await page.locator('.fchip[data-f="state"][data-v="all"]').click();
-  console.log(JSON.stringify({ live, tiles, disarmed, silent, empty }));
+  // The pages (#874), on the real floor: each route renders its body from the
+  // collector's real answers, with no script or console error on the way. A
+  // page that could not read says so in its body ("could not read this page").
+  const errors = [];
+  page.on('pageerror', (e) => errors.push('pageerror: ' + String((e && e.message) || e)));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  const visit = async (hash, ready) => {
+    await page.evaluate((h) => { location.hash = h; }, hash);
+    for (let w = 0; w < 15000; w += 250) {
+      const done = await page.evaluate((sel) => {
+        const b = document.getElementById('pagebody');
+        return !!b && (/could not read this page/.test(b.textContent || '') || !!b.querySelector(sel));
+      }, ready);
+      if (done) break;
+      await page.waitForTimeout(250);
+    }
+    return page.evaluate((sel) => {
+      const b = document.getElementById('pagebody');
+      const text = ((b && b.textContent) || '').replace(/\s+/g, ' ').trim();
+      return { ok: !!b && !!b.querySelector(sel) && !/could not read this page/.test(text), text: text.slice(0, 200) };
+    }, ready);
+  };
+  const members = await visit('#/members', '.mgrid');
+  const cards = await page.locator('#pagebody .mcard').count();
+  const first = await page.evaluate(() => { const a = document.querySelector('#pagebody .mcard a[href^="#/member/"]'); return a ? a.getAttribute('href') : ''; });
+  const member = first ? await visit(first, '.pgsec') : { ok: false, text: 'no member card to open' };
+  const repositories = await visit('#/repositories', '#panelsec');
+  const credentials = await visit('#/credentials', '#engsec');
+  await page.evaluate(() => { location.hash = ''; });
+  const pages = { members, cards, member, repositories, credentials, errors };
+  console.log(JSON.stringify({ live, tiles, disarmed, silent, empty, pages }));
   await browser.close();
 })().catch((e) => { console.error(String((e && e.message) || e)); process.exit(1); });

@@ -450,7 +450,11 @@ print(json.dumps(u[0]) if u else '')")"
   case "$agreement" in
     down)
       AGREE_N=$((AGREE_N + 1))
-      t "agree: $name is down" offline "$floor_state" ;;
+      # A stopped box the store saw hired is ASLEEP (#875: the host tick puts
+      # an idle member to sleep, and wakes it); one never seen hired is offline.
+      down_want=offline
+      [ "$(python3 -c "import json,sys; print(json.load(sys.stdin).get('hired') or '')" <<<"$floor_unit" 2>/dev/null)" != yes ] || down_want=asleep
+      t "agree: $name is down ($down_want)" "$down_want" "$floor_state" ;;
     missing)
       # Still a skip: ONE box absent from the output is an absent box. The
       # every-box case is caught once, above, before this loop runs.
@@ -985,6 +989,7 @@ if [ "$BROWSER" -eq 1 ]; then
          > "$TMP/page-read.json" 2>"$TMP/page-read.err"; then
       app_surface_page_groups "$TMP/page-read.json" "$TMP/status.txt" \
                               "$ROSTER_N" "$SURF_NOT_DEPLOYED" "$SURF_DRAWN" "$FLEET_JSON"
+      app_surface_pages "$TMP/page-read.json" "$ROSTER_N"
     else
       fail "page: the state filter separates disarmed from silent (#312)" \
            "the page reader did not complete: $(tr '\n' ' ' < "$TMP/page-read.err" | head -c 150)"
