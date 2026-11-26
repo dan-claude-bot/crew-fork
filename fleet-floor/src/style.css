@@ -205,6 +205,12 @@ input.woff{color:#5a6a80}
 .reporow:first-of-type{border-top:0}
 .reporow .repo{flex:1;color:#e3eef9;word-break:break-all}
 .reporow .rosin{flex:1}
+/* A write's verdict, beside the control that made it (#874 finding). */
+.pgverdict{font:10.5px/1.5 var(--mono);margin-top:6px;padding:5px 9px;border-radius:6px;word-break:break-word}
+.pgverdict.bad{color:#ff8a7c;background:#ff51471a;border:1px solid #ff51473d}
+.pgverdict.good{color:#5fce9b;background:#5fce9b14;border:1px solid #5fce9b33}
+.regacts{flex-wrap:wrap}
+.regacts .pgverdict{flex-basis:100%}
 @media (max-width:640px){#pagebody{padding:14px 16px 120px}.pghd{padding:10px 16px}}
 /* The registry and roster blocks the pages draw (#488, #764). */
 .rostbl{width:100%;border-collapse:collapse;font:11px/1.4 var(--mono);color:#b9c8dc;margin-top:8px}

@@ -1455,6 +1455,24 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
       // into: adding a board is typing its name.
       eq('registry: the fleet\'s scope takes a typed repository', 2,
          await page.locator('#pagebody [data-k="repo-new"]').count());
+      /* #874 finding: a refused write said only in the status line read as
+         saved on dev-server-1. An Add the collector refuses — a repository
+         nobody can reach, so nothing is written and the fixture is untouched —
+         is said BESIDE the Add, in red, with the reason, and what was typed
+         stays in its field. */
+      const wblk = '#pagebody .regblk[data-kind="work"] ';
+      const bogus = 'crew-floor-walk-nobody/never-874';
+      await page.fill(`${wblk}[data-k="repo-new"]`, bogus);
+      await page.click(`${wblk}[data-pg="repo-add"]`);
+      await settle(async () => (await page.locator(`${wblk}.pgverdict.bad`).count()) > 0, 30000);
+      const verdict = ((await page.locator(`${wblk}.pgverdict`).first().textContent().catch(() => '')) || '').trim();
+      eq('registry: a refused Add is said beside it, in red (#874)', 1,
+         await page.locator(`${wblk}.pgverdict.bad`).count());
+      ok('registry: ...with the collector\'s reason', /^refused — .*(reach|probe)/.test(verdict), verdict);
+      eq('registry: ...and the typed repository stays in its field', bogus,
+         await page.inputValue(`${wblk}[data-k="repo-new"]`));
+      eq('registry: ...and the list is unchanged', 0,
+         await page.locator(`${wblk}.reporow .repo`, { hasText: bogus }).count());
       await shot('06-registries-fleet');
       await toFloor();
       ok('registry: the Floor tab closes the page', !(await pageOpen()));

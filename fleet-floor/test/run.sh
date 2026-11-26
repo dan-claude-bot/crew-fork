@@ -529,7 +529,13 @@ if [ "$BROWSER" -eq 1 ]; then
     # the literal. #655 makes the comparison exact, so the next one must.
     # Measured on main at abf6d68 (ci-floor run 41882224938) and again on the
     # PR head; browser.js is unchanged by #655.
-    walk "browser walk" 153 "http://127.0.0.1:$PORT/" "$TMP/shots" "$USER" "$PASSWD"
+    #
+    # 153 -> 158 with #870/#874. The registries are pages now: the fleet's
+    # page gains its own-address row (the Esc row became the Floor tab's, a
+    # rename), and a refused Add on #/repositories gains four — said beside
+    # it in red, with the collector's reason, the typed value kept, and the
+    # list unchanged. All inside `if (LIVE)`; the DEMO floor is unmoved.
+    walk "browser walk" 158 "http://127.0.0.1:$PORT/" "$TMP/shots" "$USER" "$PASSWD"
     # DEMO is a shipped mode, not a fallback: `open index.html` must still work
     # with no collector, no network and every control visibly disabled.
     # 14 -> 21 with #655, the same accumulated drift as the live walk's.

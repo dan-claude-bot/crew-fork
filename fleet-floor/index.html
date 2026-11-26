@@ -212,6 +212,12 @@ input.woff{color:#5a6a80}
 .reporow:first-of-type{border-top:0}
 .reporow .repo{flex:1;color:#e3eef9;word-break:break-all}
 .reporow .rosin{flex:1}
+/* A write's verdict, beside the control that made it (#874 finding). */
+.pgverdict{font:10.5px/1.5 var(--mono);margin-top:6px;padding:5px 9px;border-radius:6px;word-break:break-word}
+.pgverdict.bad{color:#ff8a7c;background:#ff51471a;border:1px solid #ff51473d}
+.pgverdict.good{color:#5fce9b;background:#5fce9b14;border:1px solid #5fce9b33}
+.regacts{flex-wrap:wrap}
+.regacts .pgverdict{flex-basis:100%}
 @media (max-width:640px){#pagebody{padding:14px 16px 120px}.pghd{padding:10px 16px}}
 /* The registry and roster blocks the pages draw (#488, #764). */
 .rostbl{width:100%;border-collapse:collapse;font:11px/1.4 var(--mono);color:#b9c8dc;margin-top:8px}
@@ -2280,8 +2286,13 @@ function cmd(action,extra){
        can outlast any number picked here, and the collector is still doing
        it. Said as that — /api/actions keeps showing it while it runs. */
     .catch(function(e){
-      if(e&&e.name==="AbortError")setStatus(action+": no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running on the collector (shown here while it is)",true);
+      var late=!!(e&&e.name==="AbortError");
+      if(late)setStatus(action+": no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running on the collector (shown here while it is)",true);
       else setStatus(action+" failed: "+e.message,true);
+      /* The reason travels back to the caller as well (#870): a page says a
+         refusal beside the control that made it, where it is read. */
+      return {ok:false,failed:true,late:late,
+              error:late?"no answer within "+Math.round(API_CMD_TIMEOUT_MS/60000)+" min — it may still be running":String((e&&e.message)||e||"failed")};
     });
 }
 /* ---- Actions in flight (#766) -------------------------------------------------
@@ -7396,13 +7407,46 @@ function pageRoute(){
   PAGE.waiting=false;
   body.innerHTML='<div class="regnote">reading…</div>';
   var fn={members:renderMembers,member:renderMember,repositories:renderRepositories,credentials:renderCredentials}[r.route];
-  fn(r.box).catch(function(e){
+  return fn(r.box).catch(function(e){
     if(PAGE.route===r.route&&PAGE.box===r.box)
       body.innerHTML='<div class="regnote"><b>could not read this page</b>: '+esc((e&&e.message)||e||"no answer")+'</div>';
   });
 }
 /* After a write that succeeded: the page read again from the host. */
-function pageRefresh(){if(PAGE.route)pageRoute();}
+function pageRefresh(){return PAGE.route?(pageRoute()||Promise.resolve()):Promise.resolve();}
+/* ---- every write says its verdict BESIDE ITS CONTROL (#874 finding) ---------
+   A refusal only in the status line read as success on dev-server-1: the
+   operator saw the page unchanged and took it for saved. So each write's
+   answer lands in a .pgverdict at the control — the reason in red with the
+   input kept as typed, or what was done in green on the re-read page — and
+   the status line keeps saying it too. */
+function replyWhy(r){
+  if(r===null)return "not sent — another action holds it (the status line names it)";
+  if(!r)return "no answer — nothing known to have changed";
+  var bad=(r.results||[]).filter(function(x){return x.ok===false;});
+  if(bad.length)return (bad[0].box?bad[0].box+": ":"")+(bad[0].out||"refused");
+  return r.error||((r.lines&&r.lines.join(" · "))||"refused");
+}
+function pgSay(scope,r,okText){
+  if(!scope)return;
+  var v=null;
+  for(var i=0;i<scope.children.length;i++)if(scope.children[i].classList.contains("pgverdict")){v=scope.children[i];break;}
+  if(!v){v=document.createElement("div");v.className="pgverdict";v.setAttribute("role","status");scope.appendChild(v);}
+  var ok=!!(r&&r.ok);
+  v.textContent=ok?okText:"refused — "+replyWhy(r);
+  if(!ok)setStatus(v.textContent,true);
+  v.classList.toggle("bad",!ok);v.classList.toggle("good",ok);
+}
+/* A write's answer: refused → said at SCOPE, nothing repainted (the input
+   stays as typed); done → the page re-read, then said at the scope FIND
+   names on the fresh page. */
+function pgAfter(r,scope,find,okText){
+  if(!(r&&r.ok)){pgSay(scope,r,okText);return r;}
+  return pageRefresh().then(function(){
+    var el=find?document.querySelector(find):null;
+    if(el&&el.tagName==="BUTTON")el=el.parentNode;
+    pgSay(el,r,okText);return r;});
+}
 function goto(h){if(location.hash===h)pageRoute();else location.hash=h;}
 window.addEventListener("hashchange",pageRoute);
 function unitOf(box){return ((LIVEMETA&&LIVEMETA.units)||[]).filter(function(u){return u.box===box;})[0]||null;}
@@ -7511,11 +7555,17 @@ function addSave(){
   var agent=f.querySelector('[data-k="add-agent"]').value,roles=addRolesChecked(f);
   var name=f.querySelector('[data-k="add-name"]').value.trim()||defaultName(agent,roles);
   var from=f.querySelector('[data-k="add-from"]').value.trim();
-  if(!roles.length){setStatus("add member: pick at least one role",true);return;}
+  var acts=f.querySelector(".regacts");
+  if(!roles.length){pgSay(acts,{ok:false,error:"pick at least one role"},"");return;}
+  var dup=false;
   return rosterWrite(function(members){
-    if(members.some(function(m){return m.box===name;})){setStatus("add member: "+name+" is already on the roster",true);return null;}
+    if(members.some(function(m){return m.box===name;})){dup=true;return null;}
     return members.concat([{box:name,agent:agent,roles:roles,from:from,creds:""}]);
-  }).then(function(r){if(r&&r.ok)goto("#/member/"+encodeURIComponent(name));},function(e){setStatus("add member: "+e.message,true);});
+  }).then(function(r){
+    if(dup){setStatus("add member: "+name+" is already on the roster",true);pgSay(acts,{ok:false,error:name+" is already on the roster"},"");return;}
+    if(r&&r.ok){goto("#/member/"+encodeURIComponent(name));return;}
+    pgSay(acts,r,"");
+  },function(e){setStatus("add member: "+e.message,true);pgSay(acts,{ok:false,error:e.message},"");});
 }
 /* ---- #/member/<box> ------------------------------------------------------------ */
 function renderMember(box){
@@ -7618,8 +7668,9 @@ function renderRepositories(){
     document.getElementById("pagebody").innerHTML=h;
   });
 }
-function repoWrite(kind,entries){
-  return act("ov:reg","registry-set",{kind:kind,entries:entries}).then(function(r){if(r&&r.ok)pageRefresh();return r;});
+function repoWrite(kind,entries,scope,okText){
+  return act("ov:reg","registry-set",{kind:kind,entries:entries}).then(function(r){
+    return pgAfter(r,scope,'#pagebody .regblk[data-kind="'+kind+'"]',okText);});
 }
 /* ---- #/credentials ------------------------------------------------------------- */
 function renderCredentials(){
@@ -7668,10 +7719,12 @@ function onPageClick(e){
     var blk=b.closest(".regblk"),kind=blk.dataset.kind;
     if(what==="scope-inherit"){
       if(!confirm("Clear "+box+"'s "+kind+" selection? It goes back to following the fleet's list, including any later widening."))return;
-      return act("ov:reg","registry-inherit",{box:box,kind:kind}).then(function(r){if(r&&r.ok)pageRefresh();});
+      return act("ov:reg","registry-inherit",{box:box,kind:kind}).then(function(r){
+        return pgAfter(r,blk,'#pagebody .regblk[data-kind="'+kind+'"]',"saved — "+kind+" follows the fleet's list again");});
     }
     var entries=[].map.call(blk.querySelectorAll(".regopt input:checked"),function(i){return i.value;});
-    return act("ov:reg","registry-override",{box:box,kind:kind,entries:entries}).then(function(r){if(r&&r.ok)pageRefresh();});
+    return act("ov:reg","registry-override",{box:box,kind:kind,entries:entries}).then(function(r){
+      return pgAfter(r,blk,'#pagebody .regblk[data-kind="'+kind+'"]',"saved — "+entries.length+" selected");});
   }
   if(what==="ed-save"){
     var sel=document.querySelector('#pagebody [data-k="ed-roles"]');
@@ -7679,18 +7732,25 @@ function onPageClick(e){
     var checked=[].map.call(sel.querySelectorAll("input:checked"),function(i){return i.value;});
     var from=document.querySelector('#pagebody [data-k="ed-from"]').value.trim();
     var roles=rosterRoles(written,ROSTER_OPTS.roles,checked);
-    if(!roles.length){setStatus("save: a member keeps at least one role",true);return;}
+    var eacts=b.closest(".regacts");
+    if(!roles.length){pgSay(eacts,{ok:false,error:"a member keeps at least one role"},"");return;}
+    var gone=false;
     return rosterWrite(function(members){
       var hit=false;
       members.forEach(function(m){if(m.box===box){m.roles=roles;m.from=from;hit=true;}});
-      if(!hit){setStatus("save: "+box+" is no longer on the roster",true);return null;}
+      if(!hit){gone=true;return null;}
       return members;
-    }).then(function(r){if(r&&r.ok)pageRefresh();},function(e){setStatus("save: "+e.message,true);});
+    }).then(function(r){
+      if(gone){pgSay(eacts,{ok:false,error:box+" is no longer on the roster"},"");return;}
+      return pgAfter(r,eacts,'#pagebody [data-pg="ed-save"]',"saved — roles "+roles.join(", "));
+    },function(e){setStatus("save: "+e.message,true);pgSay(eacts,{ok:false,error:e.message},"");});
   }
   if(what==="remove"){
     if(!confirm("Remove "+box+" from the roster? Its box is left exactly as it is — not stopped, not deleted — but the console stops watching it and the host tick stops waking it."))return;
+    var racts=b.closest(".regacts");
     return rosterWrite(function(members){return members.filter(function(m){return m.box!==box;});})
-      .then(function(r){if(r&&r.ok)goto("#/members");},function(e){setStatus("remove: "+e.message,true);});
+      .then(function(r){if(r&&r.ok){goto("#/members");return;}pgSay(racts,r,"");},
+            function(e){setStatus("remove: "+e.message,true);pgSay(racts,{ok:false,error:e.message},"");});
   }
   if(what==="repo-add"||what==="repo-rm"){
     var rb=b.closest(".regblk"),k=rb.dataset.kind,r0=PAGE.data;
@@ -7699,13 +7759,13 @@ function onPageClick(e){
     if(what==="repo-rm"){
       var repo=b.dataset.repo;
       if(!confirm("Remove "+repo+" from this fleet's "+k+" list?"))return;
-      return repoWrite(k,cur.filter(function(x){return x!==repo;}));
+      return repoWrite(k,cur.filter(function(x){return x!==repo;}),rb,"saved — "+repo+" removed");
     }
     var inp=rb.querySelector('[data-k="repo-new"]');
     var v=(inp.value||"").trim().replace(/^https?:\/\/github\.com\//,"").replace(/\.git$/,"").replace(/\/$/,"");
-    if(!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(v)){setStatus("add repository: owner/repo",true);return;}
-    if(cur.indexOf(v)>=0){setStatus("add repository: "+v+" is already on the list",true);return;}
-    return repoWrite(k,cur.concat([v]));
+    if(!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(v)){setStatus("add repository: owner/repo",true);pgSay(rb,{ok:false,error:"owner/repo"},"");return;}
+    if(cur.indexOf(v)>=0){pgSay(rb,{ok:false,error:v+" is already on the list"},"");return;}
+    return repoWrite(k,cur.concat([v]),rb,"saved — 1 added ("+v+")");
   }
 }
 function onPageChange(e){
@@ -7780,7 +7840,7 @@ function onEngineClick(b){
     var org=(document.getElementById("eng-org")||{}).value||"";
     setStatus("engine: opening GitHub…",false);
     enginePost("/api/engine/manifest",{org:org.trim()}).then(function(r){
-      if(!r.ok){setStatus("engine: "+(r.error||"could not start"),true);return;}
+      if(!r.ok){setStatus("engine: "+(r.error||"could not start"),true);pgSay(b.parentNode,r,"");return;}
       var f=document.createElement("form");f.method="post";f.action=r.action;f.style.display="none";
       var i=document.createElement("input");i.type="hidden";i.name="manifest";i.value=r.manifest;f.appendChild(i);
       document.body.appendChild(f);f.submit();
@@ -7795,15 +7855,17 @@ function onEngineClick(b){
     enginePost("/api/engine/app",{app_id:id,key:key}).then(function(r){
       key=null;
       if(!r.ok){out.textContent=r.error||"refused";setStatus("engine: "+(r.error||"refused"),true);return;}
-      ENGINE=r.engine;engineRedraw();setStatus("engine: App "+(ENGINE.slug||"")+" set",false);
+      ENGINE=r.engine;setStatus("engine: App "+(ENGINE.slug||"")+" set",false);
+      pageRefresh().then(function(){pgSay(document.getElementById("engsec"),{ok:true},"done — App "+(ENGINE.slug||"")+" set");});
     },function(){out.textContent="the floor did not answer — nothing known to be set";});
     return;
   }
   if(what==="remove"){
     if(!confirm("Remove the engine's GitHub App from this host? The tick falls back to the host's own gh login, if it has one."))return;
     enginePost("/api/engine/remove",{}).then(function(r){
-      if(!r.ok){setStatus("engine: "+(r.error||"refused"),true);return;}
-      ENGINE=r.engine;engineRedraw();setStatus("engine: App removed",false);
+      if(!r.ok){setStatus("engine: "+(r.error||"refused"),true);pgSay(b.parentNode,r,"");return;}
+      ENGINE=r.engine;setStatus("engine: App removed",false);
+      pageRefresh().then(function(){pgSay(document.getElementById("engsec"),r,"done — the App is removed");});
     });
   }
 }
@@ -7870,9 +7932,16 @@ function poolSection(){
     +'<button class="lbtn" data-pool-act="add">Add to the pool</button><div class="rosst poolverdict"></div></td></tr>'
     +'</tbody></table>';
 }
+/* A pool write that took: the page re-read, its verdict at the pool's head. */
+function poolDone(r){
+  return pageRefresh().then(function(){
+    var t=document.getElementById("poollist");
+    pgSay(t?t.parentNode.parentNode:null,r,"done — "+((r.lines&&r.lines.join(" · "))||"saved"));
+  });
+}
 function poolSay(cell,r){
   var out=cell.querySelector(".poolverdict");if(!out)return;
-  out.textContent=(r&&((r.lines&&r.lines.join(" · "))||r.error))||"no answer";
+  out.textContent=(r&&r.ok)?((r.lines&&r.lines.join(" · "))||"done"):"refused — "+replyWhy(r);
   out.classList.toggle("bad",!(r&&r.ok));
 }
 function onPoolClick(b){
@@ -7883,17 +7952,17 @@ function onPoolClick(b){
     if(what==="assign"&&!picked.length){setStatus("pool-assign: pick an entry first",true);return;}
     if(what==="unassign"&&!confirm("Clear "+box+"'s pool assignment? Its box keeps the values it holds until they are set again."))return;
     return act("box:"+box,"pool-"+what,what==="assign"?{box:box,entries:picked}:{box:box})
-      .then(function(r){poolSay(tr,r);if(r&&r.ok)pageRefresh();});
+      .then(function(r){poolSay(tr,r);if(r&&r.ok)poolDone(r);});
   }
   if(what==="chat"){
     var row=b.closest(".poolchat"),chat=row.querySelector('[data-k="pool-chat"]').value.trim();
     if(!/^-?[0-9]{1,20}$/.test(chat)){setStatus("pool-chat: a Telegram chat id is digits, negative for a group",true);return;}
-    return act("ov:pool","pool-chat",{chat:chat}).then(function(r){poolSay(row,r);if(r&&r.ok)pageRefresh();});
+    return act("ov:pool","pool-chat",{chat:chat}).then(function(r){poolSay(row,r);if(r&&r.ok)poolDone(r);});
   }
   var inp=tr.querySelector('[data-k="pool-secret"]'),secret=inp?inp.value:"";
   if(what==="rm"){
     if(!confirm("Remove "+tr.dataset.entry+" from the pool? No box loses the value it holds."))return;
-    return act("ov:pool","pool-rm",{entry:tr.dataset.entry}).then(function(r){poolSay(tr,r);if(r&&r.ok)pageRefresh();});
+    return act("ov:pool","pool-rm",{entry:tr.dataset.entry}).then(function(r){poolSay(tr,r);if(r&&r.ok)poolDone(r);});
   }
   if(!secret.trim()){setStatus("pool-"+what+": paste the value first — nothing set",true);return;}
   /* Cleared BEFORE the request resolves, as a member's set is (#765). */
@@ -7909,7 +7978,7 @@ function onPoolClick(b){
   return act("ov:pool","pool-"+what,body).then(function(r){
     body.secret="";
     poolSay(tr,r);
-    if(r&&r.ok)pageRefresh();
+    if(r&&r.ok)poolDone(r);
   });
 }
 function onPoolChange(e){
