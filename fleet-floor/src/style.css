@@ -199,6 +199,7 @@ input.woff{color:#5a6a80}
 .mst.s-asleep{color:#7f97b0;background:#7f97b014}
 .mcred{font-size:10px;color:#ff8a7c}
 .mcred.ok{color:#5fce9b}
+.mcred.zz{color:#7f97b0}
 .mform .mfrow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px}
 .mfrow label{display:flex;flex-direction:column;gap:4px;flex:1;min-width:200px;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#7f97b0}
 .mflab{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#7f97b0;min-width:60px;padding-top:6px}

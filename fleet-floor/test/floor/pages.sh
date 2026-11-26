@@ -98,3 +98,27 @@ if command -v node >/dev/null 2>&1; then
     "$(node -e "$(sed -n '/^var ENGINE_PERM_WORDS=/p;/^function enginePermsWords(/,/^}/p' "$APP")
 console.log('permissions'+enginePermsWords({metadata:'read',contents:'read',actions:'read',issues:'read',pull_requests:'read',checks:'read',statuses:'read',discussions:'read'}));")"
 fi
+
+# #875 on Credentials: an asleep member's logins are read at its next wake —
+# said so, with what its next wake delivers — never "unknown".
+if command -v node >/dev/null 2>&1; then
+  PG_ZZ="$(node - "$APP" <<'JS'
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const grab = (n) => { const i = src.indexOf('function ' + n + '('); return src.slice(i, src.indexOf('\n}\n', i) + 2); };
+global.esc = (x) => String(x);
+global.POOL = { entries: [
+  { id: 'gh:bot', members: [{ box: 'zz', verdict: null }] },
+  { id: 'agent:max', members: [{ box: 'zz', verdict: { ok: true }, owes: true }] },
+  { id: 'tg:alerts', members: [{ box: 'zz', verdict: { ok: true } }] }] };
+eval(grab('poolPending') + grab('liveCreds') + 'global.liveCreds=liveCreds;');
+const a = liveCreds({ state: 'asleep', box: 'zz', gh: 'unknown', vendor: 'unknown' }, 'claude', 'zz');
+const r = liveCreds({ state: 'idle', box: 'zz', gh: 'unknown', vendor: 'unknown' }, 'claude', 'zz');
+console.log([/gh: asleep — read at its next wake/.test(a) ? 1 : 0, /claude: asleep — read at its next wake/.test(a) ? 1 : 0,
+  /assigned: gh:bot, agent:max, delivered at its next wake/.test(a) ? 1 : 0, /unknown/.test(a) ? 1 : 0,
+  /gh: unknown/.test(r) ? 1 : 0].join(' '));
+JS
+)"
+  t "asleep: its logins read at its next wake, with what it delivers — not unknown; a running box keeps unknown" "1 1 1 0 1" "$PG_ZZ"
+fi
+t "asleep: the members page reads the pool for it" 1 \
+  "$(sed -n '/^function renderMembers(){/,/^}/p' "$APP" | grep -c 'api("/api/pool")')"

@@ -7123,8 +7123,24 @@ function liveState(u){
   return '<span class="mst s-'+esc(st)+'">'+esc(st)+'</span>'+(u.paused?' <span class="mst s-paused">paused</span>':'')
     +' <span class="rosst">'+esc(rosterStanding(u))+'</span>';
 }
-function liveCreds(u,agent){
+/* The pool entries assigned to BOX that its box does not hold yet: never
+   delivered, or owing the current value after a rotate (#780). */
+function poolPending(box){
+  return (POOL.entries||[]).filter(function(e){
+    return (e.members||[]).some(function(m){return m.box===box&&(!m.verdict||m.owes);});
+  }).map(function(e){return e.id;});
+}
+function liveCreds(u,agent,box){
   if(!u)return '<span class="rosst">logins: no box yet</span>';
+  /* Asleep (#875): the host tick stopped it, so nothing can be asked of it —
+     its logins are read at its next wake, and that is said, not "unknown".
+     "unknown" stays a running box whose probe did not answer. */
+  if(u.state==="asleep"){
+    var pend=poolPending(box||u.box);
+    return '<span class="mcred zz">gh: asleep — read at its next wake</span> '
+      +'<span class="mcred zz">'+esc(agent||"agent")+': asleep — read at its next wake</span>'
+      +(pend.length?' <span class="rosst">assigned: '+esc(pend.join(", "))+', delivered at its next wake</span>':'');
+  }
   var ok=function(v){return /flowing|ok/.test(v||"");};
   return '<span class="mcred'+(ok(u.gh)?' ok':'')+'">gh: '+esc(u.gh||"unknown")+'</span> '
     +'<span class="mcred'+(ok(u.vendor)?' ok':'')+'">'+esc(agent||"agent")+': '+esc(u.vendor||"unknown")+'</span>';
@@ -7132,7 +7148,7 @@ function liveCreds(u,agent){
 function liveHTML(what,box,agent){
   var u=unitOf(box);
   if(what==="state")return liveState(u);
-  if(what==="creds")return liveCreds(u,agent);
+  if(what==="creds")return liveCreds(u,agent,box);
   if(what==="next")return rosterJobButtons({box:box},u,true);
   if(what==="pause")return (u&&u.paused)?"▶ Resume":"⏸ Pause";
   return "";
@@ -7152,7 +7168,9 @@ function live(what,box,agent){
 /* ---- #/members --------------------------------------------------------------- */
 function defaultName(agent,roles){return (agent||"agent")+"-"+(roles[0]||"member");}
 function renderMembers(){
-  return api("/api/roster").then(function(r){
+  return Promise.all([api("/api/roster"),api("/api/pool").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0];
+    if(rs[1]&&rs[1].entries)POOL=rs[1];
     if(!r||!r.members)throw new Error("could not read the roster");
     if(PAGE.route!=="members")return;
     ROSTER_OPTS={agents:r.agents||[],roles:r.roles||[],etag:r.etag||""};
