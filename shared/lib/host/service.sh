@@ -240,7 +240,7 @@ service_setup() { # args: [--user U] [--group G] [--cli PATH] [--unit-prefix P] 
   echo
   echo "next:"
   echo "  sudo usermod -aG $group <you>        # then log in again: crew runs as $user for you"
-  echo "  sudo -u $user -H gh auth login       # the host's own gh login, which the tick reads boards with"
+  echo "  the engine's GitHub App: the floor's Credentials → Engine (create one, or paste an existing App's ID and key)"
   echo "  the floor: http://<this host>:$port/ — user and password in $etc/floor.env"
   echo "  then, in the floor: New fleet, its members in its Roster, and Create each one"
 }
@@ -275,6 +275,11 @@ service_check() { # [--unit-prefix P] — read-only; exit 1 on drift
   done
   if runuser -u "$user" -- box list </dev/null >/dev/null 2>&1; then ck ok "box grant: $user reaches its project"
   else ck no "$user cannot reach a box project (box grant --service $user)"; fi
+  # The engine's GitHub App (#864): said, never drift — a fresh host has none
+  # until the floor's Credentials → Engine gives it one.
+  local eng
+  eng="$(runuser -u "$user" -- env HOME="$data" "$cli" engine </dev/null 2>/dev/null | head -n1)" || eng=""  # Decision-path empty fallback: a note, never drift; empty says crew engine did not answer
+  echo "  note   ${eng:-engine: crew engine did not answer}"
   [ "$drift" -eq 0 ] && echo "service: clean" || echo "service: DRIFT — re-run: sudo crew service setup"
   return "$drift"
 }

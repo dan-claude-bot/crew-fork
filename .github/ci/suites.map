@@ -55,6 +55,7 @@ shared/lib/host/credentials.sh	credentials,pool,cli-reset,cli-lifecycle,host-tic
 shared/lib/host/pool.sh	pool,cli-reset,cli-lifecycle,host-tick
 shared/lib/host/service.sh	service,cli-lifecycle,common
 shared/lib/host/pause.sh	host-tick,cli-lifecycle,cli-reset,floor-no-browser
+shared/lib/host/engine.sh	engine,host-tick,cli-lifecycle,service
 shared/lib/host/*	host-tick,cli-lifecycle
 fleet-floor/server/probe.sh	floor-no-browser,cli-store,host-tick,release
 cli/crew	cli-lifecycle,cli-reset,cli-store,cli-fleets,box-entry,service,host-tick,common,floor-no-browser,pool

@@ -24,6 +24,8 @@ from floor.inflight import INFLIGHT
 from floor import front
 from floor.fleets import valid_id
 from floor.jobs import Jobs
+from floor import engine
+from floor.fleets import list_fleets
 from floor.boxentry import box_exec, require_entry_mode
 
 # --------------------------------------------------------------------------
@@ -71,6 +73,61 @@ class Handler(BaseHTTPRequestHandler):
         if self.children is None and os.environ.get("CREW_FLOOR_CHILD"):
             return self.headers.get("X-Crew-Floor-Actor", "") or self.auth_user
         return self.auth_user
+
+    # -- the engine's GitHub App (#864) ---------------------------------------
+    # Host-level, like the fleets list: served by whichever process the
+    # browser reached (the front, under the service), on every fleet's page
+    # and in the empty lobby alike. No route reads the key back.
+    def engine_route(self, method):
+        path = urlparse(self.path).path
+        if path == "/api/engine" and method == "GET":
+            self.send_json(200, engine_snapshot())
+            return True
+        if path == "/engine/callback" and method == "GET":
+            qs = parse_qs(urlparse(self.path).query)
+            code = (qs.get("code") or [""])[0]
+            state = (qs.get("state") or [""])[0]
+            try:
+                st = engine.convert(code, state)
+                engine_journal(self.actor(), "create", True, "App %s (id %s)" % (st["slug"], st["id"]))
+                self.send_bytes(200, "text/html; charset=utf-8", callback_page(st, ""))
+            except engine.EngineError as e:
+                engine_journal(self.actor(), "create", False, str(e))
+                self.send_bytes(400, "text/html; charset=utf-8", callback_page(None, str(e)))
+            return True
+        if method != "POST" or path not in ("/api/engine/manifest", "/api/engine/app", "/api/engine/remove"):
+            return False
+        body = self.read_json_body()
+        if body is None:
+            return True
+        try:
+            if path == "/api/engine/manifest":
+                action, man = engine.manifest(self.base_url(), str(body.get("org", "") or ""))
+                self.send_json(200, {"ok": True, "action": action, "manifest": man})
+            elif path == "/api/engine/app":
+                st = engine.verify_and_save(body.get("app_id"), body.get("key"))
+                body = None
+                engine_journal(self.actor(), "set", True, "App %s (id %s)" % (st["slug"], st["id"]))
+                self.send_json(200, {"ok": True, "engine": engine_snapshot()})
+            else:
+                removed = engine.remove()
+                engine_journal(self.actor(), "remove", True, "removed" if removed else "none was set")
+                self.send_json(200, {"ok": True, "removed": removed, "engine": engine_snapshot()})
+        except engine.EngineError as e:
+            if path != "/api/engine/manifest":
+                engine_journal(self.actor(), "set" if path.endswith("/app") else "remove", False, str(e))
+            self.send_json(400, {"ok": False, "error": str(e)})
+        except OSError as e:
+            self.send_json(500, {"ok": False, "error": "the engine's App could not be stored: %s" % e})
+        return True
+
+    def base_url(self):
+        """The floor's own address as the browser reached it: GitHub sends the
+        browser back here after the manifest flow."""
+        host = (self.headers.get("Host") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9.\-]+(:[0-9]{1,5})?|\[[0-9A-Fa-f:.]+\](:[0-9]{1,5})?", host):
+            raise engine.EngineError("the request carried no usable Host header")
+        return "http://" + host
 
     # -- fleets (#814) --------------------------------------------------------
     def fleet_route(self, method):
@@ -168,6 +225,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.authed():
             return self.deny()
+        if self.engine_route("GET"):
+            return
         if self.fleet_route("GET"):
             return
         path = urlparse(self.path).path
@@ -318,6 +377,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authed():
             return self.deny()
+        if self.engine_route("POST"):
+            return
         if self.fleet_route("POST"):
             return
         if self.empty:
@@ -343,6 +404,76 @@ class Handler(BaseHTTPRequestHandler):
 
 
 LOBBY = os.path.join(HERE, "floor", "lobby.html")
+
+
+def _registry_repos(config_dir):
+    """owner/repo lines of a fleet's work registry (repos.txt), comments off."""
+    out = []
+    try:
+        with open(os.path.join(config_dir, "repos.txt"), encoding="utf-8") as f:
+            for line in f:
+                tok = line.split("#", 1)[0].strip().split()
+                if tok and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+", tok[0]):
+                    out.append(tok[0])
+    except OSError:
+        pass
+    return out
+
+
+def engine_snapshot():
+    """The App (no secret) and, when there is one, which of the host's fleet
+    repositories it can read: one token per owner, from the engine's cache."""
+    st = engine.status()
+    repos = []
+    dirs = [d for _fid, d in list_fleets()] or [CONFIG_DIR]
+    for d in dirs:
+        for r in _registry_repos(d):
+            if r not in repos:
+                repos.append(r)
+    owners = {}
+    if st.get("configured"):
+        for r in repos:
+            o = r.split("/", 1)[0]
+            if o.lower() in owners:
+                continue
+            try:
+                engine.token_for(o)
+                owners[o.lower()] = {"owner": o, "ok": True, "error": ""}
+            except engine.EngineError as e:
+                owners[o.lower()] = {"owner": o, "ok": False, "error": str(e)}
+    st["repos"] = repos
+    st["owners"] = list(owners.values())
+    return st
+
+
+def engine_journal(actor, action, ok, what):
+    """One line per change to the engine's App: who, what, the verdict. The
+    key never reaches this function."""
+    line = "%s actor=%s action=engine-%s ok=%s %s\n" % (
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), actor or "-", action,
+        "yes" if ok else "no", (what or "").replace("\n", " ")[:300])
+    try:
+        os.makedirs(engine.engine_dir(), mode=0o700, exist_ok=True)
+        with open(os.path.join(engine.engine_dir(), "journal.log"), "a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError as e:
+        log("engine: journal not written (%s)" % e)
+
+
+def callback_page(st, error):
+    """What the browser lands on after GitHub's manifest flow."""
+    import html as _h
+    if st:
+        msg = ("<h1>The engine has its GitHub App</h1><p><b>%s</b> (App ID %s, owner %s).</p>"
+               "<p>Next: <a href=\"%s\">install it on the fleet's repositories</a> — "
+               "the tick reads only the repositories it is installed on.</p>"
+               % (_h.escape(st.get("slug") or ""), st.get("id"), _h.escape(st.get("owner") or "?"),
+                  _h.escape(st.get("install_url") or "")))
+    else:
+        msg = "<h1>The engine's App was not set</h1><p>%s</p>" % _h.escape(error)
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">"
+            "<title>crew floor — engine</title><body style=\"font:16px system-ui;margin:2rem;max-width:40rem\">"
+            "%s<p><a href=\"/\">Back to the floor</a></p></body>" % msg).encode("utf-8")
 NO_FLEET = ("no fleet on this host yet — create one: the floor's New fleet, "
             "or crew init --fleet <id>")
 

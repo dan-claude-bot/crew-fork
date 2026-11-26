@@ -34,11 +34,15 @@ with no fleets (#831): until the floor's New fleet makes one, each run says
 `no fleet on this host yet — nothing to walk` and exits 4. The real-host drill is
 operator-attended by construction and is not scheduled.
 
-**The host needs its own `gh` login.** The tick reads every registered board
-with the host's `gh`, never a box's — the `crew` account's: log it in once
-(`sudo -u crew -H gh auth login`, as the operator or a read-only identity)
-before the first tick. A host whose
-`gh` is dead or rate-limited says so on every tick and neither wakes nor
+**The engine reads as a GitHub App (#864).** The tick reads every registered
+board from the host, never through a box, as the engine's GitHub App: one per
+host, given on the floor (Credentials → Engine: create one in two clicks
+on GitHub, or paste an existing App's ID and key) or with `sudo crew
+engine set <app-id> < key.pem`, and installed on the fleet's repositories. It
+mints a one-hour installation token per owner and keeps it in memory only.
+With no App, the tick reads with the `crew` account's own `gh` login, as
+before. A repository whose owner the App is not installed on is named on every
+tick. A host whose engine credential is dead or rate-limited says so on every tick and neither wakes nor
 stops a box: the tick refuses to read blindness as a quiet fleet, so a dead
 credential costs wakes, never a mid-session stop.
 

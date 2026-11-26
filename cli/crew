@@ -53,6 +53,8 @@ source "$CREW_ROOT/shared/lib/box-entry.sh"
 source "$CREW_ROOT/shared/lib/common/tick-health.sh"
 # The host tick's decision and the pause shell (#759, #284): the decision is a
 # library so the suite drives it with fixtures; cli/crew only acts on it.
+# shellcheck source=shared/lib/host/engine.sh
+source "$CREW_ROOT/shared/lib/host/engine.sh"
 # shellcheck source=shared/lib/host/wake.sh
 source "$CREW_ROOT/shared/lib/host/wake.sh"
 # shellcheck source=shared/lib/host/pause.sh
@@ -728,6 +730,7 @@ CMDS=(
   "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
   "login^<box> gh|agent [<kind>]^Set a member's GitHub or agent credential from stdin: write-only, never read back^cmd_login"
   "creds^list [--json] | add gh <name> | add agent <name> <agent> [<kind>] | add tg <name> | chat [<chat-id>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
+  "engine^[set <app-id> | remove]^The engine's GitHub App: what reads the boards from the host; set takes the private key on stdin, write-only^cmd_engine"
   "usage^[--since 24h|7d] [--by member|pool|kind]^Sessions, minutes and cost over a window, from the host's store alone^cmd_usage"
   "drain^<box>^Pull a box's evidence and memory into the host's store: a full probe, ingested^cmd_drain"
   "versions^^List installed host versions and mark the current and running trees^cmd_versions"
@@ -853,7 +856,8 @@ ONE SERVICE PER MACHINE (#822)
       sudo crew service check         read it back; exit 1 on drift
       sudo crew service teardown      units, rule and grant gone; data kept
   Members of the 'crew' group run crew as the service (it re-runs itself via
-  sudo); the host's gh login is the service's: sudo -u crew -H gh auth login.
+  sudo). The engine reads the boards as a GitHub App, given on the floor
+  (Credentials → Engine) or with: sudo crew engine set <app-id> < key.pem.
 
 SEVERAL FLEETS ON ONE HOST (#814)
 
@@ -2544,7 +2548,7 @@ foreign_actor_check() {
   allowed="$(fleet_identities | sed '/^$/d' | sort -u)"
 
   while read -r repo; do
-    if ! events="$(gh api -X GET "repos/$repo/events?per_page=100" 2>/dev/null)"; then
+    if ! events="$(engine_gh api -X GET "repos/$repo/events?per_page=100" 2>/dev/null)"; then
       echo "crew: NOTE one-repo-one-fleet: could not inspect recent board activity for $repo; overlap detection skipped" >&2
       continue
     fi
@@ -4799,18 +4803,23 @@ tick_run() { # DRY_RUN
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
   store_py init >/dev/null 2>&1 || true
   tick_conf_knobs
-  # The host reads the boards with ITS OWN gh login. Without one every board is
-  # unreadable, and a tick that cannot see the board neither wakes nor stops:
-  # stopping on blindness would read a dead credential as a quiet fleet.
-  if ! gh auth status >/dev/null 2>&1; then
-    echo "  gh is not logged in on this host — no board can be read, so this tick wakes nothing and stops nothing (shared/docs/host-maintenance.md: the host's own login)"
+  # The host reads the boards as the engine's GitHub App (#864), or with its
+  # own gh login when it has none. With neither every board is unreadable,
+  # and a tick that cannot see the board neither wakes nor stops: stopping on
+  # blindness would read a dead credential as a quiet fleet.
+  if ! engine_configured && ! gh auth status >/dev/null 2>&1; then
+    echo "  the engine has no GitHub App and gh is not logged in on this host — no board can be read, so this tick wakes nothing and stops nothing (the floor: Credentials → Engine)"
     blind=1
   fi
   # 1. One read per repository, for the whole fleet.
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     [ "$blind" -eq 0 ] || break
-    if ! rows="$(wake_board_rows "$repo")"; then
+    # The App's token for this owner, minted here so the board's reads (forks)
+    # share it. An App that cannot read the owner is said by name.
+    ENGINE_LAST_ERROR=""
+    if ! engine_prime "$repo" || ! rows="$(wake_board_rows "$repo")"; then
+      [ -z "$ENGINE_LAST_ERROR" ] || echo "  $repo: $ENGINE_LAST_ERROR"
       # Blind for a tick or two is a hiccup; blind for TICK_BLIND_TICKS running
       # is a repository the host cannot read (renamed, private to this login,
       # gone), and holding every idle box up for it would keep the fleet fully
@@ -4818,7 +4827,7 @@ tick_run() { # DRY_RUN
       # set aside, and the rest of the fleet converges on the boards it can see.
       miss="$(tick_unreadable_count "$repo" 1)"
       if [ "$miss" -ge "${TICK_BLIND_TICKS:-3}" ]; then
-        echo "  $repo: board unreadable for $miss ticks — not holding the fleet for it (a renamed or inaccessible repository: fix the registry, or the host's login)"
+        echo "  $repo: board unreadable for $miss ticks — not holding the fleet for it (a renamed or inaccessible repository: fix the registry, or the engine's App — Credentials → Engine)"
       else
         echo "  $repo: board unreadable this tick — no change assumed, and no box is stopped on a tick that could not see the board"
         blind=1
@@ -5020,6 +5029,36 @@ tick_run() { # DRY_RUN
   done <<<"$(read_roster)"
   echo "tick: started $started, woke $woke, held $held, stopped $stopped, vetoed $vetoed, nothing-for $quiet; running $running of $FLEET_MAX_RUNNING"
   return 0
+}
+
+# --- engine (#864) -------------------------------------------------------------
+# The engine's GitHub App: what reads the boards from the host. One per host,
+# kept in $HOST_STATE_DIR/engine/ (the floor's Credentials → Engine writes the
+# same files). `set` takes the App's private key on STDIN — through the re-run
+# as the service account, which could not read the operator's own file — and
+# checks it signs for the App before anything is stored. Never read back.
+cmd_engine() {
+  local verb="${1:-}"
+  case "$verb" in
+    "")
+      [ "$#" -le 1 ] || usage_error "usage: $(synopsis_of engine)"
+      command -v python3 >/dev/null 2>&1 || die "python3 is required for the engine's App"
+      echo "engine: $(engine_describe)"
+      local js
+      js="$(engine_py status)" || js=""
+      if grep -q '"configured": true' <<<"$js"; then
+        printf '%s' "$js" | python3 -c 'import json,sys; s=json.load(sys.stdin); print("  its page:    %s\n  install it:  %s" % (s.get("html_url") or "-", s.get("install_url") or "-"))'
+      fi ;;
+    set)
+      [ "$#" -eq 2 ] || usage_error "usage: crew engine set <app-id> < private-key.pem"
+      command -v python3 >/dev/null 2>&1 || die "python3 is required for the engine's App"
+      [ ! -t 0 ] || die "the App's private key is read from stdin: crew engine set $2 < private-key.pem"
+      engine_py set "$2" || exit 1 ;;
+    remove)
+      [ "$#" -eq 1 ] || usage_error "usage: crew engine remove"
+      engine_py remove || exit 1 ;;
+    *) usage_error "unknown argument '$verb' (usage: $(synopsis_of engine))" ;;
+  esac
 }
 
 cmd_tick() {

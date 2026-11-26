@@ -1590,7 +1590,8 @@ function repoURL(repo){
 var FLEET_ID=((location.pathname||"").match(/^\/f\/([a-z][a-z0-9-]{0,29})\//)||[])[1]||"";
 function apiURL(path){
   var base=(location.origin&&location.origin!=="null"?location.origin:"");
-  if(FLEET_ID&&/^\/api\//.test(path)&&!/^\/api\/fleets(\?|$)/.test(path))base+="/f/"+FLEET_ID;
+  /* The fleets list and the engine's App (#864) are the host's, not a fleet's. */
+  if(FLEET_ID&&/^\/api\//.test(path)&&!/^\/api\/(fleets|engine)(\/|\?|$)/.test(path))base+="/f/"+FLEET_ID;
   return base+path;
 }
 /* No request waits forever (round 11): a command's longest server path is a
@@ -7187,8 +7188,8 @@ var POOL={entries:[],members:[]};
 function openCreds(){
   if(!LIVE){setStatus("credentials are live-only — run the collector to set them",true);return;}
   setStatus("reading the credential kinds…",false);
-  Promise.all([api("/api/credentials"),api("/api/pool").catch(function(){return null;})]).then(function(rs){
-    var r=rs[0];
+  Promise.all([api("/api/credentials"),api("/api/pool").catch(function(){return null;}),api("/api/engine").catch(function(){return null;})]).then(function(rs){
+    var r=rs[0];ENGINE=rs[2]||{configured:false,error:"the engine's App could not be read"};
     POOL=(rs[1]&&rs[1].entries)?rs[1]:{entries:[],members:[],error:(rs[1]&&rs[1].error)||"the pool could not be read"};
     if(!r||!r.members){setStatus("could not read the credential kinds",true);return;}
     var ov=document.getElementById("credov");
@@ -7203,8 +7204,8 @@ function openCreds(){
     CREDS_OPTS={members:r.members};
     document.getElementById("credttl").textContent="credentials · set, never read back";
     var units={};((LIVEMETA&&LIVEMETA.units)||[]).forEach(function(u){units[u.box]=u;});
-    document.getElementById("credbody").innerHTML=
-      '<div class="regnote">A member\'s GitHub token (one identity per box) and its agent\'s login. '
+    document.getElementById("credbody").innerHTML=engineSection()
+      +'<div class="regnote">A member\'s GitHub token (one identity per box) and its agent\'s login. '
       +'The value goes to the box once, as the input of the same shell the CLI\'s login verb runs, lands where its CLI reads it (0600), and is never shown, logged or kept on the host. '
       +'A row shows what the last poll read (<b>flowing</b>, <b>missing</b>, <b>stale</b>, <b>waiting</b>) and, after Set, the box\'s own verdict. '
       +'The box must be running. Each set is journalled by who and which kind — never the value.</div>'
@@ -7233,6 +7234,81 @@ function credsRow(m,u){
     +'<div class="rosst credverdict"></div></td>'
     +'<td><button class="lbtn" data-cred="set">Set</button></td>'
     +poolAssignCell(m)+'</tr>';
+}
+/* ---- the engine's GitHub App, in the same overlay (#864) ---------------------
+   The engine is what reads GitHub from the host — the tick's board reads — and
+   it reads as one GitHub App per host, never a member's login. Create runs
+   GitHub's manifest flow: a form POSTed to GitHub, which sends the browser back
+   to /engine/callback with a one-time code the floor turns into the App and its
+   key. Paste takes an existing App's ID and key; the key field is cleared
+   before the reply is read, and nothing on the page can show it back. */
+var ENGINE={configured:false};
+function engineSection(){
+  var e=ENGINE||{},h='<div class="regnote"><b>Engine</b> — the host\'s own GitHub reads (the tick reads each board once for the whole fleet). '
+    +'It reads as a GitHub App with read-only access, never as a member: members keep the logins below.';
+  if(e.error)h+='<br><b>'+esc(e.error)+'</b>';
+  if(e.configured){
+    h+='<br>App: <b>'+esc(e.slug||"?")+'</b> (ID '+esc(String(e.id))+', owner '+esc(e.owner||"?")+') · '
+      +(e.html_url?'<a href="'+esc(e.html_url)+'" target="_blank" rel="noopener">its page</a> · ':'')
+      +'<a href="'+esc(e.install_url||"#")+'" target="_blank" rel="noopener">install it on more repositories</a>';
+    var owners=e.owners||[];
+    if(!(e.repos||[]).length)h+='<br>No fleet repository yet: once a fleet names one, this says whether the App can read it.';
+    owners.forEach(function(o){h+='<br>'+(o.ok?'✓ ':'✗ ')+esc(o.owner)+(o.ok?' — readable':' — '+esc(o.error));});
+    h+='</div><div class="regnote"><button class="lbtn" data-eng="remove">Remove</button> the App: the engine falls back to the host\'s own gh login, if it has one.</div>';
+    return h;
+  }
+  h+='<br>None yet: until there is one, the tick reads with the host\'s own gh login, if it has one.</div>'
+    +'<div class="regnote"><b>Create one</b> — GitHub asks you to confirm, then sends you back here. '
+    +'Owner: <input class="rosin" id="eng-org" placeholder="your account — or an organization name" spellcheck="false" style="width:16em"> '
+    +'<button class="lbtn" data-eng="create">Create GitHub App</button>'
+    +'<br><b>Or use an existing App</b> — permissions: metadata, issues, pull requests, checks, commit statuses and discussions, read-only. '
+    +'App ID <input class="rosin" id="eng-id" inputmode="numeric" style="width:7em"> '
+    +'private key <textarea class="rosin" id="eng-key" rows="2" spellcheck="false" autocomplete="off" placeholder="paste the .pem — never shown again" style="width:18em;vertical-align:middle"></textarea> '
+    +'<button class="lbtn" data-eng="paste">Use it</button><div class="rosst" id="eng-verdict"></div></div>';
+  return h;
+}
+function engineRedraw(){
+  var body=document.getElementById("credbody");if(!body)return;
+  var first=body.firstElementChild;
+  while(first&&first.classList.contains("regnote")&&!/A member/.test(first.textContent)){var n=first.nextElementSibling;first.remove();first=n;}
+  body.insertAdjacentHTML("afterbegin",engineSection());
+}
+function enginePost(path,payload){
+  return fetch(apiURL(path),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})})
+    .then(function(r){return r.json().catch(function(){return {ok:false,error:"HTTP "+r.status};});});
+}
+function onEngineClick(b){
+  var what=b.dataset.eng;
+  if(what==="create"){
+    var org=(document.getElementById("eng-org")||{}).value||"";
+    setStatus("engine: opening GitHub…",false);
+    enginePost("/api/engine/manifest",{org:org.trim()}).then(function(r){
+      if(!r.ok){setStatus("engine: "+(r.error||"could not start"),true);return;}
+      var f=document.createElement("form");f.method="post";f.action=r.action;f.style.display="none";
+      var i=document.createElement("input");i.type="hidden";i.name="manifest";i.value=r.manifest;f.appendChild(i);
+      document.body.appendChild(f);f.submit();
+    },function(){setStatus("engine: the floor did not answer",true);});
+    return;
+  }
+  if(what==="paste"){
+    var idEl=document.getElementById("eng-id"),keyEl=document.getElementById("eng-key"),out=document.getElementById("eng-verdict");
+    var id=(idEl.value||"").trim(),key=keyEl.value||"";
+    if(!id||!key.trim()){setStatus("engine: the App ID and its private key, both — nothing set",true);return;}
+    keyEl.value="";out.textContent="checking with GitHub…";
+    enginePost("/api/engine/app",{app_id:id,key:key}).then(function(r){
+      key=null;
+      if(!r.ok){out.textContent=r.error||"refused";setStatus("engine: "+(r.error||"refused"),true);return;}
+      ENGINE=r.engine;engineRedraw();setStatus("engine: App "+(ENGINE.slug||"")+" set",false);
+    },function(){out.textContent="the floor did not answer — nothing known to be set";});
+    return;
+  }
+  if(what==="remove"){
+    if(!confirm("Remove the engine's GitHub App from this host? The tick falls back to the host's own gh login, if it has one."))return;
+    enginePost("/api/engine/remove",{}).then(function(r){
+      if(!r.ok){setStatus("engine: "+(r.error||"refused"),true);return;}
+      ENGINE=r.engine;engineRedraw();setStatus("engine: App removed",false);
+    });
+  }
 }
 /* ---- the pool, in the same overlay (#780) ---------------------------------- */
 function poolAssigned(box){
@@ -7364,6 +7440,7 @@ function onCredsChange(e){
   if(m)tr.querySelector('[data-k="kind"]').innerHTML=credsKindOptions(m,sel.value);
 }
 function onCredsClick(e){
+  var eb=e.target.closest("[data-eng]");if(eb)return onEngineClick(eb);
   var pb=e.target.closest("[data-pool-act]");if(pb)return onPoolClick(pb);
   var b=e.target.closest("[data-cred]");if(!b)return;
   var tr=b.closest("tr"),box=tr.dataset.box,inp=tr.querySelector('[data-k="secret"]');
