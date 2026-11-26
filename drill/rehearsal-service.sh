@@ -139,8 +139,13 @@ t "service: ...and the log holds the tick" 1 "$(sudo -n grep -c 'tick run start'
 
 # --- teardown --purge leaves nothing ---------------------------------------------------------
 asvc box rm --force "$SVC_BOX" </dev/null >/dev/null 2>&1
+SVC_UID="$(id -u "$U" 2>/dev/null || true)"
 aroot "$CLI" service teardown --purge </dev/null >"$TMP/down.out" 2>&1
 t "service: teardown --purge succeeds" 0 "$?"
+# #858: teardown used to say "revoked (purged)" over a revoke box refused
+# without a terminal; the grant's project is what that left behind.
+t "service: ...no box grant is left (project user-$SVC_UID)" 1 \
+  "$([ -n "$SVC_UID" ] && sudo -n incus project show "user-$SVC_UID" >/dev/null 2>&1 && echo 0 || echo 1)"
 t "service: ...no unit is left" 0 "$(systemctl list-unit-files "$PREFIX-*" --no-legend 2>/dev/null | grep -c . || true)"
 t "service: ...no sudoers rule is left" 1 "$(sudo -n test -e "/etc/sudoers.d/$PREFIX" && echo 0 || echo 1)"
 t "service: ...no account is left" 1 "$(id -u "$U" >/dev/null 2>&1 && echo 0 || echo 1)"
