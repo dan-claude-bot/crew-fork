@@ -43,6 +43,8 @@ t has-role-yes yes "$r1"
 t has-role-no no "$r2"
 
 # --- #285: per-author repository panels ------------------------------------
+# (with no fleet panel set: the repository decides, as before #879)
+unset FLEET_BENCH
 PANEL_REPO="$TMP/panel-repo"
 git init -q "$PANEL_REPO"
 mkdir -p "$PANEL_REPO/.github"
@@ -84,6 +86,18 @@ gh() { printf '%s\n' "$PANEL_API_CONF"; }
 t panel-local-without-panel-uses-api '["full-a","full-b","builder-one"]' \
   "$(panel_for_repo owner/stale "$PANEL_EMPTY_REPO" unknown-builder)"
 unset -f gh
+
+# #879: the fleet's own panel wins over the repository's labels.conf, author
+# line included; a blank one is no panel and the repository decides.
+FLEET_BENCH='fleet-a fleet-b'
+t panel-the-fleets-panel-wins '["fleet-a","fleet-b"]' "$(panel_for_repo owner/repo "$PANEL_REPO" builder-one)"
+# shellcheck disable=SC2317  # called indirectly by panel_for_repo
+gh() { echo "the contents API must not be asked" >&2; return 1; }
+t panel-the-fleets-panel-reads-no-repo '["fleet-a","fleet-b"]' "$(panel_for_repo owner/api "$TMP/not-cloned" builder-one 2>&1)"
+unset -f gh
+FLEET_BENCH='   '
+t panel-a-blank-fleet-panel-is-none '["author-a","author-b","builder-one"]' "$(panel_for_repo owner/repo "$PANEL_REPO" builder-one)"
+unset FLEET_BENCH
 
 # With neither repository config path available, the fleet bench is unchanged.
 # shellcheck disable=SC2034  # consumed dynamically by sourced panel_for_repo
