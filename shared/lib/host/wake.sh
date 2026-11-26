@@ -17,7 +17,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016  # jq and GraphQL programs carry their own $vars
 
-wake_gh()    { gh "$@"; }
+wake_gh()    { engine_gh "$@"; }   # the engine's App (#864), engine.sh
 wake_store() { store_py "$@"; }
 
 # wake_board_rows REPO — the board as rows, one per open object, or nothing

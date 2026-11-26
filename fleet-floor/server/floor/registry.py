@@ -267,8 +267,16 @@ def _probe_reachable(repo):
     string distinguishes the two cases, so an operator is never left guessing
     whether GitHub said no or nothing asked it.
     """
+    # As the engine (#864): the App's token for the owner when the host has
+    # one, the host's own gh login otherwise — the credential the tick reads
+    # with, which is the one this question is about.
+    from floor import engine
+    try:
+        env = engine.gh_env(repo.split("/", 1)[0])
+    except engine.EngineError as e:
+        return False, "the fleet cannot reach it: %s" % e
     rc, out, err = run(["gh", "api", "repos/%s" % repo, "-q", ".full_name"],
-                       REPO_PROBE_TIMEOUT_S)
+                       REPO_PROBE_TIMEOUT_S, env=env)
     if rc == 0 and out.strip():
         return True, ""
     if rc == 127:

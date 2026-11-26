@@ -56,8 +56,15 @@ sudo crew service setup               # the crew account and group, its box gran
                                       # (box 0.11.0), /var/lib/crew, the floor and
                                       # the schedule as systemd units — no fleet
 sudo usermod -aG crew <you>           # then log in again
-sudo -u crew -H gh auth login         # the host's own gh login, for the tick
 ```
+
+The engine — what reads the boards from the host — reads as **a GitHub App**,
+never a person's login (#864). Give it one on the floor, under **Credentials →
+Engine**: *Create GitHub App* runs GitHub's manifest flow (read-only
+permissions; GitHub sends you back to the floor with the App and its key), and
+*use an existing App* takes its ID and private key. From a shell:
+`sudo crew engine set <app-id> < key.pem`. Then install the App on the fleet's
+repositories. Members keep their own credentials; the App reads, it never acts.
 
 A crew server starts with **no fleets** (#831). Open the floor (the address and
 password are in `/etc/crew/floor.env`): its one action is **New fleet**. Make

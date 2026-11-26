@@ -181,6 +181,13 @@ else
   fail "jobs: a job that reads finished has released its slot (#847)" "see output above"
 fi
 
+# #864: the engine's GitHub App — tokens, the manifest flow, the floor's routes.
+if python3 "$HERE/engine.py"; then
+  ok "engine: the host reads GitHub as its App, and no reply or journal holds the key (#864)"
+else
+  fail "engine: the host reads GitHub as its App, and no reply or journal holds the key (#864)" "see output above"
+fi
+
 api() {  # api METHOD PATH [BODY] -> "<status>\n<body>"
   local m="$1" p="$2" b="${3:-}"
   if [ -n "$b" ]; then
