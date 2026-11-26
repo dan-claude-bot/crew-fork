@@ -7303,7 +7303,7 @@ function renderRepositories(){
       return o.ok?'<span class="mcred ok">engine ✓</span>':'<span class="mcred" title="'+esc(o.error)+'">engine ✗ not installed on '+esc(o.owner)+'</span>';
     };
     var h='<div class="pgtitle">Repositories <span class="rosst">this fleet\'s — '+esc(r.config_dir||"")+'</span></div>'
-      +'<div class="regnote">What this fleet works on. Each fleet has its own lists; only the engine\'s GitHub App is the host\'s (<a href="#/credentials">Credentials</a>). A member can narrow its scope to some of them on its own page.</div>';
+      +'<div class="regnote">What this fleet works on. Each fleet has its own lists; only the engine\'s GitHub App is the host\'s (<a href="#/credentials">Credentials</a>). A member can narrow its scope to some of them on its own page. A change reaches each member at its next wake, when the host tick re-stages it.</div>';
     h+=REGKINDS.map(function(k){
       var kind=k[0],f=r.fleet[kind],note="";
       if(f.present===false&&f.served_from){
@@ -7328,13 +7328,13 @@ function renderRepositories(){
    wins over a repository's .github/labels.conf. The page suggests what this
    fleet's reviewers answer as, flags a reviewer off the panel, and names a
    member still staged with an older panel — the setting reaches a box only at
-   its next hire or upgrade. */
+   its next wake — the host tick re-stages it then (#886) — or Upgrade. */
 function panelSection(p){
   var h='<div class="pgsec" id="panelsec"><div class="wt"><span class="dot"></span>REVIEW PANEL <span class="rosst">this fleet\'s — wins over each repository\'s labels.conf</span></div>';
   if(!p)return h+'<div class="regempty">the panel could not be read</div></div>';
-  h+='<div class="regnote">Who this fleet\'s builders ask for reviews, on every repository above, and the triage actor (which never reviews). Empty: each repository\'s own <code>.github/labels.conf</code> decides. A change reaches each member at its next <b>Upgrade</b>.</div>';
+  h+='<div class="regnote">Who this fleet\'s builders ask for reviews, on every repository above, and the triage actor (which never reviews). Empty: each repository\'s own <code>.github/labels.conf</code> decides. A change reaches each member at its next wake (the host tick re-stages it), or at once with <b>Upgrade</b>.</div>';
   (p.flags||[]).forEach(function(f){h+='<div class="rosst bad">⚠ '+esc(f)+'</div>';});
-  if((p.stale||[]).length)h+='<div class="rosst bad">staged with an older panel — Upgrade them: '+p.stale.map(function(b){return '<a href="#/member/'+encodeURIComponent(b)+'">'+esc(b)+'</a>';}).join(", ")+'</div>';
+  if((p.stale||[]).length)h+='<div class="rosst bad">staged with an older panel — they get the new one at their next wake, or Upgrade them now: '+p.stale.map(function(b){return '<a href="#/member/'+encodeURIComponent(b)+'">'+esc(b)+'</a>';}).join(", ")+'</div>';
   var sb=(p.suggest&&p.suggest.bench)||[],st=(p.suggest&&p.suggest.triage)||"";
   var differs=sb.length&&sb.join(" ")!==(p.bench||[]).join(" ");
   h+='<div class="reporow">panel <input class="rosin" data-k="panel-bench" spellcheck="false" placeholder="(empty: the repositories decide)" value="'+esc((p.bench||[]).join(" "))+'" style="width:22em"></div>'
@@ -7388,7 +7388,7 @@ function onPageClick(e){
     var tri=(document.querySelector('#pagebody [data-k="panel-triage"]').value||"").trim();
     var pacts=b.closest(".regacts");
     return act("ov:panel","panel-set",{bench:bench,triage:tri}).then(function(r){
-      return pgAfter(r,pacts,'#pagebody [data-pg="panel-save"]',"saved — panel "+(bench.join(", ")||"empty: the repositories decide")+"; it reaches each member at its next Upgrade");});
+      return pgAfter(r,pacts,'#pagebody [data-pg="panel-save"]',"saved — panel "+(bench.join(", ")||"empty: the repositories decide")+"; it reaches each member at its next wake, or Upgrade now");});
   }
   if(what==="add-open"){var f=addForm();if(f){f.hidden=false;addNameSync();f.querySelector('[data-k="add-name"]').focus();}return;}
   if(what==="add-cancel"){var f2=addForm();if(f2)f2.hidden=true;return;}

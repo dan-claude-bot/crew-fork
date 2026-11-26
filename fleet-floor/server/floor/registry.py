@@ -51,8 +51,9 @@ turn:
       alone would hold the invariant for exactly as long as nobody edited the
       fleet-wide list.
 
-  it is not the transport.  Writing here changes what the next `crew upgrade`
-      stages onto a box; nothing in this process reaches into a guest. The
+  it is not the transport.  Writing here changes what the next staging —
+      the host tick's re-stage on a member's wake (#886), or `crew upgrade` —
+      puts onto a box; nothing in this process reaches into a guest. The
       transport half is `cli/crew`'s `stage_fleet_definition`, which resolves
       the same override this module writes.
 """

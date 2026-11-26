@@ -214,5 +214,5 @@ def set_panel(body, actor=""):
             recorded = False
     return 200, {"ok": True, "action": action, "bench": bench, "triage": triage, "recorded": recorded,
                  "results": [{"box": "fleet", "ok": True,
-                              "out": "panel: %s; triage: %s — reaches each member at its next hire or upgrade"
+                              "out": "panel: %s; triage: %s — reaches each member at its next wake, or at once with Upgrade"
                                      % (", ".join(bench) or "the repositories decide", triage or "none")}]}
