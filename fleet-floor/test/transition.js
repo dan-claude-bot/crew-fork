@@ -98,13 +98,14 @@ const ok = (name, cond, detail = '') => {
 
   // Take the box down THROUGH THE APP, which is how an operator would, and
   // then just keep standing there.
-  await page.evaluate(async (name) => {
-    await fetch(location.origin + '/api/command', {
+  const offReply = await page.evaluate(async (name) => {
+    const r = await fetch(location.origin + '/api/command', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'power-off', box: name }),
     });
+    return r.status + ' ' + (await r.text()).slice(0, 400);
   }, target);
-  console.log(`  (powered off ${target}; staying in its console)`);
+  console.log(`  (powered off ${target}; staying in its console) — ${offReply}`);
 
   // Wait for the page to poll and re-render the room it is standing in.
   let updated = false;
@@ -131,14 +132,14 @@ const ok = (name, cond, detail = '') => {
   // The running-session timer must be GONE: a counter still ticking up for a
   // box that is off is the most convincing wrong thing the console can show.
   ok('transition: the running-session timer is gone', !after.hasTimer, after.current);
-  /* #875: a hired box taken down cleanly is ASLEEP — 0.1.4's host tick
-     starts a stopped member when its board has work, so this is the calm
-     state, not the SILENT alarm. A box that stops ANSWERING while it should
-     be up is still offline/SILENT (units.py: only a cleanly stopped box the
-     store saw hired is asleep). */
-  ok('transition: it says ASLEEP', /ASLEEP/.test(after.current + ' ' + after.state) && !/SILENT/.test(after.current + ' ' + after.state),
+  /* #898: a box taken down from the console is STOPPED by the operator —
+     held, and the host tick does not start it until Start — so the calm
+     state the console shows is the hold's own word, never the SILENT alarm
+     and never ASLEEP (the tick's own sleep, which it would wake). A box that
+     stops ANSWERING while it should be up is still offline/SILENT. */
+  ok('transition: it says STOPPED, the operator\'s hold', /STOPPED/.test(after.current + ' ' + after.state) && !/SILENT/.test(after.current + ' ' + after.state),
      `state=${after.state} current=${after.current}`);
-  ok('transition: it says WHY', /stopped|unreachable|crew up|paused|cron|host tick wakes/i.test(after.current + ' ' + after.vitals),
+  ok('transition: it says WHY', /stopped|unreachable|crew up|paused|cron|host tick wakes|Start lifts it/i.test(after.current + ' ' + after.vitals),
      after.current);
   /* The Pause label names the ACTION the click will send, not the box's
      liveness: a powered-off box is not paused, so the click still sends

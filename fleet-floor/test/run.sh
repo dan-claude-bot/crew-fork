@@ -96,6 +96,10 @@ export FLOOR_FIXTURE="$HERE/fixtures/fleet.txt"
 export FLOOR_TEST_FIXTURE=1
 export FLOOR_CALLS="$TMP/box-calls.log"
 export FLOOR_STATE="$TMP/state"
+# The main collector's stub state under its own name: test/cli.sh, sourced
+# later, re-exports FLOOR_STATE for its own stub and removes that directory,
+# so a reader after it (browser.js resetting a fixture) names this one.
+export FLOOR_MAIN_STATE="$FLOOR_STATE"
 export PATH="$TMP/bin:$PATH"
 mkdir -p "$TMP/bin" "$FLOOR_STATE"
 ln -sf "$HERE/stub-box" "$TMP/bin/box"
