@@ -227,6 +227,12 @@ case "$cmd" in
       # The busy probe the stop path makes: `<box>.lock` names a held lock.
       *'flock -n "$lock" true'*) echo "probe $name" >>"$HT_STATE/calls"; if [ -s "$HT_STATE/$name.lock" ]; then echo "busy $(cat "$HT_STATE/$name.lock")"; else echo "idle 0"; fi ;;
       *'CREW-FLOOR-PAUSED'*) echo "crontab $name" >>"$HT_STATE/calls"; echo "paused 1" ;;
+      # The wake's re-stage (#886): bxput's writes, the seed sweep, then the
+      # in-box convergence, which says a diverged copy when told to.
+      *'.crew-stage.XXXXXX'*) cat >/dev/null; exit 0 ;;
+      *'rm -rf ~/duty/.crew-seed-agents'*) exit 0 ;;
+      *'registry-sync.sh'*) echo "restage $name" >>"$HT_STATE/calls"
+        [ ! -e "$HT_STATE/$name.diverged" ] || echo "crew: $name: repos.txt diverged from its last transported value — LEFT UNCHANGED" ;;
       *) exit 1 ;;
     esac ;;
   *) exit 0 ;;
@@ -775,5 +781,32 @@ t auth-dead-sets-nothing-aside 0 "$(grep -c 'alpha: veto .*:passed' <<<"$OUT")"
 t auth-dead-says-why 1 "$(grep -c 'alpha: its last run had no working login (gh rejected) — its work is not set aside' <<<"$OUT")"
 t auth-dead-its-work-still-wakes-it 1 "$(grep -c 'alpha: woke (running) why=.*pr#o/r#30' <<<"$OUT")"
 t store-last-run-is-the-latest-run 2 "$(CREW_CONFIG_DIR="$CONF" python3 "$ROOT/fleet-floor/server/floor/store.py" last-run --box alpha | grep -c .)"
+
+
+# (#886) A wake re-stages the member's fleet definition, and the tick sets
+# nothing aside for a repository the member's box was never staged with.
+echo stopped >"$STATE/alpha.state"; echo stopped >"$STATE/gamma.state"; printf '0\n' >"$STATE/alpha.idle"
+ht_record alpha dan-claude-bot '' 0
+rm -f "$CONF/store/wake"/alpha.* "$STATE/alpha.lock" "$STATE/alpha.ledger" "$CONF/store/staged/alpha.repos"; : >"$STATE/calls"
+ht_board 'I 18 2026-10-23T19:00:00Z lista -' 'P 30 2026-10-23T19:10:00Z dan-claude-bot 0 -' ''
+capture tick
+t restage-a-started-member-is-re-staged 1 "$(calls 'restage alpha')"
+t restage-it-records-what-it-staged 1 "$([ -f "$CONF/store/staged/alpha.repos" ] && grep -cx 'o/r' "$CONF/store/staged/alpha.repos" || echo 0)"
+t restage-before-the-wake "restage alpha|wake alpha" "$(grep -E '^(restage|wake) alpha' "$STATE/calls" | cut -d' ' -f1,2 | paste -sd'|' -)"
+# A running member woken again is re-staged too; a diverged copy is said.
+: >"$STATE/alpha.diverged"; : >"$STATE/calls"
+ht_board 'I 18 2026-10-23T19:00:00Z lista -' 'P 30 2026-10-23T19:30:00Z dan-claude-bot 0 -' ''
+capture tick
+t restage-a-running-member-is-re-staged 1 "$(calls 'restage alpha')"
+t restage-a-diverged-copy-is-said 1 "$(grep -c 'alpha: re-staged — crew: alpha: repos.txt diverged' <<<"$OUT")"
+rm -f "$STATE/alpha.diverged"
+# A box staged without the repository: its idle ticks are no verdict there.
+printf 'other/repo\n' >"$CONF/store/staged/alpha.repos"
+printf '2\n' >"$STATE/alpha.idle"; ht_record alpha dan-claude-bot '' 2
+ht_board $'I 18 2026-10-23T19:00:00Z lista -\nI 31 2026-10-23T19:50:00Z blocked -' 'P 30 2026-10-23T19:30:00Z dan-claude-bot 0 -' ''
+: >"$STATE/calls"
+capture tick
+t unstaged-sets-nothing-aside 0 "$(grep -c 'alpha: veto .*:passed' <<<"$OUT")"
+t unstaged-says-why 1 "$(grep -c 'alpha: its box was staged without o/r — its work there is not set aside; a wake re-stages it' <<<"$OUT")"
 
 suite_finish

@@ -1604,6 +1604,9 @@ stage_fleet_definition() { # BOX
     # with an older one, since the fleet's setting reaches a box only here.
     if mkdir -p "$CONFIG_DIR/store/staged" 2>/dev/null; then
       sed -n 's/^FLEET_BENCH=//p' "$FLEET_CONF" | tail -1 | tr -d "\"'" >"$CONFIG_DIR/store/staged/$box_name.bench" 2>/dev/null || true
+      # And the work registry it was given (#886): the tick sets nothing aside
+      # for a repository a member's box was never staged with.
+      grep -v '^[[:space:]]*#' "$work_seed" 2>/dev/null | awk 'NF { print $1 }' >"$CONFIG_DIR/store/staged/$box_name.repos" 2>/dev/null || true
     fi
     registry_seed_discard work "$work_seed"
     registry_seed_discard notify "$notify_seed"
@@ -4728,7 +4731,8 @@ tick_passed() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     read -r reason ts <<<"$line"
-    if [ -n "$f" ] && [ -f "$f" ] && [ "${reason#veto:}" = "$reason" ] && [ "$ts" != - ]; then
+    if [ -n "$f" ] && [ -f "$f" ] && [ "${reason#veto:}" = "$reason" ] && [ "$ts" != - ] \
+       && [ -z "$(tick_unstaged_repo "$1" "$reason")" ]; then
       wts=""; widle=""; wctx=""
       read -r wts widle wctx < <(awk -v r="$reason" '$1 == r { print $2, $3, $4 }' "$f" | tail -1)
       # FROZEN (a held, stopped member, #763 round 9): its stored idle count
@@ -4742,6 +4746,33 @@ tick_passed() {
     fi
     printf '%s\n' "$line"
   done <<<"$2"
+}
+
+# tick_restage MEMBER — the member's fleet definition, staged again on a wake
+# (#886): the registry, its own narrowing, fleet.conf (the panel) and the
+# roster, then converged in the box by bin/registry-sync.sh under install.sh's
+# veto. A registry the operator changed after hire reaches the box at its next
+# wake, not only at its next upgrade. A failure is said and changes nothing:
+# the box keeps what it was last staged with.
+tick_restage() {
+  local name="$1" out
+  if stage_fleet_definition "$name" >/dev/null 2>&1 &&
+     out="$(bxn "$name" 'bash ~/duty/bin/registry-sync.sh' 2>&1)"; then
+    case "$out" in *"LEFT UNCHANGED"*) echo "  $name: re-staged — $(grep -m1 'LEFT UNCHANGED' <<<"$out" | tr -d '\r')" ;; esac
+    return 0
+  fi
+  echo "  $name: its fleet definition could not be re-staged on this wake — it keeps what it was last staged with"
+  return 1
+}
+
+# tick_unstaged_repo MEMBER REASON — prints the repository when REASON names
+# one the member's box was not staged with (#886), nothing otherwise.
+tick_unstaged_repo() {
+  local f="$CONFIG_DIR/store/staged/$1.repos" repo
+  [ -f "$f" ] || return 0
+  repo="$(cut -d'#' -f2 <<<"$2")"
+  [ -n "$repo" ] || return 0
+  grep -qxF "$repo" "$f" || printf '%s\n' "$repo"
 }
 
 # tick_auth_dead MEMBER — prints why when the member's latest stored run
@@ -4819,7 +4850,7 @@ tick_wake() {
 
 tick_run() { # DRY_RUN
   local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE held_repos
-  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held auth_dead
+  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held auth_dead unstaged
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
   mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
@@ -4971,9 +5002,11 @@ tick_run() { # DRY_RUN
     # box's stored count would otherwise be the last word, and a new
     # needs-triage issue never a wake: only tick_passed sets one aside, by
     # the item and its timestamp (#763 rounds 3 and 5).
+    unstaged="$(while read -r r _; do [ -n "$r" ] && [ "${r#veto:}" = "$r" ] && tick_unstaged_repo "$name" "$r"; done <<<"$surviving" | sort -u | paste -sd' ' -)"
+    [ -z "$unstaged" ] || echo "  $name: its box was staged without $unstaged — its work there is not set aside; a wake re-stages it"
     auth_dead="$(tick_auth_dead "$name")"
     [ -z "$auth_dead" ] || echo "  $name: its last run had no working login ($auth_dead rejected) — its work is not set aside; set its credentials on the floor (Credentials)"
-    if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] && [ -z "$auth_dead" ] \
+    if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] && [ -z "$auth_dead" ] && [ -z "$unstaged" ] \
        && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
       echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"
       why=""
@@ -4982,7 +5015,7 @@ tick_run() { # DRY_RUN
       case "$state" in
         running)
           echo "  $name: woke (running) why=$why"
-          [ "$dry" -eq 1 ] || { tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle" "$login"; }
+          [ "$dry" -eq 1 ] || { tick_restage "$name" || true; tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle" "$login"; }
           woke=$((woke + 1)) ;;
         stopped)
           if [ "$running" -ge "$FLEET_MAX_RUNNING" ]; then
@@ -5012,6 +5045,8 @@ tick_run() { # DRY_RUN
             # A pool entry rotated while this member slept reaches it now,
             # before the tick it was woken for (#774).
             pool_fanout "$name" stale "tick" || true
+            # Its fleet definition as the host holds it now (#886).
+            tick_restage "$name" || true
             tick_wake "$name" "$why"; tick_woken_record "$name" "$surviving" "$idle" "$login"
           fi ;;
         *) echo "  $name: state '$state' — left alone; why=$why"; continue ;;

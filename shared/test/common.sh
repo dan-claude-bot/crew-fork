@@ -5314,6 +5314,27 @@ printf 'fixture/incoming\n' >"$RDUTY/.crew-seed-repos.txt"
 roster_install --box claude-builder --converge-registries >/dev/null 2>&1
 t install-registry-migration-vetoes-unknown fixture/unknown-local "$(cat "$RDUTY/repos.txt")"
 
+# The wake's re-stage (#886): bin/registry-sync.sh converges the same way, in
+# the installed box, with no engine install.
+rsync_run() { DUTY_DIR="$RDUTY" bash "$RDUTY/bin/registry-sync.sh" 2>&1; }
+printf 'fixture/at-hire\n' >"$RDUTY/repos.txt"
+sha256sum "$RDUTY/repos.txt" | awk '{print $1}' >"$RDUTY/.repos.txt.crew-provenance"
+printf 'fixture/added-later\n' >"$RDUTY/.crew-seed-repos.txt"
+printf 'fixture/example\n' >"$RDUTY/.crew-example-repos.txt"
+rs_out="$(rsync_run)"
+t registry-sync-converges-an-untouched-copy fixture/added-later "$(cat "$RDUTY/repos.txt")"
+t registry-sync-discards-the-seeds absent \
+  "$([ -e "$RDUTY/.crew-seed-repos.txt" ] || [ -e "$RDUTY/.crew-example-repos.txt" ] && printf present || printf absent)"
+printf 'fixture/narrowed-by-hand\n' >"$RDUTY/repos.txt"
+printf 'fixture/wider\n' >"$RDUTY/.crew-seed-repos.txt"
+printf 'fixture/example\n' >"$RDUTY/.crew-example-repos.txt"
+rs_out="$(rsync_run)"
+t registry-sync-keeps-the-veto fixture/narrowed-by-hand "$(cat "$RDUTY/repos.txt")"
+case "$rs_out" in *"repos.txt diverged"*"LEFT UNCHANGED"*) r1=named ;; *) r1=silent ;; esac
+t registry-sync-says-the-veto named "$r1"
+rs_out="$(rsync_run)"; rs_rc=$?
+t registry-sync-nothing-staged-is-0 "0 registry-sync: nothing staged" "$rs_rc $rs_out"
+
 # Convergence must fail closed when any one-shot transport leg is absent.
 # Call install.sh directly: roster_install deliberately backfills the payloads
 # so the ordinary convergence cases exercise the complete host transport.
