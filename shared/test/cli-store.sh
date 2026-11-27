@@ -204,7 +204,12 @@ t cli-store-status-table-dead-row-carries-the-brief 1 "$(grep -cE '^alpha .* sto
 t cli-store-status-table-never-pulled-row-has-none 0 "$(grep '^beta ' <<<"$OUT" | grep -c 'stored:')"
 echo stopped >"$STATE/alpha.state"
 capture status
-t cli-store-status-table-stopped-row-carries-the-brief 1 "$(grep -cE '^alpha +stopped .*crew up starts it · stored: review box#2' <<<"$OUT")"
+t cli-store-status-table-stopped-row-carries-the-brief 1 "$(grep -cE '^alpha +stopped .*crew up starts it, and crew hire alpha puts it on duty · stored: review box#2' <<<"$OUT")"
+# A member staged at hire or upgrade is asleep, not one to `crew up` (#885).
+mkdir -p "$CONF/store/staged"; printf 'andriujoseba\n' >"$CONF/store/staged/alpha.bench"
+capture status
+t cli-store-status-a-staged-stopped-member-is-asleep 1 "$(grep -cE '^alpha +stopped .*asleep — the host tick wakes it when its board has work · stored: review box#2' <<<"$OUT")"
+rm -f "$CONF/store/staged/alpha.bench"
 rm -f "$STATE/alpha.state"
 # The store is never CREATED by a read: with it gone, status prints no stored
 # line and makes no file.

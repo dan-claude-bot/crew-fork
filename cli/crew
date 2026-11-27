@@ -5831,8 +5831,12 @@ cmd_status() {
     fi
     state="$(box_state "$name")"
     if [ "$state" = "stopped" ]; then
+      # A member staged at hire or upgrade is ASLEEP: the host tick put it to
+      # sleep and wakes it when its board has work (#885, as #875 on the floor).
+      local stopped_note="stopped — crew up starts it, and crew hire $name puts it on duty"
+      [ ! -f "$CONFIG_DIR/store/staged/$name.bench" ] || stopped_note="asleep — the host tick wakes it when its board has work"
       # shellcheck disable=SC2059
-      printf "$fmt" "$name" stopped "$host" - - - - "crew up starts it$(stored_brief="$(stored_note "$name" --brief)"; printf '%s' "${stored_brief:+ · $stored_brief}")"
+      printf "$fmt" "$name" stopped "$host" - - - - "$stopped_note$(stored_brief="$(stored_note "$name" --brief)"; printf '%s' "${stored_brief:+ · $stored_brief}")"
       continue
     fi
     report="$(engine_report "$name")"

@@ -124,7 +124,7 @@ t setup-reloads-and-starts "systemctl daemon-reload|systemctl enable --now crew-
 t setup-makes-no-fleet 0 "$(calls 'init --fleet')"
 t setup-leaves-the-index-empty 0 "$(find "$CREW_DATA_DIR/fleets" -mindepth 1 | grep -c . || true)"
 t setup-says-there-is-no-fleet-yet 1 "$(grep -c "^  fleets: none yet — the floor's New fleet makes the first$" <<<"$OUT")"
-t setup-points-at-new-fleet 1 "$(grep -c 'then, in the floor: New fleet, its members in its Roster' <<<"$OUT")"
+t setup-points-at-new-fleet 1 "$(grep -c 'then, in the floor: New fleet, add its members on Members, and Create each one' <<<"$OUT")"
 t setup-tells-the-next-steps 1 "$(grep -c "the engine's GitHub App: the floor's Credentials → Engine" <<<"$OUT")"
 t setup-no-longer-asks-for-a-gh-login 0 "$(grep -c 'gh auth login' <<<"$OUT" || true)"
 PASS1="$(grep '^CREW_FLOOR_PASS=' "$CREW_ETC_DIR/floor.env")"
@@ -171,6 +171,8 @@ OUT="$(CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service check 2>&1)"; RC=$?
 t check-a-clean-service-is-0 0 "$RC"
 t check-says-clean 1 "$(grep -cx 'service: clean' <<<"$OUT")"
 t check-says-the-engine-never-as-drift 1 "$(grep -c '^  note   engine: ' <<<"$OUT")"
+# #885: a failing `crew engine` is said with its own words, and run from /.
+t check-the-engine-note-names-a-failure 1 "$(grep -cE '^  note   engine: (crew engine did not answer \(.+\)|.+)$' <<<"$OUT")"
 printf '# hand edit\n' >>"$CREW_SYSTEMD_DIR/crew-tick.timer"
 OUT="$(CREW_SERVICE_ASSUME_ROOT=1 bash "$CLI" service check 2>&1)"; RC=$?
 t check-a-changed-unit-is-1 1 "$RC"
