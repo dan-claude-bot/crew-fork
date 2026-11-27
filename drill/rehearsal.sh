@@ -1101,6 +1101,39 @@ else
   check "triage: quiet-board tick launched no session" bx \
     "out=\$(tail -n +$((DUTY_LOG_LINES + 1)) ~/duty/duty.log); grep -Fq '$SANDBOX: quiet — no mentions, no triage signals, no session launched' <<<\"\$out\""
 
+  # -- #887: the mention cue on real GitHub, no session spent ----------------
+  # GitHub's notification `reason` sticks to a thread, so the cue is a NEW
+  # comment that names the member. Read against real payloads with the box's
+  # own token: thread A (a fresh @-mention) is addressed; thread B, marked read
+  # by the box and then commented on by someone else without naming it, is not.
+  m_login="$(gh_login_from "$(bx "gh api user --jq .login")")" || m_login=""
+  if [ -n "$m_login" ]; then
+    m_a="$(gh issue create -R "$SANDBOX" --title "drill #887: mention cue A" --body "@$m_login are you there? (drill)" 2>/dev/null | grep -o '[0-9]*$')"
+    m_b="$(gh issue create -R "$SANDBOX" --title "drill #887: mention cue B" --body "@$m_login an earlier ask (drill)" 2>/dev/null | grep -o '[0-9]*$')"
+    m_thread() { bx "gh api notifications --jq '.[] | select(.subject.url | endswith(\"/issues/$1\")) | .id'" | tr -d '\r' | head -1; }
+    m_both() { [ -n "$(m_thread "$m_a")" ] && [ -n "$(m_thread "$m_b")" ]; }
+    wait_for 120 "mentions: both notifications reached the box's account (#887)" m_both || true
+    m_tb="$(m_thread "$m_b")"
+    if [ -n "$m_tb" ] && bx "export DUTY_DIR=~/duty; cd ~/duty && . lib/common.sh && . lib/duty-triage.sh && mention_mark_read $m_tb" >/dev/null 2>&1 \
+       && [ "$(bx "gh api notifications/threads/$m_tb --jq .unread" | tr -d '\r')" = false ]; then
+      ok "mentions: a thread is marked read on GitHub with the member's own token (#887)"
+    else
+      fail "mentions: a thread is marked read on GitHub with the member's own token (#887)" "thread ${m_tb:-not found}"
+    fi
+    gh issue comment "$m_b" -R "$SANDBOX" --body "a note between people, no mention (drill #887)" >/dev/null 2>&1 || true
+    sleep 10
+    m_read="$(bx "gh api notifications/threads/$m_tb --jq '.last_read_at // \"\"'" | tr -d '\r')"
+    m_cue() { bx "export DUTY_DIR=~/duty; cd ~/duty && . lib/common.sh && . lib/duty-triage.sh && ME=$m_login && mention_addressed '' 'https://api.github.com/repos/$SANDBOX/issues/$1' '$2'; echo rc=\$?" | tr -d '\r' | tail -1; }
+    m_rc_a="$(m_cue "$m_a" 2000-01-01T00:00:00Z)"
+    m_rc_b="$( [ -z "$m_read" ] || m_cue "$m_b" "$m_read")"
+    check "mentions: a fresh @-mention is addressed (#887)" test "$m_rc_a" = rc=0
+    check "mentions: a comment after the thread was read, naming nobody, is not (#887)" test "$m_rc_b" = rc=1
+    gh issue close "$m_a" -R "$SANDBOX" >/dev/null 2>&1 || true
+    gh issue close "$m_b" -R "$SANDBOX" >/dev/null 2>&1 || true
+  else
+    fail "mentions: the cue on real GitHub (#887)" "the box answered no GitHub login"
+  fi
+
   fi
 
   # -- the hygiene slot's board audit: both malformed shapes, not repaired --

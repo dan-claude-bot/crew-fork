@@ -337,9 +337,75 @@ _triage_round_count() {
   return 0
 }
 
+# --- the mention cue (#887) ----------------------------------------------------
+# GitHub's notification `reason` sticks to a thread: once the account was
+# mentioned, every later comment by anyone arrives as an unread `mention`. So
+# the reason only says where to look; the cue is a NEW comment that names this
+# member (or answers in a thread it opened), since the later of the thread's
+# `last_read_at` and the member's starting point. A thread older than the
+# starting point is the backlog: counted, never answered. A thread handled, or
+# evaluated as not addressed to the member, is marked read on GitHub.
+
+# mentions_since — the member's starting point (ISO 8601 UTC): MENTIONS_SINCE
+# from the fleet's conf, else .mentions-since, written at the first triage run
+# and kept in the store like the ledgers (fleet-floor/server/probe.sh).
+mentions_since() {
+  local f="$DUTY_DIR/.mentions-since" v
+  if [ -n "${MENTIONS_SINCE:-}" ]; then printf '%s\n' "$MENTIONS_SINCE"; return 0; fi
+  v="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then printf '%s\n' "$v"; return 0; fi
+  v="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s\n' "$v" >"$f" 2>/dev/null || true
+  printf '%s\n' "$v"
+}
+
+# mention_addressed REPO SUBJECT_URL SINCE [ANY] — 0 when the thread holds,
+# since SINCE, an item by someone else that @-mentions ME, or any item by
+# someone else in a thread ME opened; 1 when it does not; 2 when it cannot be
+# read (the caller then keeps it, as before #887: a dropped mention is worse
+# than an extra one). ANY=1 (a team mention: `@org/team` never names ME)
+# counts any item by someone else since SINCE.
+mention_addressed() {
+  local repo="$1" url="$2" since="$3" any="${4:-0}" kind num thread items author
+  if [[ "$url" =~ /repos/([^/]+/[^/]+)/(issues|pulls)/([0-9]+)$ ]]; then
+    repo="${BASH_REMATCH[1]}"; kind="${BASH_REMATCH[2]}"; num="${BASH_REMATCH[3]}"
+  else
+    return 2
+  fi
+  thread="$(gh api "repos/$repo/issues/$num" 2>/dev/null)" || return 2
+  items="$(gh api --paginate "repos/$repo/issues/$num/comments?since=$since&per_page=100" 2>/dev/null)" || return 2
+  if [ "$kind" = pulls ]; then
+    items="$items
+$(gh api --paginate "repos/$repo/pulls/$num/comments?since=$since&per_page=100" 2>/dev/null || echo '[]')
+$(gh api --paginate "repos/$repo/pulls/$num/reviews?per_page=100" 2>/dev/null || echo '[]')"
+  fi
+  author="$(jq -r '.user.login // ""' <<<"$thread" 2>/dev/null)"
+  printf '%s\n%s\n' "[$thread]" "$items" | jq -e -s --arg me "$ME" --arg since "$since" --arg author "$author" --arg any "$any" '
+    ($me | ascii_downcase) as $m
+    | [ add[]?
+        | select(((.created_at // .submitted_at // "") > $since)
+                 and ((.user.login // "" | ascii_downcase) != $m)) ]
+    | any(.[];
+          ($any == "1")
+          or ((.body // "") | ascii_downcase | test("(^|[^a-z0-9-])@" + ($m | gsub("[-]"; "\\-")) + "($|[^a-z0-9-])"))
+          or (($author | ascii_downcase) == $m))
+  ' >/dev/null 2>&1 && return 0
+  return 1
+}
+
+# mention_mark_read THREAD_ID… — GitHub's read state follows the ledger.
+mention_mark_read() {
+  local id
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    gh api -X PATCH "notifications/threads/$id" >/dev/null 2>&1 || warn "mentions: could not mark thread $id read"
+  done
+}
+
 duty_triage() {
   local R notification_pages all_mentions repo_json fresh_threads fresh_json fresh_mentions
-  local keep_threads keep_json mentions mcount mention_rc
+  local keep_threads keep_json mentions mcount mention_rc since backlog_n addressed noise row
+  local -a noise_ids=()
   local -a repos=()
   mapfile -t repos < <(read_repo_list "$REPOS_FILE")
 
@@ -361,13 +427,38 @@ duty_triage() {
                      or ((.subject.type // "") == "Discussion"
                          and (.reason == "author" or .reason == "comment")))
                     and (.repository.full_name as $repo | $repos | index($repo)))
-           | {repo: .repository.full_name, thread: .id,
-              subject: .subject.url, updated: .updated_at} ]
+           | {repo: .repository.full_name, thread: .id, reason: .reason,
+              subject: .subject.url, updated: .updated_at,
+              read: (.last_read_at // ""),
+              type: (.subject.type // "")} ]
      ' 2>/dev/null)"; then
     :
   else
     warn "notifications probe failed; mention wake skipped this tick"
     all_mentions='[]'
+  fi
+  # The starting point and the real cue (#887).
+  since="$(mentions_since)"
+  backlog_n="$(jq --arg s "$since" '[.[] | select(.updated <= $s)] | length' <<<"$all_mentions" 2>/dev/null || echo 0)"
+  all_mentions="$(jq -c --arg s "$since" '[.[] | select(.updated > $s)]' <<<"$all_mentions" 2>/dev/null || echo '[]')"
+  addressed='[]'
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    local t_sub t_read t_since t_type t_id t_any rc
+    t_id="$(jq -r .thread <<<"$row")"; t_sub="$(jq -r .subject <<<"$row")"
+    t_any=0; [ "$(jq -r .reason <<<"$row")" != team_mention ] || t_any=1
+    t_read="$(jq -r .read <<<"$row")"; t_type="$(jq -r .type <<<"$row")"
+    t_since="$since"; [ -z "$t_read" ] || ! [[ "$t_read" > "$t_since" ]] || t_since="$t_read"
+    if [ "$t_type" = Discussion ]; then rc=0
+    else rc=0; mention_addressed "" "$t_sub" "$t_since" "$t_any" || rc=$?; fi
+    if [ "$rc" -eq 1 ]; then noise_ids+=("$t_id")
+    else addressed="$(jq -c --argjson r "$row" '. + [$r]' <<<"$addressed")"; fi
+  done < <(jq -c '.[]' <<<"$all_mentions" 2>/dev/null)
+  all_mentions="$addressed"
+  noise="${#noise_ids[@]}"
+  [ "$noise" -eq 0 ] || mention_mark_read "${noise_ids[@]}"
+  if [ "$backlog_n" -gt 0 ] || [ "$noise" -gt 0 ] || [ "$(jq length <<<"$all_mentions")" -gt 0 ]; then
+    log "mentions: $(jq length <<<"$all_mentions") addressed to me, $noise not (marked read), $backlog_n backlog from before $since — not answered"
   fi
   fresh_threads="$(printf '%s\n' "$all_mentions" \
     | jq -r '.[] | "\(.thread) \(.updated)"' 2>/dev/null \
@@ -403,6 +494,9 @@ duty_triage() {
     if [ "$mention_rc" -eq 0 ]; then
       printf '%s\n' "$mentions" | jq -r '.[] | "\(.thread) \(.updated)"' \
         | ledger_commit "$DUTY_DIR/.seen-mentions"
+      local -a handled=()
+      mapfile -t handled < <(jq -r '.[].thread' <<<"$mentions")
+      mention_mark_read "${handled[@]}"
     fi
   fi
 
