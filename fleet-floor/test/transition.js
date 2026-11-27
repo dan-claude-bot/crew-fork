@@ -68,9 +68,21 @@ const ok = (name, cond, detail = '') => {
      it did exactly that once, on cell 8 at x=1668. The layout comes from
      FLOORDEV.grid(), the floor's own geometry, so this cannot drift when the
      grid does; the floor scrolls vertically now and the hook reflects that. */
-  const idx = roster.indexOf(target);
-  const vh = await page.evaluate(() => window.innerHeight);
+  /* The cell is the one the PAGE draws the target in, read off its own grid
+     (FLOORDEV.grid names each cell's box). The payload above is read a moment
+     after the page drew from its own snapshot, and with the churn collector
+     polling every few seconds the two can be one poll apart — the race this
+     test kept losing by one cell (ff-idle for ff-working). Wait for the page's
+     snapshot to hold the target, then click where the page put it. */
   let g = await page.evaluate(() => window.FLOORDEV.grid());
+  for (let i = 0; i < 40 && !g.cell.some((cl) => cl.box === target); i++) {
+    await page.waitForTimeout(500);
+    g = await page.evaluate(() => window.FLOORDEV.grid());
+  }
+  const idx = g.cell.findIndex((cl) => cl.box === target);
+  ok('transition: the page draws the target box', idx >= 0,
+     `${target} not among ${g.cell.map((cl) => cl.box).join(',')} (payload: ${roster.join(',')})`);
+  const vh = await page.evaluate(() => window.innerHeight);
   const centreOf = (gr) => ({ x: gr.cell[idx].x + gr.tw / 2, y: gr.cell[idx].y + gr.th / 2 });
   let c = centreOf(g);
   if (c.y > vh - 170) {
