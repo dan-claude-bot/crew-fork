@@ -26,7 +26,7 @@ while IFS= read -r line; do
   [ -n "$line" ] && repos+=("$line")
 done
 read -r claimed ready _ || { echo "claims: no labels arrived — nothing released" >&2; exit 2; }
-me="$(gh api user --jq .login 2>/dev/null)" || me=""
+me="$(gh api user --jq .login 2>/dev/null)" || me="" # Decision-path empty fallback: no login read releases nothing and says so just below
 [ -n "$me" ] || { echo "claims: this box has no working GitHub login — nothing released (set it, or release by hand)"; exit 1; }
 released=0; kept=0; failed=0
 for repo in "${repos[@]}"; do

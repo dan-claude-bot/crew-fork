@@ -36,7 +36,7 @@ intent_of() {
   local f w
   f="$(intent_file "$1")"
   if [ -e "$f" ]; then
-    read -r w _ <"$f" 2>/dev/null || w=""
+    read -r w _ <"$f" 2>/dev/null || w="" # Decision-path empty fallback: an unreadable intent file reads as stopped just below, the answer that holds
     case " $INTENTS " in *" $w "*) printf '%s\n' "$w" ;; *) printf 'stopped\n' ;; esac
     return 0
   fi
