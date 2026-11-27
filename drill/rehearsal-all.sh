@@ -396,7 +396,7 @@ case " ${PASSTHRU[*]-} " in
       echo "drill/rehearsal-all.sh: drill boxes from an earlier round still exist: $standing_boxes" >&2
       echo "         every role section mints a fresh box and refuses an existing one (#116);" >&2
       echo "         --legs and --only-failed re-run the role sections too. Clear them first:" >&2
-      echo "           drill/teardown.sh${standing_roles:+ --roles \"$standing_roles\"}$standing_floor --yes" >&2
+      echo "           drill/teardown.sh${standing_roles:+ --roles \"$standing_roles\"}$standing_floor${CREDS:+ --creds $CREDS} --yes" >&2
       echo "         then re-run this command. Nothing has run." >&2
       exit 1
     fi
@@ -1469,7 +1469,10 @@ done
 # overall=2 is INCOMPLETE, not a pass: phase 2 never ran, and that is exactly
 # the round whose boxes an operator needs standing to find out why. So it
 # keeps them, like a failure does.
-TEARDOWN_HINT="drill/teardown.sh --roles \"$ROLES\""
+# With the round's --creds, so the line an operator copies after a red round
+# reaches the sandboxes with the round's own account and the forks with the
+# box's, on a drill host with no gh login of its own (#895).
+TEARDOWN_HINT="drill/teardown.sh --roles \"$ROLES\"${CREDS:+ --creds $CREDS}"
 # The floor-provision leg's own box (#815) is the one the role list cannot
 # name. The leg removes it unless the round keeps its boxes, or the removal
 # failed; either way, if it still stands, the line the operator copies clears
@@ -1498,7 +1501,7 @@ else
   # asked for the round, and a prompt at the end of a two-hour rehearsal is a
   # prompt nobody is sitting in front of. --keep is how they say no.
   section_start=$SECONDS
-  "$HERE/teardown.sh" --roles "$ROLES" --yes
+  "$HERE/teardown.sh" --roles "$ROLES" ${CREDS:+--creds "$CREDS"} --yes
   rc=$?
   TIMINGS+=("teardown $((SECONDS - section_start))")
   # 2 is teardown's INCOMPLETE: a class it was asked to clear could not be
