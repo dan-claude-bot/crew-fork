@@ -16,6 +16,8 @@ set -uo pipefail
 # This suite's box stubs model a box 0.10 host and predate #792's door: the
 # stamp entry is pinned here, and both doors are box-entry.sh's suite to test.
 export CREW_BOX_ENTRY_MODE=stamp
+# A token or pool from the developer's own shell would answer for the stubs.
+unset GH_TOKEN CREW_CREDENTIALS_DIR
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -74,9 +76,18 @@ SHIM
 
 cat >"$STUB/gh" <<'SHIM'
 #!/usr/bin/env bash
-printf 'gh %s\n' "$*" >>"$STUB_CALLS"
+# A call made with GH_TOKEN is recorded with it, so a row can say which
+# account (--creds' box entry or the round's) made it (#895).
+printf 'gh %s%s\n' "$*" "${GH_TOKEN:+ #token=$GH_TOKEN}" >>"$STUB_CALLS"
 case "${1:-} ${2:-}" in
   "api user")
+    # STUB_TOKENS: "token=login …" — who each pool token answers as.
+    if [ -n "${GH_TOKEN:-}" ]; then
+      for pair in ${STUB_TOKENS:-}; do
+        [ "${pair%%=*}" = "$GH_TOKEN" ] && { printf '%s\n' "${pair#*=}"; exit 0; }
+      done
+      printf '{"message":"Bad credentials","status":"401"}\n'; exit 1
+    fi
     if [ -n "${STUB_LOGIN_401:-}" ]; then
       printf '{"message":"Bad credentials","status":"401"}\n'; exit 1
     fi
@@ -910,6 +921,96 @@ if [ "$RC" -ne 0 ] && says "usage" && says "needs an argument" && ! called "box 
   ok "a-flag-missing-its-argument-prints-usage-and-deletes-nothing"
 else
   bad "a-flag-missing-its-argument-prints-usage-and-deletes-nothing (rc=$RC, got '$OUT')"
+fi
+
+# --- #895: the release leg's fork, and the round's own credentials -------
+# The release leg forks the TRIAGE sandbox as the box account. Never deleted,
+# its name made every later round's fork take the next suffix (-1 … -11).
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-triage" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=triage-bot" \
+    "STUB_FORKS=triage-bot/crew-drill-triage-11 triage-bot/crew-drill-triage-notify somebody-else/crew-drill-triage" \
+    "STUB_REPOS=danmt/crew-drill-triage triage-bot/crew-drill-triage-11 triage-bot/crew-drill-triage-notify somebody-else/crew-drill-triage" \
+  -- --role triage --yes
+if [ "$RC" -eq 0 ] && called "box exec crew-drill-triage -- bash -lc gh repo delete 'triage-bot/crew-drill-triage-11' --yes" \
+    && ! called "triage-bot/crew-drill-triage-notify' --yes" \
+    && ! called "somebody-else/crew-drill-triage' --yes" \
+    && called "repo delete danmt/crew-drill-triage --yes"; then
+  ok "deletes-the-release-legs-fork-of-the-triage-sandbox-and-nothing-near-it"
+else
+  bad "deletes-the-release-legs-fork-of-the-triage-sandbox-and-nothing-near-it (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+fork_delete_line="$(grep -nF "gh repo delete 'triage-bot/crew-drill-triage-11'" "$CALLS" | cut -d: -f1)"
+box_delete_line="$(grep -nF 'box rm --force crew-drill-triage' "$CALLS" | cut -d: -f1)"
+if [ -n "$fork_delete_line" ] && [ -n "$box_delete_line" ] && [ "$fork_delete_line" -lt "$box_delete_line" ]; then
+  ok "deletes-the-triage-fork-before-its-credential-bearing-box"
+else
+  bad "deletes-the-triage-fork-before-its-credential-bearing-box (calls='$(cat "$CALLS")')"
+fi
+# A failed fork delete keeps the triage box and sandbox, as the builder's does.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-triage" \
+    "STUB_LOGIN=danmt" "STUB_BOX_LOGIN=triage-bot" "STUB_FORK_DELETE_RC=1" \
+    "STUB_FORKS=triage-bot/crew-drill-triage-2" \
+    "STUB_REPOS=danmt/crew-drill-triage danmt/crew-drill-triage-notify triage-bot/crew-drill-triage-2" \
+  -- --role triage --yes
+if [ "$RC" -eq 1 ] && says "could not delete triage fork triage-bot/crew-drill-triage-2" \
+    && ! called "box rm --force crew-drill-triage" \
+    && ! called "repo delete danmt/crew-drill-triage --yes" \
+    && called "repo delete danmt/crew-drill-triage-notify --yes"; then
+  ok "a-failed-triage-fork-delete-preserves-its-recovery-resources"
+else
+  bad "a-failed-triage-fork-delete-preserves-its-recovery-resources (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+
+# The round's own pool: a drill host with no gh login of its own, the boxes
+# already gone (a reset), and the round's --creds — the box account first,
+# then the round's, as the round takes them.
+POOL="$WORK/pool"
+mkdir -p "$POOL/entries/gh--box-bot" "$POOL/entries/gh--round-acct"
+printf 'tok-box\n' >"$POOL/entries/gh--box-bot/secret"
+printf 'tok-round\n' >"$POOL/entries/gh--round-acct/secret"
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=" "STUB_LOGIN=" "CREW_CREDENTIALS_DIR=$POOL" \
+    "STUB_TOKENS=tok-round=round-acct tok-box=box-bot" \
+    "STUB_FORKS=box-bot/crew-drill-triage-3" \
+    "STUB_REPOS=round-acct/crew-drill-triage round-acct/crew-drill-triage-notify box-bot/crew-drill-triage-3" \
+  -- --role triage --creds gh:box-bot,gh:round-acct,agent:max,tg:bot --yes
+if [ "$RC" -eq 0 ] \
+    && called "gh repo delete box-bot/crew-drill-triage-3 --yes #token=tok-box" \
+    && called "gh repo delete round-acct/crew-drill-triage --yes #token=tok-round" \
+    && called "gh repo delete round-acct/crew-drill-triage-notify --yes #token=tok-round" \
+    && ! says "tok-box" && ! says "tok-round"; then
+  ok "creds-clears-the-sandboxes-and-the-fork-with-the-rounds-own-pool-and-no-host-login"
+else
+  bad "creds-clears-the-sandboxes-and-the-fork-with-the-rounds-own-pool-and-no-host-login (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+fork_delete_line="$(grep -nF "gh repo delete box-bot/crew-drill-triage-3" "$CALLS" | cut -d: -f1)"
+repo_delete_line="$(grep -nF "gh repo delete round-acct/crew-drill-triage --yes" "$CALLS" | cut -d: -f1)"
+if [ -n "$fork_delete_line" ] && [ -n "$repo_delete_line" ] && [ "$fork_delete_line" -lt "$repo_delete_line" ]; then
+  ok "creds-deletes-the-fork-before-its-upstream-sandbox"
+else
+  bad "creds-deletes-the-fork-before-its-upstream-sandbox (calls='$(cat "$CALLS")')"
+fi
+# The same host without --creds is the rc21 round's INCOMPLETE, unchanged.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=" "STUB_LOGIN=" "CREW_CREDENTIALS_DIR=$POOL" \
+    "STUB_REPOS=round-acct/crew-drill-triage" -- --role triage --yes
+if [ "$RC" -eq 2 ] && says "gh has no usable identity here" && ! called "repo delete"; then
+  ok "without-creds-a-host-with-no-gh-login-is-still-INCOMPLETE"
+else
+  bad "without-creds-a-host-with-no-gh-login-is-still-INCOMPLETE (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+# A named entry the pool lacks stops everything: no fallback to another login.
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=crew-drill-triage" "STUB_LOGIN=danmt" "CREW_CREDENTIALS_DIR=$POOL" \
+    "STUB_REPOS=danmt/crew-drill-triage" -- --role triage --creds gh:box-bot,gh:nobody --yes
+if [ "$RC" -eq 1 ] && says "no pool entry gh:nobody" && ! called "repo delete" && ! called "box rm"; then
+  ok "creds-naming-an-entry-the-pool-lacks-deletes-nothing"
+else
+  bad "creds-naming-an-entry-the-pool-lacks-deletes-nothing (rc=$RC, calls='$(cat "$CALLS")', got '$OUT')"
+fi
+run "CREW_ROSTER=$FLEET" "STUB_BOXES=" "STUB_LOGIN=danmt" "CREW_CREDENTIALS_DIR=$POOL" \
+    -- --role triage --creds gh:a,gh:b,gh:c --yes
+if [ "$RC" -eq 1 ] && says "two gh entries at most" && ! called "repo delete"; then
+  ok "creds-with-three-gh-entries-is-refused"
+else
+  bad "creds-with-three-gh-entries-is-refused (rc=$RC, got '$OUT')"
 fi
 
 echo

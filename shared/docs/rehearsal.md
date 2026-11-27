@@ -910,9 +910,10 @@ It runs after the workspaces legs and needs no role box.
 
 ### teardown — `drill/teardown.sh`
 
-A green round removes what it created: the `crew-drill-<role>` boxes and the
-`<host-gh-identity>/crew-drill-<role>` sandbox repositories, and nothing else
-on the host, ever. It names every target with its creation date, asks once, and
+A green round removes what it created: the `crew-drill-<role>` boxes, the
+`<round-gh-identity>/crew-drill-<role>` sandbox repositories, and the box
+account's forks of them (the builder's, and the `release` leg's of the triage
+sandbox, #895), and nothing else on the host, ever. It names every target with its creation date, asks once, and
 is idempotent.
 
 - **Needs** the whole round's verdict, so it runs after every other leg. It
@@ -929,7 +930,8 @@ is idempotent.
 
 A round that did not pass keeps its boxes, and so does `INCOMPLETE`: a failed
 leg is exactly the case where you need the box standing to find out why. The
-run prints the teardown command when anything remains. `drills/README.md`
+run prints the teardown command, with the round's `--creds`, when anything
+remains. `drills/README.md`
 carries teardown's refusal rules and its exit-status table in full.
 
 ## When a leg cannot run

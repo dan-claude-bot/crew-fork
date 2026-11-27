@@ -558,7 +558,7 @@ both. Nothing else on the host is touched, ever:
 
     drill/teardown.sh [--roles "triage builder reviewer"] [--role <role>]
                       [--box <name>] [--sandbox <owner/repo>]
-                      [--dry-run] [--yes]
+                      [--creds gh:<box>[,gh:<round>]] [--dry-run] [--yes]
 
 It names every box and repository with its creation date and asks once
 (`CREW_YES=1` or `--yes` for an unattended run), and it is idempotent — a
@@ -569,11 +569,18 @@ matches the drill pattern, and a name that merely starts with `crew-drill` is
 not a drill box. A sandbox repository has the same two gates — the `<repo>`
 half must be a drill name *and* the owner must be this host's `gh` identity,
 since a round's sandboxes are always `<host-gh-identity>/crew-drill-<role>`.
-The builder fork carries the same two gates in its own ownership domain: its
-name must be `crew-drill-builder` or GitHub's numeric-suffixed form, and its
-owner must equal the identity read from `crew-drill-builder`. Teardown deletes
-the fork through that box before removing the credential-bearing box, then
-deletes the host-owned sandboxes.
+A box-owned fork carries the same two gates in its own ownership domain: the
+builder's fork of its sandbox, and the triage sandbox's fork, which the
+`release` leg makes to cut from (#895). Its name must be `crew-drill-<role>`
+or GitHub's numeric-suffixed form, and its owner must equal the identity read
+from `crew-drill-<role>`. Teardown deletes each fork through that box before
+removing the credential-bearing box, then deletes the sandboxes. A fork that
+can't be read or deleted keeps its box and its sandbox for the next run.
+`--creds` takes the round's own `--creds` and reads the same entries from the
+same pool (#895): the round's account (the second `gh:` entry) addresses the
+sandboxes, so a drill host with no `gh` login of its own can clear them, and
+the box account (the first) addresses its forks once the boxes are gone. The
+round prints its teardown line with them.
 Every target is validated before any is deleted, so a command carrying one bad
 name removes nothing at all, and naming the same target twice deletes it once.
 
