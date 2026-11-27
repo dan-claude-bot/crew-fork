@@ -212,12 +212,14 @@ payload_lookalike="$(awk -F: '$2 > 8 { print $2 }' <<<"$payload_findings" \
 t pipefail-payload-lookalike-flags "9 10 11 12" "$payload_lookalike"
 rm -f "$PAYLOAD_FIXTURE"
 
-# The four live sites: present, so this cannot pass by their disappearance, and
-# unflagged now that cli/crew is in the population.
+# The two live sites: present, so this cannot pass by their disappearance, and
+# unflagged now that cli/crew is in the population. (Four until #898: the
+# drill's control block no longer arms or comments a crontab, so its
+# drill_cron_armed and drill_cron_paused readers went with it.)
 payload_live="$(awk '
   /(bxn|bash[[:space:]]+-lc)/ && /[|][[:space:]]*grep[[:space:]]+-[[:alnum:]]*q/ { n++ }
   END { print n+0 }' "$ROOT/cli/crew" "$ROOT/drill/rehearsal-app.sh")"
-t pipefail-payload-live-sites-present 4 "$payload_live"
+t pipefail-payload-live-sites-present 2 "$payload_live"
 payload_live_findings="$(pipefail_grep_q_sites "$ROOT/cli/crew" "$ROOT/drill/rehearsal-app.sh")"
 t pipefail-payload-live-sites-unflagged "" "$payload_live_findings"
 
@@ -10507,7 +10509,7 @@ CI_CREW="$ROOT/cli/crew"
 CI_FLOOR_FN="$(sed -n '/^cmd_floor()/,/^}/p' "$CI_CREW")"
 case "$CI_FLOOR_FN" in *'fleet-floor/index.html'*'CREW_FLOOR_PORT='*'CREW_FLOOR_BIND='*'CREW_FLOOR_USER='*'CREW_FLOOR_PASS='*'CREW_FLOOR_INTERVAL='*'CREW_FLOOR_ROSTER='*'fleet-floor/server/floor.py'*) r1=bridged ;; *) r1=BROKEN ;; esac
 t cli-floor-server-contract bridged "$r1"
-CI_CONSOLE_VERBS='creds down drain engine floor hire init new pause profiles status up upgrade usage'
+CI_CONSOLE_VERBS='creds down drain engine floor hire init logout new pause profiles start status stop unhire up upgrade usage'
 CI_CONSOLE_PROSE_VERBS='and cut hangs makes on reads sources stopped would'
 CI_CONSOLE_CANDIDATES="$(grep -ohE 'crew [a-z][a-z-]*' \
   "$ROOT/fleet-floor/server/floor.py" "$ROOT"/fleet-floor/server/floor/*.py \

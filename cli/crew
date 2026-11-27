@@ -5448,7 +5448,11 @@ unhire_finish() {
   out="$(bxpipe "$b" "$(host_release_claims_sh)" "$(production_registry; echo "--"; echo "${claimed:-claimed} ${ready:-ready}")"$'\n' 2>&1)" || rc=$?
   printf '%s\n' "$out" | sed "s/^/  $b: /" | sed "s/^  $b:   /  $b: /"
   [ "$rc" -eq 0 ] || echo "  $b: not every claim could be released — the ones above that say so still name it"
-  if intent_line "$b" | grep -qw logout; then
+  # Read once, matched in the shell: `| grep -q` under pipefail reads a match
+  # as a failure when grep's early exit SIGPIPEs the producer.
+  local wants_logout=""
+  case " $(intent_line "$b") " in *" logout "*) wants_logout=logout ;; esac
+  if [ -n "$wants_logout" ]; then
     local svc
     for svc in gh agent tg; do
       logout_mark "$b" "$svc" owed
@@ -5456,7 +5460,7 @@ unhire_finish() {
     member_apply_logouts "$b"
   fi
   member_stop_now "$b" || return 1
-  intent_set "$b" off-duty "$(intent_line "$b" | grep -qw logout && echo logout)"
+  intent_set "$b" off-duty "$wants_logout"
   echo "  $b: off duty — disarmed and stopped, the box kept; 'crew hire $b' puts it back"
 }
 

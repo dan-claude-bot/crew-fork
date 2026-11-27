@@ -5,7 +5,7 @@ own verbs — `crew stop|start|pause|resume|unhire|logout` — run as a
 subprocess against the fleet definition this floor serves, exactly as the
 pool is (floor/pool.py). There is ONE implementation of what each does to a
 member — the intent the host tick obeys, the drain before a stop, the claims
-an unhire hands back — and it is cli/crew over shared/lib/host/. A second
+an unhire hands back — and it lives in cli/crew, on top of shared/lib/host/. A second
 copy here would be a second answer to "is this member held", and the two
 would drift.
 
