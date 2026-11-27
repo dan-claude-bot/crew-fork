@@ -381,6 +381,27 @@ def _roster_rewrite(old_text, clean):
     return "\n".join(out) + "\n"
 
 
+def _removal_refused(before, clean):
+    """A member on duty is not removed from the roster (#898): the roster is
+    the host tick's list, and dropping a hired member from it would leave its
+    box running, armed and unwatched. Unhire first — it hands the claims back
+    and stops the box — then remove. A member never hired (its box was never
+    staged) and a roster line with no box are removed as before."""
+    try:
+        from floor import intent as member_intent
+    except Exception:                                       # noqa: BLE001
+        return ""
+    kept = {m.get("box") for m in (clean or []) if isinstance(m, dict)}
+    for box in sorted(set(before) - kept):
+        if member_intent.read(box)["intent"] == "off-duty":
+            continue
+        if not os.path.exists(os.path.join(CONFIG_DIR, "store", "staged", box + ".bench")):
+            continue
+        return ("%s is on duty — Unhire it first (its claims go back to the board and its box "
+                "is stopped), then remove it. Nothing was written." % box)
+    return ""
+
+
 def roster_set(members, actor="", etag=None):
     """Rewrite fleet.roster. Returns (result, error) with the registry writers'
     three outcomes: `(result, "")` landed and recorded; `(None, error)` refused
@@ -409,6 +430,9 @@ def roster_set(members, actor="", etag=None):
                                        "reopen the roster and apply the change again")
         before = {u["box"]: u for u in read_roster()}
         clean, err = _roster_validate(members, before)
+        if err:
+            return None, err
+        err = _removal_refused(before, clean)
         if err:
             return None, err
         # The etag is checked AGAIN on the very bytes the rewrite reads, after

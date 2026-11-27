@@ -241,6 +241,12 @@ CREATE TABLE IF NOT EXISTS rates (
   vendor TEXT NOT NULL, model TEXT NOT NULL, in_rate REAL, out_rate REAL,
   cache_write_rate REAL, cache_read_rate REAL,
   PRIMARY KEY(vendor, model));
+-- A member's health status as each poll read it (#899): one row per CHANGE,
+-- so a member that sat idle all day is two rows, not 2,880. The health panel
+-- reads the last 24 hours as spans between consecutive rows.
+CREATE TABLE IF NOT EXISTS status_log (
+  box TEXT NOT NULL, ts INTEGER NOT NULL, status TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS status_log_by_box ON status_log(box, ts);
 CREATE INDEX IF NOT EXISTS sessions_by_end ON sessions(ts_end);
 CREATE INDEX IF NOT EXISTS duty_log_by_box ON duty_log(box, n);
 CREATE INDEX IF NOT EXISTS pulls_by_box ON pulls(box, at);
@@ -664,6 +670,71 @@ def note_state(box, state, path=None):
         raise
     finally:
         conn.close()
+
+
+HEALTH_WINDOW_S = 86400
+HEALTH_KEEP_S = 8 * 86400
+
+
+def record_statuses(statuses, now=None, path=None):
+    """Land one poll's health status per member (#899): a row only where it
+    CHANGED since that member's last row; rows past HEALTH_KEEP_S pruned."""
+    now = int(now if now is not None else time.time())
+    conn = connect(path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for box, status in statuses.items():
+            last = conn.execute("SELECT status FROM status_log WHERE box = ? ORDER BY ts DESC, rowid DESC LIMIT 1",
+                                (box,)).fetchone()
+            if last is None or last["status"] != status:
+                conn.execute("INSERT INTO status_log(box, ts, status) VALUES(?, ?, ?)", (box, now, status))
+        conn.execute("DELETE FROM status_log WHERE ts < ?", (now - HEALTH_KEEP_S,))
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
+def health(box, now=None, window=HEALTH_WINDOW_S, path=None):
+    """The last WINDOW seconds of BOX's statuses (#899):
+
+      {"window_s", "now", "totals": {status: seconds}, "segments":
+       [[start_offset_s, end_offset_s, status], ...], "covered_s"}
+
+    Offsets count from the window's start. The span before the first row the
+    store holds is not guessed: it is left out of `covered_s` and of every
+    total, so a member first seen an hour ago reads an hour, not a day."""
+    now = int(now if now is not None else time.time())
+    start = now - window
+    out = {"window_s": window, "now": now, "totals": {}, "segments": [], "covered_s": 0}
+    try:
+        conn = connect(path, readonly=True)
+    except SystemExit:
+        return out
+    try:
+        before = conn.execute("SELECT ts, status FROM status_log WHERE box = ? AND ts <= ? "
+                              "ORDER BY ts DESC, rowid DESC LIMIT 1", (box, start)).fetchone()
+        rows = conn.execute("SELECT ts, status FROM status_log WHERE box = ? AND ts > ? AND ts <= ? "
+                            "ORDER BY ts, rowid", (box, start, now)).fetchall()
+    except Exception:                                       # noqa: BLE001
+        return out
+    finally:
+        conn.close()
+    points = ([(start, before["status"])] if before else []) + [(r["ts"], r["status"]) for r in rows]
+    for i, (ts, status) in enumerate(points):
+        end = points[i + 1][0] if i + 1 < len(points) else now
+        if end <= ts:
+            continue
+        a, b = max(ts, start) - start, end - start
+        if out["segments"] and out["segments"][-1][2] == status and out["segments"][-1][1] == a:
+            out["segments"][-1][1] = b
+        else:
+            out["segments"].append([a, b, status])
+        out["totals"][status] = out["totals"].get(status, 0) + (b - a)
+        out["covered_s"] += b - a
+    return out
 
 
 def ingest(conn, box, text, agent=None, roles=None, pool=None, now=None, state="running"):

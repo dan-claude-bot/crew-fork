@@ -11,37 +11,21 @@
 # another's session.
 
 echo "== control"
+# A member's lifecycle is the CLI's own verbs (#898, floor/member.py): the
+# assertions are the EFFECT — the box's state under the stub, and the intent
+# file the host tick obeys — and the per-box `out` the page and the drill read.
+intent_of() { cut -d' ' -f1 "$CREW_CONFIG_DIR/store/intent/$1" 2>/dev/null || echo on-duty; }
 t "cmd: pause ok"     200 "$(status POST /api/command '{"action":"pause","box":"ff-working"}')"
-t "cmd: pause applied" paused "$(cat "$FLOOR_STATE/ff-working.cron" 2>/dev/null)"
-t "cmd: resume ok"    200 "$(status POST /api/command '{"action":"resume","box":"ff-working"}')"
-t "cmd: resume applied" resumed "$(cat "$FLOOR_STATE/ff-working.cron" 2>/dev/null)"
-# The verb says what it DID, so the console can tell a control that took effect
-# from one that had nothing to do. Asserted on the per-box `out` the page and
-# the drill both read, not on the status code alone — the status code is what
-# was already wrong.
+t "cmd: pause freezes the box" frozen "$(cat "$FLOOR_STATE/ff-working.state" 2>/dev/null)"
+t "cmd: pause records the intent" paused "$(intent_of ff-working)"
 case "$(body POST /api/command '{"action":"pause","box":"ff-working"}')" in
-  *"paused 1"*) ok "cmd: pause reports what it did" ;;
-  *) fail "cmd: pause reports what it did" "$(body POST /api/command '{"action":"pause","box":"ff-working"}')" ;;
+  *"paused already"*) ok "cmd: a second pause says it is paused already" ;;
+  *) fail "cmd: a second pause says it is paused already" "$(body POST /api/command '{"action":"pause","box":"ff-working"}')" ;;
 esac
-status POST /api/command '{"action":"resume","box":"ff-working"}' >/dev/null
-
-# #188 — a box with no armed tick.sh line has NOTHING to pause, and that is a
-# success. It answered 500 "command refused", because PAUSE_SH ended on a
-# `grep -c` and `grep -c` exits 1 on a zero count. Every drill box is in
-# exactly this state by design (drill/rehearsal.sh disarms before any tick),
-# which is why the whole control block on a real host was red.
-t "cmd: pause on a disarmed box is not a refusal" 200 \
-  "$(status POST /api/command '{"action":"pause","box":"ff-disarmed"}')"
-case "$(body POST /api/command '{"action":"pause","box":"ff-disarmed"}')" in
-  *"nothing to pause"*) ok "cmd: pause on a disarmed box says nothing to pause" ;;
-  *) fail "cmd: pause on a disarmed box says nothing to pause" \
-          "$(body POST /api/command '{"action":"pause","box":"ff-disarmed"}')" ;;
-esac
-# And it must not have invented a state change to report success with.
-t "cmd: pause on a disarmed box changes nothing" "" \
-  "$(cat "$FLOOR_STATE/ff-disarmed.cron" 2>/dev/null)"
-# The same rule on the other verb: ff-working was resumed above, so there is no
-# commented line left for RESUME_SH to restore.
+t "cmd: resume ok"    200 "$(status POST /api/command '{"action":"resume","box":"ff-working"}')"
+t "cmd: resume thaws the box" running "$(cat "$FLOOR_STATE/ff-working.state" 2>/dev/null)"
+t "cmd: resume lifts the intent" on-duty "$(intent_of ff-working)"
+# #188's rule on the new verbs: nothing to do is not a refusal, and says so.
 t "cmd: resume with nothing paused is not a refusal" 200 \
   "$(status POST /api/command '{"action":"resume","box":"ff-working"}')"
 case "$(body POST /api/command '{"action":"resume","box":"ff-working"}')" in
@@ -49,11 +33,34 @@ case "$(body POST /api/command '{"action":"resume","box":"ff-working"}')" in
   *) fail "cmd: resume with nothing paused says so" \
           "$(body POST /api/command '{"action":"resume","box":"ff-working"}')" ;;
 esac
+# Only a running member has a session to freeze; a stopped one is refused,
+# with the reason, and nothing changes.
+t "cmd: pause on a stopped member is refused" 500 \
+  "$(status POST /api/command '{"action":"pause","box":"ff-stopped"}')"
+case "$(body POST /api/command '{"action":"pause","box":"ff-stopped"}')" in
+  *"only a running member can be paused"*) ok "cmd: ...and says why" ;;
+  *) fail "cmd: ...and says why" "$(body POST /api/command '{"action":"pause","box":"ff-stopped"}')" ;;
+esac
+t "cmd: ...and holds nothing" on-duty "$(intent_of ff-stopped)"
 
+# Stop HOLDS (#898): an idle member is drained and stopped at once, held until
+# Start; Start lifts the hold and brings the box up.
 t "cmd: power-off ok" 200 "$(status POST /api/command '{"action":"power-off","box":"ff-idle"}')"
 t "cmd: power-off applied" stopped "$(cat "$FLOOR_STATE/ff-idle.state" 2>/dev/null)"
+t "cmd: power-off holds the member" stopped "$(intent_of ff-idle)"
 t "cmd: power-on ok"  200 "$(status POST /api/command '{"action":"power-on","box":"ff-idle"}')"
 t "cmd: power-on applied" running "$(cat "$FLOOR_STATE/ff-idle.state" 2>/dev/null)"
+t "cmd: power-on lifts the hold" on-duty "$(intent_of ff-idle)"
+# A graceful stop on a member mid-run lets it finish: stopping, box still up.
+printf '30\n' >"$FLOOR_STATE/ff-idle.busy"
+t "cmd: power-off mid-run ok" 200 "$(status POST /api/command '{"action":"power-off","box":"ff-idle"}')"
+t "cmd: ...the box finishes its run" running "$(cat "$FLOOR_STATE/ff-idle.state" 2>/dev/null)"
+t "cmd: ...held as stopping" "stopped stopping" "$(cut -d' ' -f1,4 "$CREW_CONFIG_DIR/store/intent/ff-idle" 2>/dev/null)"
+# ...and "Force stop" ends it now.
+t "cmd: power-off with force ok" 200 "$(status POST /api/command '{"action":"power-off","box":"ff-idle","force":true}')"
+t "cmd: ...force stops it now" stopped "$(cat "$FLOOR_STATE/ff-idle.state" 2>/dev/null)"
+rm -f "$FLOOR_STATE/ff-idle.busy"
+status POST /api/command '{"action":"power-on","box":"ff-idle"}' >/dev/null
 t "cmd: restart ok"   200 "$(status POST /api/command '{"action":"restart","box":"ff-idle"}')"
 t "cmd: restart ends running" running "$(cat "$FLOOR_STATE/ff-idle.state" 2>/dev/null)"
 
@@ -626,10 +633,13 @@ t "cmd: unknown action refused" 400 "$(status POST /api/command '{"action":"rm -
 t "cmd: empty prompt refused"   400 "$(status POST /api/command '{"action":"message","box":"ff-working","prompt":"   "}')"
 t "cmd: bad json refused"       400 "$(status POST /api/command '{oops')"
 # A control aimed at a box that cannot run it must be REPORTED, not swallowed.
-t "cmd: unreachable box -> 500"  500 "$(status POST /api/command '{"action":"pause","box":"ff-unreach"}')"
-case "$(body POST /api/command '{"action":"pause","box":"ff-unreach"}')" in
+# A verb that must reach the guest — a resume of its crontab — on a box whose
+# guest does not answer. (Pause no longer needs the guest: a freeze is the
+# host's, #898.)
+t "cmd: unreachable box -> 500"  500 "$(status POST /api/command '{"action":"resume","box":"ff-unreach"}')"
+case "$(body POST /api/command '{"action":"resume","box":"ff-unreach"}')" in
   *"not running"*) ok "cmd: failure carries the reason" ;;
-  *) fail "cmd: failure carries the reason" "$(body POST /api/command '{"action":"pause","box":"ff-unreach"}')" ;;
+  *) fail "cmd: failure carries the reason" "$(body POST /api/command '{"action":"resume","box":"ff-unreach"}')" ;;
 esac
 
 # `wake-silent` on a fleet with nothing silent must not read as a failure.
@@ -652,13 +662,18 @@ fi
 # the cron count too, so a paused box is disarmed, and it is exactly the box
 # this action exists to wake. Guard on `disarmed` alone and wake-silent stops
 # doing the one thing it is for.
+# ff-paused's crontab is commented by its fixture scenario — a crontab a
+# pre-#898 pause left, on a member ON DUTY — which is what wake-silent wakes.
+# A member the operator HOLDS (#898) is not silent, and is left alone: ff-silent
+# is held here for the one call, and must not be woken.
 rm -f "$FLOOR_STATE/ff-disarmed.cron" "$FLOOR_STATE/ff-paused.cron"
-status POST /api/command '{"action":"pause","box":"ff-paused"}' >/dev/null
+mkdir -p "$CREW_CONFIG_DIR/store/intent"
+printf 'stopped 2026-11-27T10:00:00Z test\n' >"$CREW_CONFIG_DIR/store/intent/ff-silent"
+status POST /api/command '{"action":"resume","box":"ff-working"}' >/dev/null  # a refresh, nothing else
 # request_refresh polls in a BACKGROUND thread, so the snapshot wake-silent
-# reads is NOT updated by the time the pause call returns — and wake-silent
-# decides entirely from that snapshot. Wait for the fact to arrive rather than
-# sleeping a guessed interval; the test server polls on a 3600s cycle, so a
-# guess would have to be luck.
+# reads may not be updated yet — and wake-silent decides from that snapshot.
+# Wait for the fact to arrive rather than sleeping a guessed interval; the
+# test server polls on a 3600s cycle, so a guess would have to be luck.
 for _ in $(seq 1 60); do
   [ "$(uf ff-paused "u['paused']")" = "True" ] && break
   sleep 0.5
@@ -680,10 +695,9 @@ WS_R="$(api POST /api/command '{"action":"wake-silent"}')"
 WS_EL=$(( $(date +%s) - WS_T0 ))
 FS_SEEN="$(fs_calls_since "$FS_M")"
 t "wake-silent: resumes a PAUSED box"   resumed "$(cat "$FLOOR_STATE/ff-paused.cron" 2>/dev/null)"
-# ...and lifts the host's pause marker with it (#763 re-review): left there,
-# the next host tick drained and stopped the box this action just woke.
-t "wake-silent: lifts the host's pause marker" absent \
-  "$([ -e "$CREW_CONFIG_DIR/store/paused/ff-paused" ] && echo present || echo absent)"
+# ...and holds nothing: a wake of a member on duty writes no intent.
+t "wake-silent: writes no hold for the member it woke" absent \
+  "$([ -e "$CREW_CONFIG_DIR/store/intent/ff-paused" ] && echo present || echo absent)"
 t "wake-silent: leaves a DISARMED box alone" "" "$(cat "$FLOOR_STATE/ff-disarmed.cron" 2>/dev/null)"
 
 # #487 D3/D4 — the wake went to every box incus did not call `stopped`, which
@@ -729,6 +743,12 @@ else ok "wake-silent: a wedged box is not sent a wake"; fi
 if ws_resumed ff-paused; then
   ok "wake-silent: ...and the needle above can see a wake that WAS sent"
 else fail "wake-silent: ...and the needle above can see a wake that WAS sent" "$FS_SEEN"; fi
+# A member the operator holds is left alone (#898): Start lifts a hold, never
+# a fleet-wide wake.
+if ws_resumed ff-silent || grep -q '^start ff-silent' <<<"$FS_SEEN"; then
+  fail "wake-silent: a member the operator holds is not woken" "$FS_SEEN"
+else ok "wake-silent: a member the operator holds is not woken"; fi
+rm -f "$CREW_CONFIG_DIR/store/intent/ff-silent"
 
 # D3's race is deterministic here: another complete invocation may land
 # between two resume records, but it cannot land inside either one. The

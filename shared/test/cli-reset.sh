@@ -801,7 +801,7 @@ arm beta "$BOX_STAMP_VERSION"
 mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
 : >"$STATE/calls"
 capture reset --all
-case "$OUT" in *'alpha: paused — left alone'*) r1=left ;; *) r1="$OUT" ;; esac
+case "$OUT" in *'alpha: stopped by the operator — left alone'*) r1=left ;; *) r1="$OUT" ;; esac
 t reset-all-leaves-a-paused-box-alone left "$r1"
 t reset-all-restores-nothing-for-a-paused-box 0 "$(calls_of 'restore alpha')"
 t reset-all-still-restores-the-others 1 "$(calls_of 'restore beta armed')"
@@ -810,7 +810,7 @@ capture reset alpha
 t reset-by-name-restores-a-paused-box 1 "$(calls_of 'restore alpha armed')"
 t reset-by-name-stops-a-paused-box-again-after-its-memory 1 \
   "$(awk '/^memory-unpack alpha/{m=NR} /^down alpha/{if(m && NR>m)d=NR} END{print (m && d) ? 1 : 0}' "$STATE/calls")"
-case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again — it is paused"*) r1=said ;; *) r1="$OUT" ;; esac
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION), its memory written back, and stopped again — the operator holds it"*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-the-paused-stop-is-said said "$r1"
 t reset-by-name-pauses-the-crontab-again 1 "$(calls_of 'pause alpha')"
 # ...and when a duty holds the lock at that moment, the crontab is STILL
@@ -821,7 +821,7 @@ printf 'busy:30\n' >"$STATE/probe-alpha"
 capture reset alpha
 t reset-a-paused-box-under-a-held-lock-is-paused-anyway 1 "$(calls_of 'pause alpha')"
 t reset-a-paused-box-under-a-held-lock-is-not-stopped 0 "$(awk '/^memory-unpack alpha/{m=NR} /^down alpha/{if(m && NR>m)d=1} END{print d+0}' "$STATE/calls")"
-case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started; it is paused — its crontab is paused again, but a duty already holds its lock (busy), so the host tick stops it once idle"*) r1=said ;; *) r1="$OUT" ;; esac
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started; the operator holds it — its crontab is paused again, but a duty already holds its lock (busy), so the host tick stops it once idle"*) r1=said ;; *) r1="$OUT" ;; esac
 t reset-the-held-lock-is-said-with-the-pause said "$r1"
 rm -f "$STATE/probe-alpha"
 rm -f "$CONF/store/paused/alpha"
@@ -869,7 +869,7 @@ mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
 : >"$STATE/calls"
 CREW_RESET_STOP_RETRY_S=0 RST_DOWN_FAIL_SETTLE=alpha capture reset alpha
 t w786-a-paused-stop-that-never-takes-is-a-failure 1 "$RC"
-case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started, but the stop its paused state asks for FAILED twice — its crontab is paused; stop it with: box down alpha"*) r1=said ;; *) r1="$OUT" ;; esac
+case "$OUT" in *"alpha: restored to armed (crew@$BOX_STAMP_VERSION) and started, but the stop the operator's hold asks for FAILED twice — its crontab is paused; stop it with: box down alpha"*) r1=said ;; *) r1="$OUT" ;; esac
 t w786-a-paused-stop-that-never-takes-is-said said "$r1"
 rm -f "$CONF/store/paused/alpha"
 

@@ -176,9 +176,17 @@ fi
 
 # #875: a member the host tick stopped is asleep, not a lost signal.
 if python3 "$HERE/asleep.py"; then
-  ok "units: a stopped member the store saw hired is asleep; paused stays offline (#875)"
+  ok "units: a stopped member the store saw hired is asleep; one the operator holds is held (#875, #898)"
 else
-  fail "units: a stopped member the store saw hired is asleep; paused stays offline (#875)" "see output above"
+  fail "units: a stopped member the store saw hired is asleep; one the operator holds is held (#875, #898)" "see output above"
+fi
+
+# #898, #899: a member's intent, the verb each lifecycle action runs, the
+# state laid over a unit, a removal refused on duty, the health window.
+if python3 "$HERE/member-state.py"; then
+  ok "member: intent, lifecycle verbs, held state and the health window (#898, #899)"
+else
+  fail "member: intent, lifecycle verbs, held state and the health window (#898, #899)" "see output above"
 fi
 
 # #847: a job that reads finished has released its slot, so the next one starts.

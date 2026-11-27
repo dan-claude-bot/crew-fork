@@ -51,7 +51,7 @@ def exercise(action, states, failures=()):
         states = {name: states for name in BOXES}
     floor.box_states = lambda: states
 
-    def slow_run(argv, _timeout, _stdin_data=None):
+    def slow_run(argv, _timeout, _stdin_data=None, env=None):
         nonlocal active, peak
         name = argv[2]
         with lock:
@@ -95,7 +95,7 @@ floor.read_roster = lambda: [
     {"box": name, "agent": "claude", "room": "builder"} for name in BOXES
 ]
 floor.box_states = lambda: {"box-a": None, "box-b": "running", "box-c": "stopped"}
-floor.run = lambda _argv, _timeout, _stdin_data=None: (0, "started", "")
+floor.run = lambda _argv, _timeout, _stdin_data=None, env=None: (0, "started", "")
 mixed_fleet = Fleet()
 status, payload = floor.do_command(mixed_fleet, {"action": "start-all"})
 assert status == 200, (status, payload)
@@ -113,7 +113,7 @@ floor.read_roster = lambda: [
     {"box": name, "agent": "claude", "room": "builder"} for name in BOXES
 ]
 floor.box_states = lambda: {"box-a": None, "box-b": "stopped", "box-c": "stopped"}
-floor.run = lambda argv, _timeout, _stdin_data=None: (
+floor.run = lambda argv, _timeout, _stdin_data=None, env=None: (
     (1, "", "refused") if argv[2] == "box-b" else (0, "started", "")
 )
 drift_and_refusal = Fleet()
@@ -138,7 +138,7 @@ many_peak = 0
 many_lock = threading.Lock()
 
 
-def bounded_run(argv, _timeout, _stdin_data=None):
+def bounded_run(argv, _timeout, _stdin_data=None, env=None):
     global many_active, many_peak
     with many_lock:
         many_active += 1
@@ -180,7 +180,7 @@ seen_timeouts = []
 wedged_boxes = set()
 
 
-def wedging_run(argv, timeout, _stdin_data=None):
+def wedging_run(argv, timeout, _stdin_data=None, env=None):
     seen_timeouts.append(timeout)
     name = argv[2]
     if name in wedged_boxes:
@@ -307,7 +307,7 @@ def restart(box, unreachable, mode, refuses=None, state="running"):
     floor.read_roster = lambda: [{"box": box, "agent": "claude", "room": "builder"}]
     floor.box_states = lambda: ({} if state is None else {box: state})
 
-    def recording_run(argv, _timeout, _stdin_data=None):
+    def recording_run(argv, _timeout, _stdin_data=None, env=None):
         line = " ".join(argv)
         calls.append(line)
         if refuses and refuses in line:
@@ -422,7 +422,7 @@ WAKE_UNITS = [
 wake_calls = []
 
 
-def wake_run(argv, _timeout, _stdin_data=None):
+def wake_run(argv, _timeout, _stdin_data=None, env=None):
     wake_calls.append(" ".join(argv[:3]))
     return 0, "done", ""
 
@@ -477,7 +477,7 @@ assert payload["results"][2]["out"].startswith("wedged — not woken"), payload
 # restart, where before this PR the same box dropped out silently. Same units,
 # same ping, and only the host's inventory differs.
 gone_calls = []
-floor.run = lambda argv, _t, _s=None: (gone_calls.append(" ".join(argv[:3])),
+floor.run = lambda argv, _t, _s=None, env=None: (gone_calls.append(" ".join(argv[:3])),
                                        (0, "done", ""))[1]
 floor.box_states = lambda: {"wake-stopped": "stopped", "wake-unmeasured": "running",
                             "wake-answering": "running"}   # wake-wedged has gone
@@ -535,7 +535,7 @@ CLAIM_CALLS = []
 CLAIM_GATE = threading.Event()
 
 
-def gated_run(argv, _timeout, _stdin_data=None):
+def gated_run(argv, _timeout, _stdin_data=None, env=None):
     CLAIM_CALLS.append(" ".join(argv[:3]))
     if argv[1] == "down" and argv[2] == "box-a":
         CLAIM_GATE.wait(5)
@@ -596,7 +596,7 @@ FLEET_GATE = threading.Event()
 FLEET_CALLS = []
 
 
-def fleet_gated(argv, _timeout, _stdin_data=None):
+def fleet_gated(argv, _timeout, _stdin_data=None, env=None):
     FLEET_CALLS.append(" ".join(argv[:3]))
     FLEET_GATE.wait(5)
     return 0, "done", ""
@@ -622,7 +622,8 @@ assert code == 409, (code, reply)
 FLEET_GATE.set()
 t2.join(5)
 assert held["r"][0] == 200, held
-assert sorted(FLEET_CALLS) == ["box start box-a", "box start box-b", "box start box-c"], FLEET_CALLS
+# Start all is each member's `crew start` (#898): the CLI, by its own path.
+assert sorted(c.rsplit("/", 1)[-1] for c in FLEET_CALLS) == ["crew start box-a", "crew start box-b", "crew start box-c"], FLEET_CALLS
 assert INFLIGHT.snapshot() == {"boxes": {}, "fleet": None}, INFLIGHT.snapshot()
 
 # Round 11: wake-silent lifts a box's pause marker only inside that box's own
@@ -633,7 +634,7 @@ floor.box_states = lambda: {n: "stopped" for n in BOXES}
 WAKE_CALLS = []
 
 
-def wake_run(argv, _t, _s=None):
+def wake_run(argv, _t, _s=None, env=None):
     WAKE_CALLS.append(" ".join(argv[:3]) + (" " + argv[-1].strip().split("\n")[0] if argv[1] == "exec" else ""))
     return 0, "floor-ready" if argv[-1] == floor.READY_SH else "done", ""
 
@@ -657,7 +658,7 @@ INFLIGHT.release_box("box-a")
 # marker was lifted first (so the host tick cannot stop the box mid-wake),
 # and a box this action did not wake is paused again.
 MARKERS.clear(); MARKERS.update({"box-b": True})
-floor.run = lambda argv, _t, _s=None: ((1, "", "crontab write failed") if "crontab" in argv[-1]
+floor.run = lambda argv, _t, _s=None, env=None: ((1, "", "crontab write failed") if "crontab" in argv[-1]
                                        else (0, "floor-ready" if argv[-1] == floor.READY_SH else "done", ""))
 code, reply = floor.do_command(Fleet(), {"action": "wake-silent"}, actor="op2")
 rows = {r["box"]: r for r in reply["results"]}

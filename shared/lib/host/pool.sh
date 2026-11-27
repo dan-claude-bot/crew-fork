@@ -203,6 +203,15 @@ pool_record_delivered() {
   { grep -v -- "^$2 " "$f" 2>/dev/null; printf '%s %s\n' "$2" "$3"; } >"$f.tmp" && mv -f "$f.tmp" "$f"
 }
 
+# pool_forget_delivered BOX SVC — the box no longer holds any entry of SVC (its
+# login was removed, #898): the next fan-out sends it again.
+pool_forget_delivered() {
+  local f
+  f="$(pool_dir)/delivered/$1"
+  [ -f "$f" ] || return 0
+  { grep -v -- "^$2:" "$f" 2>/dev/null || true; } >"$f.tmp" && mv -f "$f.tmp" "$f"
+}
+
 # pool_is_stale BOX ID — the member does not hold the entry's current value.
 pool_is_stale() {
   local want have
@@ -242,6 +251,8 @@ pool_send() {
   if [ "$rc" -eq 0 ]; then
     pool_record_delivered "$box" "$id" "$digest"
     pool_record_verdict "$box" "$id" ok "${verdict:-set}"
+    # A login set again lifts the operator's removal of it (#898).
+    ! declare -F logout_lift >/dev/null || logout_lift "$box" "$svc"
   else
     pool_record_verdict "$box" "$id" fail "${verdict:-no answer from the box}"
   fi

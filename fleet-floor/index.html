@@ -219,6 +219,33 @@ input.woff{color:#5a6a80}
 .pgverdict{font:10.5px/1.5 var(--mono);margin-top:6px;padding:5px 9px;border-radius:6px;word-break:break-word}
 .pgverdict.bad{color:#ff8a7c;background:#ff51471a;border:1px solid #ff51473d}
 .pgverdict.good{color:#5fce9b;background:#5fce9b14;border:1px solid #5fce9b33}
+.pgverdict.work{color:var(--cyan);background:#5fd6ff10;border:1px solid #5fd6ff2e}
+.pgverdict:empty{display:none}
+/* the one confirmation dialog (#900): checkbox included */
+.askbg{position:fixed;inset:0;z-index:90;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}
+.askbox{background:#0b121d;border:1px solid #223148;border-radius:10px;max-width:460px;width:100%;padding:16px 18px;box-shadow:0 18px 50px #000c}
+.asktitle{font-size:13px;color:#e4edf7;margin-bottom:8px}
+.asktext{font-size:11px;line-height:1.55;color:#a9b9cc;margin-bottom:10px}
+.asksub{color:#f7bd4e}
+.askcheck{display:flex;gap:8px;align-items:center;font-size:11px;color:#e4edf7;margin:4px 0 8px;cursor:pointer}
+/* the operator's intent (#898): what they asked of the member, ahead of what it is doing */
+.mst.s-held{color:#f7bd4e;background:#f7bd4e1a}
+.mst.i-stopped,.mst.i-off-duty{color:#f7bd4e;background:#f7bd4e1a;border:1px solid #f7bd4e40}
+.mst.i-paused{color:#9887ef;background:#9887ef1a;border:1px solid #9887ef40}
+/* health stats (#899): the last 24 hours by status */
+.hlth{display:grid;grid-template-columns:minmax(92px,auto) 1fr auto;gap:5px 10px;align-items:center;font-size:10.5px;margin-top:6px}
+.hlth .hl{color:#a9b9cc;display:flex;align-items:center;gap:6px}
+.hlth .hl i{display:inline-block;width:8px;height:8px;border-radius:2px;flex:none}
+.hlth .hb{height:10px;background:#101a26;border-radius:2px 4px 4px 2px;overflow:hidden}
+.hlth .hb i{display:block;height:100%;width:0;border-radius:2px 4px 4px 2px;transition:width .9s cubic-bezier(.2,.8,.2,1)}
+.hlth .hv{color:#c7d4e4;text-align:right;white-space:nowrap}
+.hlth .dim{opacity:.38}
+.hstrip{position:relative;height:14px;margin-top:12px;background:#101a26;border-radius:3px;overflow:hidden}
+.hstrip i{position:absolute;top:0;bottom:0;box-shadow:inset -2px 0 0 #080d16}
+.hstrip i:hover{filter:brightness(1.25)}
+.haxis{display:flex;justify-content:space-between;font-size:9px;color:#5d7088;margin-top:3px}
+.htip{position:fixed;z-index:95;pointer-events:none;background:#0b121d;border:1px solid #223148;border-radius:6px;padding:5px 8px;font-size:10.5px;color:#e4edf7;white-space:nowrap}
+@media (prefers-reduced-motion: reduce){.hlth .hb i{transition:none}}
 .regacts{flex-wrap:wrap}
 .regacts .pgverdict{flex-basis:100%}
 @media (max-width:640px){#pagebody{padding:14px 16px 120px}.pghd{padding:10px 16px}}
@@ -329,6 +356,7 @@ input.woff{color:#5a6a80}
       <button class="fchip" data-f="state" data-v="working">Working</button>
       <button class="fchip" data-f="state" data-v="idle">Idle</button>
       <button class="fchip" data-f="state" data-v="asleep">Asleep</button>
+      <button class="fchip" data-f="state" data-v="held">Held</button>
       <button class="fchip" data-f="state" data-v="suppressed">Suppressed</button>
       <button class="fchip" data-f="state" data-v="limited">Limited</button>
       <button class="fchip" data-f="state" data-v="disarmed">Disarmed</button>
@@ -1367,7 +1395,9 @@ function drawCamCell(t,x,y,w,h,unit){
   /* ASLEEP (#875) is not offline: the host tick stopped it on purpose and wakes
      it on work. No SIGNAL LOST, no red flatline, no alarm ring — a dimmed feed,
      a slow quiet trace and the word. */
-  var asleep=unit.state==="asleep";
+  /* HELD (#898): the operator stopped, paused or unhired it — drawn as calmly
+     as asleep, with its own word: nobody is waiting on the tick here. */
+  var held=unit.state==="held",asleep=unit.state==="asleep"||held;
   var box=UNITID(unit), d=dataOf(box,unit.room), vc=VENDORCOL(unit.agent);
   var bp=strPhase(box);
   X.save();X.textBaseline="alphabetic";X.textAlign="left";
@@ -1560,15 +1590,16 @@ function drawCamCell(t,x,y,w,h,unit){
   if(asleep){
     X.fillStyle="rgba(4,8,14,0.46)";X.fillRect(x+1,y+1,w-2,h-2);
     X.font="700 11px ui-monospace,monospace";X.textAlign="center";
-    var zw=X.measureText("ASLEEP — WAKES ON WORK").width;
+    var zword=held?("HELD — "+String(intentWord(unit)).toUpperCase()):"ASLEEP — WAKES ON WORK";
+    var zw=X.measureText(zword).width;
     X.fillStyle="rgba(6,10,18,0.70)";rr(X,x+(w-zw)/2-10,y+h*0.5-11,zw+20,22,4);X.fill();
-    X.fillStyle="rgba(150,175,205,0.85)";
-    X.fillText("ASLEEP — WAKES ON WORK",x+w/2,y+h*0.5);
+    X.fillStyle=held?"rgba(247,189,78,0.9)":"rgba(150,175,205,0.85)";
+    X.fillText(zword,x+w/2,y+h*0.5);
     X.textAlign="left";
   }
   drawEKG(x+w-pad-6-hw,y+h-pad-26,hw,24,t+bp,hr,
           off?"rgba(255,81,71,0.85)":asleep?"rgba(127,151,176,0.55)":work?"rgba(120,225,255,0.9)":"rgba(95,206,155,0.8)",
-          off?"— BPM":asleep?"ASLEEP":Math.round(hr*60+2*Math.sin(t*0.7+bp))+" BPM");
+          off?"— BPM":held?"HELD":asleep?"ASLEEP":Math.round(hr*60+2*Math.sin(t*0.7+bp))+" BPM");
   if(off){
     X.font="700 11px ui-monospace,monospace";X.textAlign="center";
     var slw=X.measureText("SIGNAL LOST — RECONNECTING").width;
@@ -1752,6 +1783,8 @@ function fleetStateData(u,d){
   /* Asleep (#875): the host tick stopped an idle member and starts it when its
      board has work — 0.1.4's "the box sleeps". Its own word, never SILENT. */
   if(u.state==="asleep")return "asleep";
+  /* Held (#898): the operator's own stop, pause or unhire — never SILENT. */
+  if(u.state==="held")return "held";
   if(u.state==="offline")return stoppedWord(d)?"disarmed":"silent";
   /* Past the dispatch, this is the `idle` cell `applyFleet` normalised a
      working unit with no current-session object into — the only path either
@@ -1778,7 +1811,7 @@ function matchedFloorUnits(){return ROSTER.filter(matchesFloorFilter);}
    that disagreed about what SILENT means would be worse than one that was
    wrong. */
 function fleetCounts(){
-  var c={working:0,idle:0,asleep:0,suppressed:0,limited:0,disarmed:0,silent:0};
+  var c={working:0,idle:0,asleep:0,held:0,suppressed:0,limited:0,disarmed:0,silent:0};
   ROSTER.forEach(function(u){c[fleetState(u)]++;});
   return c;
 }
@@ -1790,6 +1823,7 @@ function stageCounts(){
   var stat=[[c.silent+" SILENT","#ff5147"],[c.idle+" IDLE","#5fce9b"],[c.working+" WORKING","#f7bd4e"]];
   if(c.suppressed)stat.splice(1,0,[c.suppressed+" SUPPRESSED","#f28b54"]);
   if(c.asleep)stat.splice(2,0,[c.asleep+" ASLEEP","#7f97b0"]);
+  if(c.held)stat.splice(2,0,[c.held+" HELD","#f7bd4e"]);
   if(c.limited)stat.splice(1,0,[c.limited+" LIMITED","#ff5147"]);
   /* Only when non-zero, on the ALERT counter's rule below: a permanent
      "0 DISARMED" is furniture. SILENT stays unconditional either way — an
@@ -2360,6 +2394,129 @@ function setBusy(el,disabled,spinning){
   el.classList.toggle("busy",!!spinning);
   if(spinning)el.setAttribute("aria-busy","true");else el.removeAttribute("aria-busy");
 }
+/* ---- One action control (#900) ----------------------------------------------
+   Every page control that fires a floor action DECLARES it — data-act (the
+   action), data-scope (what it holds: "box:<name>", "fleet", "ov:pool") and,
+   for a control whose action flips with the member's state, data-act-also —
+   and this one binder gives each the same three behaviours, so no page can
+   forget one:
+     pressed  disabled at once; its row says "Pausing… 12s · step";
+     blocking every control on the same scope is disabled while anything
+              holds it — this tab's request or another operator's, from
+              /api/actions — with a tooltip naming what holds it;
+     done     the verdict beside the controls (✓ / refused — why).
+   Confirmations are built in (actFire's ask), so a dialog is one declaration,
+   checkbox included (#898's force stop, unhire's logout). */
+var ACT_ING={"power-off":"Stopping","force-stop":"Stopping","power-on":"Starting","pause":"Pausing",
+  "resume":"Resuming","restart":"Restarting","unhire":"Unhiring","logout":"Removing the login",
+  "pool-assign":"Assigning","pool-unassign":"Clearing","credentials-set":"Setting",
+  "start-all":"Starting all","stop-all":"Stopping all","wake-silent":"Waking","message":"Sending"};
+function actHeld(el){return inflightOf(el.dataset.scope||"fleet");}
+function actMine(el,held){
+  if(!held)return false;
+  if(held.action===el.dataset.act)return true;
+  return (el.dataset.actAlso||"").split(" ").indexOf(held.action)>=0;
+}
+/* The row a control's verdict and progress are said in: its bar, its form's
+   actions, or its table cell. */
+function actSlot(el){
+  var row=el.closest(".pgbar,.regacts,.actrow,td")||el.parentNode;
+  var v=null;
+  for(var i=0;i<row.children.length;i++)if(row.children[i].classList.contains("pgverdict")){v=row.children[i];break;}
+  if(!v){v=document.createElement("div");v.className="pgverdict";v.setAttribute("role","status");row.appendChild(v);}
+  return v;
+}
+function actControls(){
+  if(!LIVE)return;
+  var now=Date.now()/1000,said={};
+  [].forEach.call(document.querySelectorAll("[data-act]"),function(el){
+    var held=actHeld(el),mine=actMine(el,held);
+    setBusy(el,!!held,mine);
+    var secs=held&&held.since?Math.max(0,Math.round(now-held.since)):0;
+    el.title=held?("busy: "+busyWhat(held)+", "+secs+"s — wait for it to finish"):(el.dataset.tip||"");
+    if(mine){
+      var slot=actSlot(el);said[slot.dataset.k=slot.dataset.k||String(Math.random())]=1;
+      var srv=(el.dataset.scope||"").indexOf("box:")===0?(INFL.server.boxes||{})[el.dataset.scope.slice(4)]:null;
+      var step=(srv&&srv.step)||held.step||"";
+      slot.classList.remove("bad","good");slot.classList.add("work");
+      slot.textContent="⟳ "+(ACT_ING[held.action]||held.action)+"… "+secs+"s"+(step&&step!==held.action?" · "+step:"");
+    }
+  });
+  /* A row whose action finished, and that this tab did not answer (another
+     operator's), stops saying it is working. */
+  [].forEach.call(document.querySelectorAll(".pgverdict.work"),function(v){
+    if(!said[v.dataset.k]){v.classList.remove("work");if(/^⟳/.test(v.textContent))v.textContent="";}
+  });
+}
+/* The verdict of one action, beside its controls: the CLI's own sentence. */
+function actVerdict(slot,r,okText){
+  if(!slot)return;
+  slot.classList.remove("work");
+  var ok=!!(r&&r.ok),row=(r&&r.results||[])[0]||{};
+  var said=String(row.out||"").split("\n").filter(Boolean).pop()||"";
+  slot.textContent=ok?("✓ "+(okText||said||"done")):("✗ refused — "+(said||replyWhy(r)));
+  slot.classList.toggle("bad",!ok);slot.classList.toggle("good",ok);
+  if(!ok)setStatus(slot.textContent,true);
+}
+/* A confirmation with an optional checkbox: {title, text, check, danger} ->
+   Promise<{ok, checked}>. One dialog for every action that asks. */
+function askConfirm(o){
+  return new Promise(function(done){
+    var bg=document.createElement("div");bg.className="askbg";
+    bg.innerHTML='<div class="askbox" role="dialog" aria-modal="true" aria-labelledby="asktitle">'
+      +'<div class="asktitle" id="asktitle">'+esc(o.title)+'</div>'
+      +'<div class="asktext">'+esc(o.text).replace(/\n/g,"<br>")+'</div>'
+      +(o.check?'<label class="askcheck"><input type="checkbox" data-k="ask-check"> <span>'+esc(o.check)+'</span></label>'
+        +(o.checkText?'<div class="asktext asksub" data-k="ask-sub" hidden>'+esc(o.checkText)+'</div>':''):'')
+      +'<div class="regacts"><button class="lbtn'+(o.danger?' rosdrop':'')+'" data-k="ask-ok">'+esc(o.ok||"Confirm")+'</button>'
+      +'<button class="lbtn" data-k="ask-cancel">Cancel</button></div></div>';
+    document.body.appendChild(bg);
+    var box=bg.querySelector('[data-k="ask-check"]'),sub=bg.querySelector('[data-k="ask-sub"]');
+    if(box&&sub)box.addEventListener("change",function(){sub.hidden=!box.checked;});
+    var close=function(ok){document.removeEventListener("keydown",key,true);bg.remove();done({ok:ok,checked:!!(box&&box.checked)});};
+    var key=function(e){if(e.key==="Escape"){e.stopPropagation();close(false);}};
+    document.addEventListener("keydown",key,true);
+    bg.addEventListener("click",function(e){
+      if(e.target===bg||e.target.closest('[data-k="ask-cancel"]'))close(false);
+      else if(e.target.closest('[data-k="ask-ok"]'))close(true);
+    });
+    var okb=bg.querySelector('[data-k="ask-ok"]');if(okb)okb.focus();
+  });
+}
+/* What each member action asks first, given the member's unit (#898). */
+var ACT_ASK={
+  "power-off":function(b){return {title:"Stop "+b+"?",ok:"Stop",
+    text:b+" finishes the run it is in, then its box is drained and stopped. It keeps its claims, and the host tick will not start it until you press Start.",
+    check:"Force stop: end the session now",checkText:"The run in progress is killed. The next Start resumes the interrupted work."};},
+  "unhire":function(b){return {title:"Unhire "+b+"?",ok:"Unhire",danger:true,
+    text:"Its claims go back to the board for another member to take (an issue whose work is already its pull request is kept and named). Its cron is disarmed, and its box is stopped and kept. Hire puts it back on duty.",
+    check:"Also remove its logins from the box",checkText:"gh, its agent and Telegram are removed; after a Hire it cannot work until they are set again."};},
+  "pause":function(b){return null;},
+  "logout":function(b,x){return {title:"Remove "+b+"'s "+x.service+" login?",ok:"Remove",danger:true,
+    text:"The login is deleted from its box and its pool entry is unassigned. "+(x.service==="tg"?b+" sends no alerts until a bot is set again.":b+" cannot work on its board until a "+x.service+" login is set again, and the host tick does not wake it meanwhile.")};}
+};
+/* Fire EL's action on its scope: ask, hold, answer beside it. */
+function actFire(el,extra){
+  if(!LIVE)return Promise.resolve(null);
+  var scope=el.dataset.scope||"fleet",action=el.dataset.act,box=scope.indexOf("box:")===0?scope.slice(4):"";
+  var u=box?unitOf(box):null;
+  if(action==="pause"&&u&&(u.intent==="paused"||u.paused))action="resume";
+  var held=inflightOf(scope);
+  if(held){actVerdict(actSlot(el),{ok:false,error:"busy: "+busyWhat(held)+" — wait for it to finish"});return Promise.resolve(null);}
+  var ask=ACT_ASK[action]?ACT_ASK[action](box,extra||{}):null;
+  return (ask?askConfirm(ask):Promise.resolve({ok:true,checked:false})).then(function(c){
+    if(!c.ok)return null;
+    var body=Object.assign({box:box},extra||{});
+    if(action==="power-off"&&c.checked)body.force=true;
+    if(action==="unhire"&&c.checked)body.logout=true;
+    var slot=actSlot(el);
+    slot.classList.remove("bad","good");slot.classList.add("work");slot.textContent="⟳ "+(ACT_ING[action]||action)+"…";
+    return act(scope,action,body).then(function(r){
+      actVerdict(slot,r);
+      return r;
+    });
+  });
+}
 function applyBusy(){
   if(!LIVE)return;
   var fb=inflightOf("fleet");
@@ -2394,6 +2551,7 @@ function applyBusy(){
     pg.firstChild.style.width=(fb&&tot)?Math.round(100*done/tot)+"%":"";
     pg.title=fb?(fb.action+(tot?" · "+done+"/"+tot+" boxes":"")):"";
   }
+  actControls();
   busyStatus();
 }
 /* While THIS tab waits, the status line says what it is waiting for, with the
@@ -2478,7 +2636,7 @@ function buildTiles(){var ct=fleetCounts(),q=0;ROSTER.forEach(function(u){q+=dat
     hidden+(hidden===1?" declared box has":" declared boxes have")
     +" no console: not hired — crew hire <box>"):"";
   var limited=ct.limited?tl(ct.limited,"limited","#ff5147",true):"";
-  var el=document.getElementById("tiles");if(el)el.innerHTML=tl(declared,"units","#c7d4e4")+hire+tl(ct.working,"working","#f7bd4e")+tl(ct.idle,"idle","#5fce9b")+(ct.asleep?tl(ct.asleep,"asleep","#7f97b0"):"")+tl(ct.suppressed,"suppressed","#f28b54",ct.suppressed>0)+limited+tl(ct.disarmed,"disarmed","#8aa0b8")+tl(ct.silent,"silent","#ff5147",ct.silent>0)+tl(q,"queued","#5fd6ff");}
+  var el=document.getElementById("tiles");if(el)el.innerHTML=tl(declared,"units","#c7d4e4")+hire+tl(ct.working,"working","#f7bd4e")+tl(ct.idle,"idle","#5fce9b")+(ct.asleep?tl(ct.asleep,"asleep","#7f97b0"):"")+(ct.held?tl(ct.held,"held","#f7bd4e"):"")+tl(ct.suppressed,"suppressed","#f28b54",ct.suppressed>0)+limited+tl(ct.disarmed,"disarmed","#8aa0b8")+tl(ct.silent,"silent","#ff5147",ct.silent>0)+tl(q,"queued","#5fd6ff");}
 function populateDash(){
   if(VIEW!=="room")return;
   /* The art-preview toggles can set any STATE; live data may disagree. Only
@@ -2490,8 +2648,8 @@ function populateDash(){
      what it is allowed to shout (#203). */
   var stw=off?stoppedWord(d):"";
   /* ASLEEP (#875): the host tick's own stop, said calm — never SILENT. */
-  var asleep=STATE==="asleep";
-  var sc=asleep?"#7f97b0":stw?"#8aa0b8":off?"#ff5147":suppressed?"#f28b54":limited?"#ff5147":work?"#f7bd4e":"#5fce9b",sl=asleep?"ASLEEP":stw||(off?"SILENT":suppressed?"SUPPRESSED":limited?"LIMITED":work?(d.kind==="build"?"BUILDING":d.kind==="review"?"REVIEWING":"DISPATCHING"):"STANDBY");
+  var heldS=STATE==="held",asleep=STATE==="asleep"||heldS;
+  var sc=heldS?"#f7bd4e":asleep?"#7f97b0":stw?"#8aa0b8":off?"#ff5147":suppressed?"#f28b54":limited?"#ff5147":work?"#f7bd4e":"#5fce9b",sl=heldS?heldWord(unitOf(BOX)):asleep?"ASLEEP":stw||(off?"SILENT":suppressed?"SUPPRESSED":limited?"LIMITED":work?(d.kind==="build"?"BUILDING":d.kind==="review"?"REVIEWING":"DISPATCHING"):"STANDBY");
   document.getElementById("w-id").innerHTML='<div class="idc"><div class="av" style="background:'+hexA(vc,0.16)+';box-shadow:inset 0 0 0 1px '+hexA(vc,0.5)+';color:'+vc+'">'+AGENT[0].toUpperCase()+'</div><div><div class="nm">'+id+'</div><div class="rl">'+AGENT+' · '+ROOM+'</div><span class="pill" style="color:'+sc+';background:'+hexA(sc,0.14)+';box-shadow:inset 0 0 0 1px '+hexA(sc,0.4)+'">● '+sl+'</span></div></div><div class="spark" title="24h activity">'+(off?"":d.spark.map(function(v,i){return '<span style="height:'+Math.round(v*100)+'%;background:'+hexA(vc,i>=d.spark.length-4?0.95:0.42)+'"></span>';}).join(''))+'</div>';
   /* In LIVE mode every value here is what the box reported this poll; the
      DEMO strings it replaces were the placeholders #38 was filed about. */
@@ -2502,7 +2660,7 @@ function populateDash(){
        half-right here and disarmed was not started: this vital named the
        operator's pause and then fell through to SILENT for a box with no cron
        line at all. */
-    vCron=asleep?"ASLEEP · wakes on work":stw||((d.cron.age===null||d.cron.age===undefined)?"no ticks yet":(d.cron.ok?fmtDur(d.cron.age)+" ago":"SILENT · "+fmtDur(d.cron.age)));
+    vCron=heldS?heldWord(unitOf(BOX))+" · by operator":asleep?"ASLEEP · wakes on work":stw||((d.cron.age===null||d.cron.age===undefined)?"no ticks yet":(d.cron.ok?fmtDur(d.cron.age)+" ago":"SILENT · "+fmtDur(d.cron.age)));
     if(d.note&&!d.engine)vBox=esc(d.note);
   }
   document.getElementById("w-vitals").innerHTML='<div class="wt"><span class="dot"></span>VITALS</div><div class="kv">'
@@ -2571,6 +2729,7 @@ function populateDash(){
   else if(work)cs+='<div class="big" id="cur-el">'+fmtDur(Math.floor(Date.now()/1000)-d.cur.start)+'</div><div class="task">'+esc(d.kind)+' · '+esc(d.cur.key)+'</div><div class="pbar"><i></i></div>';
   /* ASLEEP (#875): stopped, and the host tick starts it on work — said calm,
      with the collector's note, never STANDBY (it is not running) nor SILENT. */
+  else if(STATE==="held")cs+='<div class="big" style="color:#f7bd4e">'+esc(heldWord(unitOf(BOX)))+'</div><div class="task">'+esc(LIVE&&d.note?d.note:"held by the operator")+'</div>';
   else if(STATE==="asleep")cs+='<div class="big" style="color:#7f97b0">ASLEEP</div><div class="task">'+esc(LIVE&&d.note?d.note:"the host tick wakes it when its board has work")+'</div>';
   else cs+='<div class="big" style="color:#5fce9b">STANDBY</div><div class="task">idle · awaiting next tick</div>';
   document.getElementById("w-current").innerHTML=cs+'</div>';
@@ -7038,7 +7197,7 @@ var lastT=0;
    not once a cell renders rooms: the map's tiles would queue behind the hidden
    view's. FLOORDEV.pause stops the painting, not the page. */
 var devPaused=false;
-function frame(ms){var t=ms/1000,dt=Math.min(0.05,(ms-lastT)/1000)||0.016;lastT=ms;if(!devPaused){if(VIEW==="floor"){drawFloor(t);}else{drawTarget(t,dt);blit();if(STATE==="asleep")asleepVeil();}}requestAnimationFrame(frame);}
+function frame(ms){var t=ms/1000,dt=Math.min(0.05,(ms-lastT)/1000)||0.016;lastT=ms;if(!devPaused){if(VIEW==="floor"){drawFloor(t);}else{drawTarget(t,dt);blit();if(STATE==="asleep"||STATE==="held")asleepVeil();}}requestAnimationFrame(frame);}
 /* ASLEEP (#875) in the room: the art draws the unit at rest (it is neither
    working nor lost), and this dims the cell and says why — the calm reading of
    a box the host tick stopped and will wake on work. Never SIGNAL LOST. */
@@ -7046,7 +7205,7 @@ function asleepVeil(){
   X.save();X.fillStyle="rgba(4,8,14,0.42)";X.fillRect(dstX,dstY,dstW,dstH);
   X.font="700 12px ui-monospace,monospace";X.textAlign="center";
   X.fillStyle="rgba(150,175,205,0.85)";
-  X.fillText("ASLEEP — THE HOST TICK WAKES IT WHEN ITS BOARD HAS WORK",dstX+dstW/2,dstY+dstH*0.14);
+  X.fillText(STATE==="held"?"HELD BY THE OPERATOR — "+String(intentWord(unitOf(BOX))).toUpperCase():"ASLEEP — THE HOST TICK WAKES IT WHEN ITS BOARD HAS WORK",dstX+dstW/2,dstY+dstH*0.14);
   X.restore();
 }
 
@@ -7056,6 +7215,8 @@ function refreshChrome(){
      headline, the CRON vital and the big card: the alarm is for a box that
      should be ticking and is not (#203). */
   var stw=STATE==="offline"?stoppedWord(dataOf(BOX,ROOM)):"";
+  /* Held (#898): the operator's own word — PAUSED, STOPPED, OFF DUTY. */
+  if(STATE==="held")stw=heldWord(unitOf(BOX));
   document.getElementById("fl").textContent=UNIT()+" · "+(stw||(STATE==="offline"?"CRON SILENT":STATE))+" · sector-7";
   var sub=document.getElementById("sub");if(sub)sub.textContent=AGENT+" · "+ROLEWORD()+" quarters — detailed god-view cell";
   var rv=document.getElementById("room-version");if(rv)rv.textContent=(LIVEMETA&&LIVEMETA.version)||"version unavailable";
@@ -7179,6 +7340,8 @@ function rosterJobButtons(m,u,saved){
      Offering Create here would offer it for boxes that are hired. */
   if(!u&&!(LIVEMETA&&LIVEMETA.generated))return '<span class="rosst">reading the fleet…</span>';
   var st=u?rosterStanding(u):"not created",b=esc(m.box);
+  /* An unhired member comes back with Hire (#898): crew hire brings its box up on duty. */
+  if(u&&u.intent==="off-duty")return '<button class="lbtn jobb" data-job="hire" data-box="'+b+'" data-tip="crew hire '+b+' — back on duty">⇪ Hire</button>';
   if(st==="hired")return '<button class="lbtn jobb" data-job="upgrade" data-box="'+b+'" data-tip="crew upgrade '+b+'">⟳ Upgrade</button>';
   if(st==="not hired")return '<button class="lbtn jobb" data-job="hire" data-box="'+b+'" data-tip="crew hire '+b+'">⇪ Hire</button>';
   return '<button class="lbtn jobb" data-job="create" data-box="'+b+'" data-tip="crew up '+b+' — its plan is shown first">▶ Create</button>';
@@ -7259,7 +7422,10 @@ setInterval(loadFleets,60000);
    and starts a stopped box — it does NOT start a model session, because a box
    whose cron is dead has no evidence anyone asked for one. */
 document.getElementById("g-start").addEventListener("click",function(){if(!LIVE)return;if(confirm("Start every roster box?"))act("fleet","start-all");});
-document.getElementById("g-stop").addEventListener("click",function(){if(!LIVE)return;if(confirm("Stop every roster box? Running sessions are lost."))act("fleet","stop-all");});
+document.getElementById("g-stop").addEventListener("click",function(){if(!LIVE)return;
+  askConfirm({title:"Stop every member?",ok:"Stop all",text:"Each member finishes the run it is in, then its box is drained and stopped. They keep their claims, and the host tick starts none of them until Start (or Start all).",
+    check:"Force stop: end every session now",checkText:"Runs in progress are killed. The next Start resumes the interrupted work."})
+  .then(function(c){if(c.ok)act("fleet","stop-all",{force:c.checked});});});
 document.getElementById("g-reg").addEventListener("click",function(){if(!LIVE){setStatus("the repositories are live-only — run the collector to edit them",true);return;}goto("#/repositories");});
 document.getElementById("g-roster").addEventListener("click",function(){if(!LIVE){setStatus("the members are live-only — run the collector to edit them",true);return;}goto("#/members");});
 document.getElementById("g-creds").addEventListener("click",function(){if(!LIVE){setStatus("credentials are live-only — run the collector to edit them",true);return;}goto("#/credentials");});
@@ -7278,14 +7444,17 @@ if(_railL)_railL.addEventListener("click",function(e){
   if(pw){
     var on=pw.dataset.pw==="on";
     if(boxBusy(box))return act("box:"+box,on?"power-on":"power-off",{});
-    if(!on&&!confirm("Power off "+box+"? Any running session is lost."))return;
-    act("box:"+box,on?"power-on":"power-off",{box:box});return;
+    if(on){act("box:"+box,"power-on",{box:box});return;}
+    /* Stop is a hold, and asks once, force included (#898). */
+    askConfirm(ACT_ASK["power-off"](box)).then(function(c){
+      if(c.ok)act("box:"+box,"power-off",{box:box,force:c.checked});});
+    return;
   }
   var b=e.target.closest(".lbtn");if(!b)return;
   if(b.id==="ac-restart"){restartClick(box,d);}
   /* Its own verb on the wire too, not a flag on power-off: the collector must
      never be able to reach a force stop except by being asked for one. */
-  else if(b.id==="ac-force"){if(confirm("Force stop "+box+"? The guest is KILLED where it stands — this is `incus stop --force`, not a shutdown, and any running session is lost. Use it when a graceful stop has hung."))act("box:"+box,"force-stop",{box:box});}
+  else if(b.id==="ac-force"){if(confirm("Force stop "+box+"? Its session is ended where it stands, and the box is stopped (killed if a graceful stop hangs). It is HELD: the host tick will not start it until you press Start."))act("box:"+box,"force-stop",{box:box});}
   else if(b.id==="ac-repo"){if(d.repo)window.open(repoURL(d.repo),"_blank","noopener");}
   else if(b.id==="ac-term"){
     /* A browser cannot open a shell into a box. Hand over the command the
@@ -7519,11 +7688,22 @@ function rosterWrite(edit){
   });
 }
 /* ---- the live bits ---------------------------------------------------------- */
+/* The operator's intent first (#898): what they asked of the member — on
+   duty, stopping, stopped, paused, off duty — then what it is doing. */
+/* The console's word for a member the operator holds, upper-case (#898). */
+function heldWord(u){return String(intentWord(u)==="on duty"?"held":intentWord(u)).toUpperCase();}
+function intentWord(u){
+  if(!u||!u.intent||u.intent==="on-duty")return "on duty";
+  if(u.intent==="off-duty")return u.stopping?"going off duty":"off duty";
+  if(u.intent==="stopped"&&u.stopping)return "stopping";
+  return u.intent;
+}
 function liveState(u){
   if(!u)return '<span class="mst">no box yet</span>';
-  var st=u.state||"unknown";
-  return '<span class="mst s-'+esc(st)+'">'+esc(st)+'</span>'+(u.paused?' <span class="mst s-paused">paused</span>':'')
-    +' <span class="rosst">'+esc(rosterStanding(u))+'</span>';
+  var st=u.state||"unknown",held=u.intent&&u.intent!=="on-duty";
+  return '<span class="mst'+(held?' i-'+esc(u.intent):'')+'">'+esc(intentWord(u))+'</span> '
+    +'<span class="mst s-'+esc(st)+'">'+esc(st)+'</span>'+(u.paused&&!held?' <span class="mst s-paused">paused</span>':'')
+    +' <span class="rosst">'+esc(rosterStanding(u))+(u.note?' · '+esc(u.note):'')+'</span>';
 }
 /* The pool entries assigned to BOX that its box does not hold yet: never
    delivered, or owing the current value after a rotate (#780). */
@@ -7552,8 +7732,74 @@ function liveHTML(what,box,agent){
   if(what==="state")return liveState(u);
   if(what==="creds")return liveCreds(u,agent,box);
   if(what==="next")return rosterJobButtons({box:box},u,true);
-  if(what==="pause")return (u&&u.paused)?"▶ Resume":"⏸ Pause";
+  if(what==="pause")return (u&&(u.intent==="paused"||u.paused))?"▶ Resume":"⏸ Pause";
+  if(what==="health")return "";
   return "";
+}
+/* ---- Health stats (#899) -----------------------------------------------------
+   A member's last 24 hours by status, from /api/health: one bar per status,
+   its length the share of the time the store covers, animating to the new
+   length on every poll; under it a 24-hour strip of when. Eight families,
+   the reference palette's dark slots in their fixed order (validated on this
+   surface); every bar is labelled and every strip segment says what it was
+   on hover, so no status is told by colour alone. */
+var HEALTH_FAM=[
+  {k:"idle",label:"idle",c:"#338ced",of:["idle"]},
+  {k:"limited",label:"limited / held back",c:"#e76624",of:["limited","suppressed"]},
+  {k:"asleep",label:"asleep",c:"#00a888",of:["asleep"]},
+  {k:"held",label:"held by operator",c:"#d28e05",of:["held"]},
+  {k:"waiting",label:"waiting on a human",c:"#e24d8b",of:["waiting"]},
+  {k:"working",label:"working",c:"#0aac23",of:["working"]},
+  {k:"dark",label:"silent / offline",c:"#9887ef",of:["silent","offline"]},
+  {k:"blocked",label:"stuck / auth blocked",c:"#eb6263",of:["stuck","auth"]}];
+function healthFam(st){for(var i=0;i<HEALTH_FAM.length;i++)if(HEALTH_FAM[i].of.indexOf(st)>=0)return HEALTH_FAM[i];return HEALTH_FAM[6];}
+function healthDur(s){s=Math.round(s);var h=Math.floor(s/3600),m=Math.round((s%3600)/60);return h?h+"h "+(m<10?"0":"")+m+"m":(m?m+"m":s+"s");}
+var HEALTH_SEEN={};
+function renderHealth(el,h){
+  var cov=h.covered_s||0,tot={};
+  Object.keys(h.totals||{}).forEach(function(st){var f=healthFam(st);tot[f.k]=(tot[f.k]||0)+h.totals[st];});
+  var first=!el.querySelector(".hlth");
+  if(first){
+    el.innerHTML='<div class="hlth">'+HEALTH_FAM.map(function(f){
+      return '<span class="hl" data-f="'+f.k+'"><i style="background:'+f.c+'"></i>'+esc(f.label)+'</span>'
+        +'<span class="hb" data-f="'+f.k+'"><i style="background:'+f.c+'"></i></span><span class="hv" data-f="'+f.k+'"></span>';
+    }).join('')+'</div><div class="hstrip" role="img"></div><div class="haxis"><span>24h ago</span><span>12h</span><span>now</span></div>'
+      +'<div class="rosst hcov"></div>';
+  }
+  HEALTH_FAM.forEach(function(f){
+    var sec=tot[f.k]||0,pct=cov?100*sec/cov:0;
+    var bar=el.querySelector('.hb[data-f="'+f.k+'"] i'),val=el.querySelector('.hv[data-f="'+f.k+'"]');
+    /* Bars grow from zero the first time, then move to their new length. */
+    if(first){bar.style.width="0";void bar.offsetWidth;}
+    bar.style.width=pct.toFixed(2)+"%";
+    val.textContent=sec?healthDur(sec)+" · "+Math.round(pct)+"%":"—";
+    [].forEach.call(el.querySelectorAll('[data-f="'+f.k+'"]'),function(x){if(!x.classList.contains("hb"))x.classList.toggle("dim",!sec);});
+  });
+  var w=h.window_s||86400,strip=el.querySelector(".hstrip");
+  strip.innerHTML=(h.segments||[]).map(function(sg){
+    var f=healthFam(sg[2]);
+    return '<i data-s="'+esc(sg[2])+'" data-a="'+sg[0]+'" data-b="'+sg[1]+'" style="left:'+(100*sg[0]/w).toFixed(3)+'%;width:'+(100*(sg[1]-sg[0])/w).toFixed(3)+'%;background:'+f.c+'"></i>';
+  }).join('');
+  strip.setAttribute("aria-label",HEALTH_FAM.filter(function(f){return tot[f.k];}).map(function(f){return f.label+" "+healthDur(tot[f.k]);}).join(", ")||"no history yet");
+  el.querySelector(".hcov").textContent=cov?("covers "+healthDur(cov)+" of the last 24h — the floor records a member's status on every poll"):"no history yet — the floor records a member's status on every poll";
+}
+function healthTip(e){
+  var t=document.getElementById("htip"),seg=e.target.closest&&e.target.closest(".hstrip i");
+  if(!seg){if(t)t.remove();return;}
+  if(!t){t=document.createElement("div");t.id="htip";t.className="htip";document.body.appendChild(t);}
+  var ago=function(o){return healthDur(86400-o)+" ago";},a=+seg.dataset.a,b=+seg.dataset.b;
+  t.textContent=seg.dataset.s+" · "+healthDur(b-a)+" · "+ago(a)+(b>=86399?" → now":" → "+ago(b));
+  t.style.left=Math.min(window.innerWidth-t.offsetWidth-8,e.clientX+12)+"px";t.style.top=(e.clientY-34)+"px";
+}
+document.addEventListener("mousemove",healthTip);
+function loadHealth(){
+  [].forEach.call(document.querySelectorAll("#pagebody [data-health]"),function(el){
+    var box=el.dataset.health;
+    if(HEALTH_SEEN[box]&&Date.now()-HEALTH_SEEN[box]<15000&&el.querySelector(".hlth"))return;
+    HEALTH_SEEN[box]=Date.now();
+    api("/api/health?box="+encodeURIComponent(box)).then(function(h){if(h&&!h.error&&el.isConnected)renderHealth(el,h);})
+      .catch(function(){if(el.isConnected&&!el.querySelector(".hlth"))el.innerHTML='<div class="rosst">health history unavailable</div>';});
+  });
 }
 function pageOnPoll(){
   if(PAGE.waiting&&LIVE)return pageRoute();
@@ -7562,6 +7808,7 @@ function pageOnPoll(){
     var h=liveHTML(el.dataset.live,el.dataset.box,el.dataset.agent);
     if(el.innerHTML!==h)el.innerHTML=h;
   });
+  if(LIVE)loadHealth();
   applyBusy();
 }
 function live(what,box,agent){
@@ -7645,10 +7892,15 @@ function renderMember(box){
       +'<div class="pgsec"><div class="wt"><span class="dot"></span>LIFECYCLE</div>'
       +'<div class="mline">'+live("state",box)+'</div>'
       +'<div class="pgbar">'+live("next",box)
-      +'<button class="lbtn" data-pg="power-on">▶ Start</button><button class="lbtn" data-pg="power-off">■ Stop</button>'
-      +'<button class="lbtn" data-pg="restart">↻ Restart</button><button class="lbtn" data-pg="pause">'+live("pause",box)+'</button>'
+      +'<button class="lbtn" data-act="power-on" data-scope="box:'+esc(box)+'" data-tip="crew start '+esc(box)+' — lifts a stop; the box comes up on duty">▶ Start</button>'
+      +'<button class="lbtn" data-act="power-off" data-scope="box:'+esc(box)+'" data-tip="crew stop '+esc(box)+' — held off, keeping its claims, until Start">■ Stop</button>'
+      +'<button class="lbtn" data-act="restart" data-scope="box:'+esc(box)+'">↻ Restart</button>'
+      +'<button class="lbtn" data-act="pause" data-act-also="resume" data-scope="box:'+esc(box)+'" data-tip="Pause freezes it exactly where it is; Resume continues the same session, however long from now">'+live("pause",box)+'</button>'
+      +'<button class="lbtn" data-act="unhire" data-scope="box:'+esc(box)+'" data-tip="crew unhire '+esc(box)+' — off duty: claims back to the board, box stopped and kept">⏏ Unhire</button>'
       +'<button class="lbtn" data-pg="logs">▤ Logs</button></div>'
-      +'<div class="regnote"><b>Create</b> mints, starts and hires the box (its plan is shown first); <b>Hire</b> puts a created box on duty; <b>Upgrade</b> re-installs this host\'s engine on it. One job runs at a time on the host.</div></div>'
+      +'<div class="regnote"><b>Stop</b> holds it off, keeping its claims: it finishes its run (or, forced, ends it now), and the host tick never starts it until <b>Start</b>. <b>Pause</b> freezes it where it is; <b>Resume</b> continues the same session, however long from now. <b>Unhire</b> hands its claims back and stops it; <b>Hire</b> puts it back. <b>Create</b> mints, starts and hires the box (its plan is shown first); <b>Upgrade</b> re-installs this host\'s engine on it. One job runs at a time on the host.</div></div>'
+      +'<div class="pgsec"><div class="wt"><span class="dot"></span>HEALTH <span class="rosst">the last 24 hours</span></div>'
+      +'<div class="hpanel" data-health="'+esc(box)+'"><div class="rosst">reading…</div></div></div>'
       +'<div class="pgsec"><div class="wt"><span class="dot"></span>LOGINS <span class="rosst">set here, never read back</span></div>'
       +'<div class="mline">'+live("creds",box,m.agent)+'</div>'
       +'<table class="rostbl"><tbody><tr class="credrow" data-box="'+esc(box)+'"><td>'
@@ -7667,9 +7919,10 @@ function renderMember(box){
       +(kept.length?'<div class="rosst">'+esc(kept.join(","))+' · kept as written, not editable here</div>':'')
       +'<div class="mfrow"><label>mint from<input class="rosin" data-k="ed-from" value="'+esc(m.from||"")+'" placeholder="(blank mint)" spellcheck="false"></label></div>'
       +'<div class="regacts"><button class="lbtn" data-pg="ed-save">Save</button><button class="lbtn rosdrop" data-pg="remove">Remove from the roster</button></div>'
-      +'<div class="regnote">The name and agent are the box\'s: a different one is a new member. Removing writes the roster only — the box is left exactly as it is, and the console stops watching it.</div></div>';
+      +'<div class="regnote">The name and agent are the box\'s: a different one is a new member. Removing writes the roster only, and only for a member off duty: <b>Unhire</b> it first, which hands its claims back and stops its box (#898). A member never hired is removed as it is.</div></div>';
     body.innerHTML=h;
     applyBusy();
+    if(LIVE){HEALTH_SEEN[box]=0;loadHealth();}
   });
 }
 function memberScope(box,regs){
@@ -7776,6 +8029,20 @@ function onPageClick(e){
   var eb=t.closest("[data-eng]");if(eb)return onEngineClick(eb);
   var pb=t.closest("[data-pool-act]");if(pb)return onPoolClick(pb);
   var cb=t.closest("[data-cred]");if(cb)return pageCredSet(cb);
+  /* A declared action (#900): asked, held and answered by one binder. */
+  var ab=t.closest("[data-act]");
+  if(ab&&ab.closest("#pagebody")){
+    if(ab.dataset.act==="restart"){var rbx=(ab.dataset.scope||"").slice(4);return restartClick(rbx,dataOf(rbx));}
+    var aname=ab.dataset.act;
+    return actFire(ab,ab.dataset.service?{service:ab.dataset.service}:null).then(function(r){
+      if(!(r&&r.ok))return r;
+      return pageRefresh().then(function(){
+        var el=document.querySelector('#pagebody [data-act="'+aname+'"]');
+        if(el)actVerdict(actSlot(el),r);
+        return r;
+      });
+    });
+  }
   var b=t.closest("[data-pg]");if(!b)return;
   var what=b.dataset.pg,box=PAGE.box;
   if(what==="panel-suggest"){
@@ -7792,13 +8059,6 @@ function onPageClick(e){
   if(what==="add-open"){var f=addForm();if(f){f.hidden=false;addNameSync();f.querySelector('[data-k="add-name"]').focus();}return;}
   if(what==="add-cancel"){var f2=addForm();if(f2)f2.hidden=true;return;}
   if(what==="add-save")return addSave();
-  if(what==="power-on"||what==="power-off"){
-    if(boxBusy(box))return act("box:"+box,what,{});
-    if(what==="power-off"&&!confirm("Power off "+box+"? Any running session is lost."))return;
-    return act("box:"+box,what,{box:box});
-  }
-  if(what==="restart")return restartClick(box,dataOf(box));
-  if(what==="pause"){var u=unitOf(box);return act("box:"+box,(u&&u.paused)?"resume":"pause",{box:box});}
   if(what==="logs")return openLogs(box,"");
   if(what==="scope-save"||what==="scope-inherit"){
     var blk=b.closest(".regblk"),kind=blk.dataset.kind;
@@ -7985,8 +8245,8 @@ function poolAssignCell(m){
   };
   return '<td>'+sel("gh","gh")+sel("agent",m.agent)+sel("tg","telegram")
     +'<div class="rosst">'+(held.length?'assigned: '+esc(held.join(", ")):'nothing assigned')+'</div>'
-    +'<button class="lbtn" data-pool-act="assign">Assign</button>'
-    +(held.length?' <button class="lbtn" data-pool-act="unassign" title="the box keeps the value it holds until it is set again">Clear</button>':'')
+    +'<div class="actrow"><button class="lbtn" data-pool-act="assign" data-act="pool-assign" data-act-also="logout" data-scope="box:'+esc(m.box)+'" data-tip="assign the entries picked; none on a service it holds removes that login from its box">Assign</button>'
+    +(held.length?' <button class="lbtn" data-pool-act="unassign" data-act="pool-unassign" data-scope="box:'+esc(m.box)+'" data-tip="unassign every entry; the box keeps the values it holds until they are set again">Clear</button>':'')+'</div>'
     +'<div class="rosst poolverdict"></div></td>';
 }
 function poolEntryRow(e){
@@ -8044,12 +8304,35 @@ function poolSay(cell,r){
 }
 function onPoolClick(b){
   var tr=b.closest("tr"),what=b.dataset.poolAct;
-  if(what==="assign"||what==="unassign"){
+  if(what==="assign"){
+    /* "none" on a service the member holds is a REMOVAL (#898): asked, then
+       the login is deleted from its box (crew logout) — never silently
+       skipped, which is what Assign did with it before. */
+    var abox=tr.dataset.box,aheld=poolAssigned(abox),drop=[];
+    var apicked=[].map.call(tr.querySelectorAll("[data-pool]"),function(s){
+      if(!s.value&&aheld.some(function(x){return x.indexOf(s.dataset.pool+":")===0;}))drop.push(s.dataset.pool);
+      return s.value;}).filter(function(v){return v&&aheld.indexOf(v)<0;});
+    var slot=actSlot(b);
+    if(!apicked.length&&!drop.length){actVerdict(slot,{ok:false,error:"nothing changed — pick an entry, or none on a service to remove its login"});return;}
+    var chain=apicked.length?act("box:"+abox,"pool-assign",{box:abox,entries:apicked}).then(function(r){poolSay(tr,r);return r;})
+                            :Promise.resolve({ok:true});
+    return chain.then(function(r){
+      if(!(r&&r.ok)||!drop.length){if(r&&r.ok)poolDone(r);return r;}
+      var next=function(i,last){
+        if(i>=drop.length){poolDone(last);return last;}
+        var svc=drop[i];
+        return askConfirm(ACT_ASK.logout(abox,{service:svc})).then(function(c){
+          if(!c.ok){actVerdict(actSlot(b),{ok:false,error:svc+": kept — nothing removed"});return next(i+1,last);}
+          return act("box:"+abox,"logout",{box:abox,service:svc}).then(function(lr){actVerdict(actSlot(b),lr);return next(i+1,lr||last);});
+        });
+      };
+      return next(0,r);
+    });
+  }
+  if(what==="unassign"){
     var box=tr.dataset.box;
-    var picked=[].map.call(tr.querySelectorAll("[data-pool]"),function(s){return s.value;}).filter(Boolean);
-    if(what==="assign"&&!picked.length){setStatus("pool-assign: pick an entry first",true);return;}
-    if(what==="unassign"&&!confirm("Clear "+box+"'s pool assignment? Its box keeps the values it holds until they are set again."))return;
-    return act("box:"+box,"pool-"+what,what==="assign"?{box:box,entries:picked}:{box:box})
+    if(!confirm("Clear "+box+"'s pool assignment? Its box keeps the values it holds until they are set again — none on one service, then Assign, removes that login."))return;
+    return act("box:"+box,"pool-unassign",{box:box})
       .then(function(r){poolSay(tr,r);if(r&&r.ok)poolDone(r);});
   }
   if(what==="chat"){

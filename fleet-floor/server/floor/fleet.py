@@ -220,6 +220,12 @@ class Fleet:
         for u in units:
             if u:
                 u["shell"] = shell_hint(u["box"], u.get("agent"))
+        # The health panel's history (#899): each member's status, landed only
+        # where it changed. A store that cannot take it costs the poll nothing.
+        try:
+            fleet_store.record_statuses({u["box"]: u.get("status", "offline") for u in units if u}, now)
+        except Exception as e:                              # noqa: BLE001
+            log("health: statuses not recorded: %s" % e)
 
         snap = {
             "live": True,

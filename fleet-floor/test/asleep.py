@@ -5,8 +5,10 @@
 work. Such a box is `stopped` to the inventory; units.build_unit served it as
 the default `offline`, and the page drew offline as SIGNAL LOST. Here a stub
 store stands in for the host's: a stopped box it last saw running an engine is
-`asleep`, hired, with a note saying the tick wakes it; a paused one stays
-offline with the pause's own note; one never seen hired names Hire.
+`asleep`, hired, with a note saying the tick wakes it; one the operator
+holds is `held` with the hold's own note (#898) — the pre-#898 pause marker
+reads as stopped, and a written intent as itself; one never seen hired names
+Hire.
 """
 
 import os
@@ -72,9 +74,24 @@ try:
     t("...no alarm: not paused, not disarmed", (False, False), (a["paused"], a["disarmed"]))
     t("...the store's sighting is not served", (False, False), ("engine_seen" in a, "last_seen" in a))
     p = unit("zz-paused")
-    t("a stopped box that is paused stays offline", "offline", p["state"])
-    t("...with the pause's note", "paused by operator — resume from the console", p["note"])
-    t("...and paused", True, p["paused"])
+    t("a stopped box under the pre-#898 pause marker is held, not asleep", "held", p["state"])
+    t("...read as stopped, with the hold's note", ("stopped", "stopped by operator — Start lifts it"),
+      (p["intent"], p["note"]))
+    t("...its health status is held", "held", p["status"])
+    idir = os.path.join(os.environ["CREW_CONFIG_DIR"], "store", "intent")
+    os.makedirs(idir, exist_ok=True)
+    with open(os.path.join(idir, "zz-asleep"), "w") as f:
+        f.write("off-duty 2026-11-27T10:00:00Z op\n")
+    o = unit("zz-asleep")
+    t("an off-duty member that is stopped is held, never asleep", ("held", "off-duty"), (o["state"], o["intent"]))
+    t("...with the off-duty note", "off duty — Hire puts it back", o["note"])
+    with open(os.path.join(idir, "zz-asleep"), "w") as f:
+        f.write("paused 2026-11-27T10:00:00Z op\n")
+    fz = units.build_unit({"box": "zz-asleep", "agent": "claude", "room": "builder"}, "frozen", {}, now, store=store)
+    t("a frozen box is not probed and reads held, paused", ("held", "paused", True),
+      (fz["state"], fz["intent"], fz["paused"]))
+    t("...with the pause's note", "paused by operator since 2026-11-27T10:00:00Z — Resume continues it", fz["note"])
+    os.remove(os.path.join(idir, "zz-asleep"))
     n = unit("zz-never")
     t("a stopped box never seen hired stays offline", "offline", n["state"])
     t("...and names Hire", True, "Hire" in n["note"] and "crew hire zz-never" in n["note"])

@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 
 from floor import SILENT_AFTER_S
+from floor import intent as member_intent
 from floor.ping import STUCK_AFTER_S, probe_box
 
 # --------------------------------------------------------------------------
@@ -738,6 +739,18 @@ def unit_defaults():
         # state cannot be measured is exactly the hired-and-gone-dark box this
         # page exists to show.
         "hired": "unknown",
+        # The operator's intent (#898, floor/intent.py): on-duty, stopped,
+        # paused or off-duty, with when, and whether a graceful stop or an
+        # unhire is still finishing its run. The badge the page leads with.
+        "intent": "on-duty", "intent_since": "", "stopping": False,
+        # The logins the operator removed, the repositories the box was staged
+        # without, and the items assigned to it that wait on a person — each
+        # as the host last recorded it (#898).
+        "logout": [], "unstaged": "", "waiting": "",
+        # One word for what the member's time is going to, for the health
+        # panel (#899): working, idle, waiting, limited, suppressed, auth,
+        # stuck, silent, asleep, held, offline. Derived last, from the rest.
+        "status": "offline",
     }
 
 
@@ -767,7 +780,7 @@ def _overlay_stored(u, store, now, seen=None):
     return u
 
 
-def _paused_on_host(box):
+def _paused_on_host(box):  # the pre-#898 marker; floor/intent.py reads it now
     """Whether `crew pause` left its marker for BOX — `<config>/store/paused/
     <box>`, the file the host tick reads (actions._paused_marker writes it)."""
     try:
@@ -778,6 +791,105 @@ def _paused_on_host(box):
 
 
 def build_unit(unit, state, agent_conf, now, inventory_ok=True, store=None):
+    """The record the page renders: `_build_unit`'s reading of the box, under
+    the operator's intent (#898).
+
+    The intent is read FIRST and wins: a member the operator stopped, paused
+    or unhired is `held`, with the hold's own sentence, and is never read as
+    the tick's sleep or as a box that went dark. A frozen box answers no exec,
+    so it is not probed at all — it is served from the store, held.
+    """
+    try:
+        rec = member_intent.read(unit["box"])
+    except Exception:                                       # noqa: BLE001
+        rec = {"intent": "on-duty", "since": "", "actor": "", "stopping": False, "logout": False}
+    if state == "frozen":
+        u = dict(unit)
+        u.update(unit_defaults())
+        u["hired"] = "yes"
+        if store is not None:
+            try:
+                store.note_state(unit["box"], "frozen")
+            except Exception:                               # noqa: BLE001
+                pass
+            u = _overlay_stored(u, store, now)
+        u["note"] = ""
+    else:
+        u = _build_unit(unit, state, agent_conf, now, inventory_ok, store)
+    return apply_member_state(u, rec, state)
+
+
+def apply_member_state(u, rec, state):
+    """The intent, the removed logins, the unstaged repositories and the items
+    waiting on a person, laid over a unit (#898); then its health status
+    (#899). Separate so the suites drive it with a hand-made unit."""
+    box = u.get("box", "")
+    u["intent"] = rec["intent"]
+    u["intent_since"] = rec.get("since", "")
+    u["stopping"] = bool(rec.get("stopping"))
+    try:
+        u["logout"] = member_intent.logged_out(box)
+        u["unstaged"] = member_intent.unstaged(box)
+        u["waiting"] = member_intent.waiting(box)
+    except Exception:                                       # noqa: BLE001
+        pass
+    held_note = member_intent.note(rec)
+    if state == "frozen":
+        u["state"] = "held"
+        u["paused"] = True
+        u["note"] = held_note or ("frozen outside crew — Pause records it, "
+                                  "Resume continues it")
+    elif rec["intent"] != "on-duty":
+        u["paused"] = rec["intent"] == "paused"
+        if state == "running":
+            # A stopping member, or one going off duty, still runs its last run.
+            u["state"] = "working" if u.get("cur") else "held"
+            u["note"] = held_note
+        elif state is not None:
+            u["state"] = "held"
+            u["note"] = held_note
+    else:
+        blocked = [s for s in u["logout"] if s != "tg"]
+        if blocked and u["state"] in ("idle", "working", "asleep", "suppressed"):
+            u["note"] = "AUTH BLOCKED — no %s login (removed by the operator); set it to put it back to work" % (
+                " or ".join(blocked))
+            if u["state"] != "working":
+                u["state"] = "idle"
+        elif u["state"] == "idle" and not u["note"]:
+            if u["waiting"]:
+                u["note"] = "waiting on a human — %s" % u["waiting"]
+            elif u["unstaged"]:
+                u["note"] = "unstaged — its box was staged without %s; its next wake re-stages it" % u["unstaged"]
+    u["status"] = health_status(u)
+    return u
+
+
+def health_status(u):
+    """One word for where the member's time is going (#899). Order matters:
+    the operator's hold and a stuck run are the more specific claims."""
+    st, note = u.get("state", ""), u.get("note", "") or ""
+    if st == "held":
+        return "held"
+    if st == "asleep":
+        return "asleep"
+    if st == "working":
+        return "stuck" if (u.get("lock") or {}).get("stuck") else "working"
+    if st == "suppressed":
+        return "suppressed"
+    if note.startswith("AUTH BLOCKED"):
+        return "auth"
+    if note.startswith("LIMITED"):
+        return "limited"
+    if note.startswith("waiting on a human"):
+        return "waiting"
+    if st == "idle":
+        return "idle"
+    if note.startswith("SILENT"):
+        return "silent"
+    return "offline"
+
+
+def _build_unit(unit, state, agent_conf, now, inventory_ok=True, store=None):
     """Roster entry + live probe -> the record the page renders.
 
     `inventory_ok` is whether `box list` ANSWERED. It matters only where state
@@ -821,13 +933,9 @@ def build_unit(unit, state, agent_conf, now, inventory_ok=True, store=None):
             except Exception:                               # noqa: BLE001
                 pass
             u = _overlay_stored(u, store, now, seen)
-        # A pause holds a box off on purpose and stays the console's alarm
-        # colour, with the pause's own sentence: the operator did it, the
-        # console undoes it.
-        if _paused_on_host(unit["box"]):
-            u["paused"] = True
-            u["note"] = "paused by operator — resume from the console"
-            return u
+        # The operator's hold is read by build_unit around this function
+        # (#898): a member the operator stopped or unhired is HELD, never
+        # asleep, whatever the store last saw.
         # 0.1.4's "the box sleeps" (#759): the host tick stops an idle member
         # and starts it again when its board has work. A stopped box the store
         # last saw running an engine is ASLEEP (#875) — not a lost signal, and

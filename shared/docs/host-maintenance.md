@@ -82,10 +82,12 @@ and store, each run taking the host maintenance lock itself, and prints
 Three rules the reset keeps since the `0.1.4` review, each the host tick's
 own rule applied to the one verb that could undo it:
 
-- **A paused box is left alone under `--all`**, exactly as the daily
-  restart leaves it: the restored disk's cron is live, and nothing but
-  `crew resume` starts a paused box. `crew reset <box>` by name restores it,
-  writes its memory back, pauses its crontab again and stops it.
+- **A member the operator holds is left alone under `--all`** — stopped,
+  paused or off duty (#898) — exactly as the daily restart leaves it: the
+  restored disk's cron is live, and nothing but `crew start`, `crew resume`
+  or `crew hire` lifts a hold. `crew reset <box>` by name restores it,
+  writes its memory back, pauses its crontab again and stops it; a paused
+  member's frozen session does not survive a restore, so it reads stopped.
 - **The cap holds.** A box restored while `FLEET_MAX_RUNNING` other boxes
   are running goes back down once its memory is written; the host tick
   starts it when there is work for it. The stop waits (up to
@@ -551,10 +553,26 @@ so it is read again once the lane opens even if nothing moves. A breaker tripped
 lane only while the box runs: a stopped box is started for the work and its
 own gate — the one thing that can clear the breaker — decides.
 
-`crew pause <box>` keeps a member off: the host tick never starts it, a paused
-box that is running is drained and stopped on the next tick and never counts
-toward `FLEET_MAX_RUNNING`, and its own cron is commented while it runs. The
-floor's pause button writes the same host marker, so the button and the verb
-pause the same way. `crew resume <box>` undoes all of it; a box resumed while
-it was stopped gets its cron back live when the tick starts it. `crew tick
---dry-run` prints every decision and changes nothing.
+### A member's intent (#898)
+
+What the operator wants of a member is its **intent**, one file per member
+under `<config>/store/intent/`, and the host tick obeys it: it never starts
+a member that is not on duty, so a stop the operator chose is never read as
+the tick's own sleep (asleep).
+
+| verb | intent | what happens |
+| --- | --- | --- |
+| `crew stop <box> [--force]` | stopped | Held off, keeping its claims. It finishes the run it is in (`stopping`), then the tick drains and stops it; `--force` ends the session now. Only `crew start` lifts it. |
+| `crew start <box>` | on duty | The box comes up with its crontab live, owed login removals and rotated pool entries applied, and its fleet definition re-staged. No session is started: the tick wakes it when its board has work. |
+| `crew pause <box>` | paused | The running box is frozen in place (`incus pause`). `crew resume <box>` continues the same session, however long from now. A frozen box keeps its memory, so it counts against `FLEET_MAX_RUNNING`; a freeze does not survive a host restart, and the member then reads stopped and says so. |
+| `crew unhire <box> [--logout]` | off duty | Its claims go back to the board (an issue whose work is already its pull request is kept and named), its cron is disarmed, its box is drained, stopped and kept. `--logout` also removes its logins. `crew hire <box>` puts it back on duty. A member on duty is not removed from the roster on the floor: Unhire first. |
+| `crew logout <box> gh\|agent\|tg` | — | The login is deleted from the box and its pool entry unassigned. The tick does not wake a member with no gh or agent login; setting one again (`crew login`, the pool) lifts it. A box that is off gets the removal at its next start. |
+
+The floor's Stop (with a "Force stop" checkbox), Start, Pause/Resume, Unhire
+and a pool service set to *none* run these same verbs, so the console and the
+CLI hold a member the same way. `crew status` and the floor lead with the
+hold's own sentence. A member paused before #898 (the old
+`<config>/store/paused/<box>` marker, which held it off) reads as stopped;
+`crew resume` on it lifts it as `crew start` does. `crew up` and `crew
+hire-all` leave every held member alone. `crew tick --dry-run` prints every
+decision and changes nothing.
