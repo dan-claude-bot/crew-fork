@@ -10401,14 +10401,14 @@ ci_paths_line() {
 # and the floor side's push filter is the floor's own paths: the browser walk
 # runs when the floor moves, weekly, and by hand on a candidate — not on every
 # engine merge. The union a pull request sees is unchanged.
-# Since #902 the floor's pull-request filter also names cli/crew and
-# shared/lib/host/**, which the floor's member actions run through (#898).
-# Both sit inside ci-shell's cli/** and shared/** already, so the union of
-# what a pull request routes is unchanged; the set of filter strings gains two.
 CI_EXPECTED="$(printf '%s\n' \
   '.ceremony/**' '.github/ci/**' '.github/workflows/ci-floor.yml' '.github/workflows/ci-shell.yml' \
-  'cli/**' 'cli/crew' 'dist/**' 'drill/**' 'examples/**' 'fleet-floor/**' 'install.sh' 'shared/**' \
-  'shared/lib/host/**' | sort)"
+  'cli/**' 'dist/**' 'drill/**' 'examples/**' 'fleet-floor/**' 'install.sh' 'shared/**' | sort)"
+# Since #902 the floor's pull-request filter also names cli/crew and
+# shared/lib/host/**, which the floor's member actions run through (#898).
+# Both sit inside ci-shell's cli/** and shared/** already, so what a pull
+# request routes is unchanged; the union of filter strings gains the two.
+CI_UNION_EXPECTED="$(printf '%s\n' "$CI_EXPECTED" 'cli/crew' 'shared/lib/host/**' | sort)"
 CI_FLOOR_PUSH_EXPECTED="$(printf '%s\n' '.github/workflows/ci-floor.yml' 'fleet-floor/**' | sort)"
 CI_SHELL_PR_PATHS="$(ci_paths pull_request "$CI_SHELL")"
 CI_FLOOR_PR_PATHS="$(ci_paths pull_request "$CI_FLOOR")"
@@ -10416,7 +10416,7 @@ CI_SHELL_PR_PATH_LINE="$(ci_paths_line pull_request "$CI_SHELL")"
 CI_SHELL_PUSH_PATH_LINE="$(ci_paths_line push "$CI_SHELL")"
 t ci-shell-pull-push-paths-are-identical "$CI_SHELL_PUSH_PATH_LINE" "$CI_SHELL_PR_PATH_LINE"
 CI_UNION="$(printf '%s\n%s\n' "$CI_SHELL_PR_PATHS" "$CI_FLOOR_PR_PATHS")"
-t ci-path-union-preserves-coverage "$CI_EXPECTED" "$(printf '%s\n' "$CI_UNION" | sort -u)"
+t ci-path-union-preserves-coverage "$CI_UNION_EXPECTED" "$(printf '%s\n' "$CI_UNION" | sort -u)"
 CI_OVERLAP="$(LC_ALL=C comm -12 \
   <(printf '%s\n' "$CI_SHELL_PR_PATHS" | LC_ALL=C sort -u) \
   <(printf '%s\n' "$CI_FLOOR_PR_PATHS" | LC_ALL=C sort -u))"

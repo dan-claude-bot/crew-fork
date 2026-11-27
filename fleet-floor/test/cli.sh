@@ -2892,6 +2892,7 @@ fi
 
 # Pause is a freeze now (#898), and the block asserts its EFFECT on the box —
 # frozen, then running again — not the transport.
+# shellcheck disable=SC2016  # matching the literal source text, not expanding it
 if grep -q 'drill_box_state "$b")" = frozen' "$CL_DRILL"; then
   ok "drill: the control block asserts the freeze it asks for"
 else
@@ -2910,6 +2911,7 @@ fi
 # run dies is invisible to the trap and the box is left frozen.
 # shellcheck disable=SC2016  # matching the literal source assignment
 CL_ARM_REC="$(grep -n 'PAUSED_BY_DRILL="\$PAUSED_BY_DRILL' "$CL_DRILL" | cut -d: -f1 | head -1)"
+# shellcheck disable=SC2016  # matching the literal source text, not expanding it
 CL_ARM_DO="$(grep -n 'ctl pause "\$b"' "$CL_DRILL" | cut -d: -f1 | head -1)"
 if [ -n "$CL_ARM_REC" ] && [ -n "$CL_ARM_DO" ] && [ "$CL_ARM_REC" -lt "$CL_ARM_DO" ]; then
   ok "drill: a box is recorded as paused before it is paused"
