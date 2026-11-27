@@ -362,7 +362,11 @@ PATH="$CL_TMP/bin:$PATH" FLOOR_FIXTURE="$CL_CREW_FLEET" \
 FLOOR_STATE="$CL_TMP/crew-state" CREW_CONFIG_DIR="$CL_CONFIG" \
   env -u CREW_ROSTER timeout 60 "$CL_ROOT/cli/crew" status \
   </dev/null >"$CL_TMP/config-out" 2>&1 || CL_RC=$?
-t "crew config: out-of-tree fleet drives roster loops" 0 "$CL_RC"
+if [ "$CL_RC" -eq 0 ]; then
+  ok "crew config: out-of-tree fleet drives roster loops"
+else
+  fail "crew config: out-of-tree fleet drives roster loops" "rc=$CL_RC $(tail -5 "$CL_TMP/config-out" | tr '\n' ' ')"
+fi
 
 # crew_cmd ARGS... — cli/crew against the stub fleet, output in $CL_TMP/crew-out.
 #
@@ -2882,43 +2886,36 @@ else
   fail "drill: control verbs are opt-in" "the ALLOW_CONTROL gate is gone"
 fi
 
-# --- the control block arms what it exercises, and disarms it (#188) -------
-# All four are asserted over the SOURCE. Each describes what happens when a run
-# dies partway or when a box is in a state no invocation here can produce, and
-# a sampled run cannot show any of them.
+# --- the control block freezes a box and thaws it, on every path (#898) ------
+# All three are asserted over the SOURCE. Each describes what happens when a
+# run dies partway, and a sampled run cannot show any of them.
 
-# The verbs had nothing to act on: rehearsal.sh disarms cron before any tick and
-# aborts the run if it cannot, so every drill box has no armed `tick.sh` line
-# for its whole run. `pause` therefore commented nothing out, and the block
-# could only ever assert that the transport was reachable.
-if grep -q 'drill_arm_cron' "$CL_DRILL"; then
-  ok "drill: the control block arms the tick line it exercises"
+# Pause is a freeze now (#898), and the block asserts its EFFECT on the box —
+# frozen, then running again — not the transport.
+if grep -q 'drill_box_state "$b")" = frozen' "$CL_DRILL"; then
+  ok "drill: the control block asserts the freeze it asks for"
 else
-  fail "drill: the control block arms the tick line it exercises" \
-       "every drill box is disarmed by construction, so the verbs assert only the transport"
+  fail "drill: the control block asserts the freeze it asks for" \
+       "no frozen-state reading after the pause"
 fi
 
-# Anything it ARMS must be disarmed on the way out, on every exit path. The
-# repair used to be a resume of PAUSED_BY_DRILL, the right shape for a block
-# that only paused; the block owns the arm now, so the state to restore is
-# disarmed and the ledger is ARMED_BY_DRILL.
-if grep -q 'ARMED_BY_DRILL' "$CL_DRILL" && grep -q 'trap cleanup EXIT' "$CL_DRILL"; then
-  ok "drill: armed tick lines are disarmed on teardown"
+# Anything it FREEZES is resumed on the way out, on every exit path.
+if grep -q 'PAUSED_BY_DRILL' "$CL_DRILL" && grep -q 'trap cleanup EXIT' "$CL_DRILL"; then
+  ok "drill: frozen boxes are resumed on teardown"
 else
-  fail "drill: armed tick lines are disarmed on teardown" "no ARMED_BY_DRILL/trap pairing"
+  fail "drill: frozen boxes are resumed on teardown" "no PAUSED_BY_DRILL/trap pairing"
 fi
 
-# ...and the ledger is written BEFORE the arm, or a half-applied arm — a box
-# exec that dies with the crontab already installed — is invisible to the trap
-# and the box is left ticking.
+# ...and the ledger is written BEFORE the pause, or a pause that lands as the
+# run dies is invisible to the trap and the box is left frozen.
 # shellcheck disable=SC2016  # matching the literal source assignment
-CL_ARM_REC="$(grep -n 'ARMED_BY_DRILL="\$ARMED_BY_DRILL' "$CL_DRILL" | cut -d: -f1 | head -1)"
-CL_ARM_DO="$(grep -n 'if drill_arm_cron' "$CL_DRILL" | cut -d: -f1 | head -1)"
+CL_ARM_REC="$(grep -n 'PAUSED_BY_DRILL="\$PAUSED_BY_DRILL' "$CL_DRILL" | cut -d: -f1 | head -1)"
+CL_ARM_DO="$(grep -n 'ctl pause "\$b"' "$CL_DRILL" | cut -d: -f1 | head -1)"
 if [ -n "$CL_ARM_REC" ] && [ -n "$CL_ARM_DO" ] && [ "$CL_ARM_REC" -lt "$CL_ARM_DO" ]; then
-  ok "drill: a box is recorded as armed before it is armed"
+  ok "drill: a box is recorded as paused before it is paused"
 else
-  fail "drill: a box is recorded as armed before it is armed" \
-       "record=${CL_ARM_REC:-none} arm=${CL_ARM_DO:-none} — a run that dies mid-arm leaves the box ticking"
+  fail "drill: a box is recorded as paused before it is paused" \
+       "record=${CL_ARM_REC:-none} pause=${CL_ARM_DO:-none} — a run that dies mid-pause leaves the box frozen"
 fi
 
 # The teardown check must assert the state the drill GUARANTEES. It looked only

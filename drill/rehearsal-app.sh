@@ -158,42 +158,15 @@ TMP="$(mktemp -d)"
 SRV=""
 # Boxes this run ARMED, so teardown can disarm them on every exit path.
 #
-# The control block arms the box's own tick line before exercising the verbs
-# (#188). It has to: drill/rehearsal.sh disarms cron before any tick and aborts
-# the run if it cannot, so every drill box is guaranteed to have no armed
-# `tick.sh` line for its whole run — `pause` had nothing to comment out, and a
-# block that skipped the arm could only ever assert that the transport was
-# reachable. Disarming afterwards therefore RESTORES the state the drill
-# guarantees rather than destroying one.
-ARMED_BY_DRILL=""
+# The control block freezes a box and thaws it (#898: Pause is a freeze,
+# Resume continues the same session). A run that dies between the two must
+# not leave a drill box frozen, so the box is recorded in PAUSED_BY_DRILL
+# BEFORE the pause, and cleanup() resumes every box it names — through the
+# CLI, which reaches the box directly, so it works after the server is gone.
+PAUSED_BY_DRILL=""
 
-# Arm and disarm the box's own tick line, and read the crontab back.
-#
-# Temp file then `crontab <file>`, the same shape rehearsal-safety.sh's
-# rehearsal_disarm_cron uses and for the same reason: a pipeline into
-# `crontab -` whose head dies halfway installs an EMPTY crontab.
-# shellcheck disable=SC2016,SC2317  # $HOME and $tmp are the BOX's, expanded by
-# the shell inside it; and the function is called from the control block and
-# from cleanup(), neither of which shellcheck treats as a call site.
-drill_arm_cron() {
-  box_in "$1" -- bash -lc '
-    tmp=$(mktemp)
-    { crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh"
-      echo "*/5 * * * * $HOME/duty/bin/tick.sh"; } > "$tmp"
-    crontab "$tmp"; rc=$?
-    rm -f "$tmp"; exit "$rc"' >/dev/null 2>&1
-}
-# shellcheck disable=SC2016,SC2317
-drill_disarm_cron() {
-  box_in "$1" -- bash -lc '
-    tmp=$(mktemp)
-    crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh" > "$tmp" || true
-    crontab "$tmp"; rc=$?
-    rm -f "$tmp"; exit "$rc"' >/dev/null 2>&1
-}
-# shellcheck disable=SC2317
-drill_cron_armed()  { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -qE '^[^#].*tick\.sh'" >/dev/null 2>&1; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317  # called from cleanup(), which shellcheck does not
+# treat as a call site.
 # drill_box_state BOX — the box's state as the host reads it, lowercased (#898).
 drill_box_state() {
   box info "$1" --json 2>/dev/null | jq -r 'if type == "array" then (.[0] // {}) else . end
@@ -209,17 +182,15 @@ drill_cron_present() { box_in "$1" -- bash -lc 'crontab -l 2>/dev/null | grep -q
 # does not treat as a call site.
 cleanup() {
   local rc=$? b
-  # Best-effort repair FIRST: bailing out with a box's tick line still armed
-  # leaves it ticking against whatever registry teardown restores, which is
-  # worse than the failure that caused the bail. Unconditional, on every exit
-  # path — a run that dies between the arm and the pause must still disarm, and
-  # this reaches the box directly rather than through the collector, so it works
-  # after the server is gone as well as before.
-  for b in $ARMED_BY_DRILL; do
-    if drill_disarm_cron "$b"; then
-      echo "teardown: disarmed $b"
+  # Best-effort repair FIRST: a box the control block froze is thawed on every
+  # exit path — a run that dies between the pause and the resume must not leave
+  # it frozen — through the CLI, so it works after the server is gone.
+  for b in $PAUSED_BY_DRILL; do
+    [ "$(drill_box_state "$b")" = frozen ] || continue
+    if "$ROOT/cli/crew" resume "$b" >/dev/null 2>&1; then
+      echo "teardown: resumed $b"
     else
-      echo "teardown: WARNING — could not disarm $b; run: box exec $b -- bash -lc 'crontab -l | grep -vF \"\$HOME/duty/bin/tick.sh\" | crontab -'" >&2
+      echo "teardown: WARNING — could not resume $b; run: crew resume $b (or: box incus $b -- start)" >&2
     fi
   done
   if [ -n "$SRV" ]; then
@@ -807,6 +778,7 @@ else
     # state, frozen and then running again — and its crontab untouched by
     # either, so the box stays disarmed, as every drill box is for its whole
     # run (nothing here arms it, so no tick can fire on a sandbox repository).
+    PAUSED_BY_DRILL="$PAUSED_BY_DRILL $b"
     ctl pause "$b"
     if [ "$CTL_CODE" = "200" ]; then
       if [ "$(drill_box_state "$b")" = frozen ]; then

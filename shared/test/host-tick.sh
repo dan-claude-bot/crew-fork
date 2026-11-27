@@ -446,6 +446,10 @@ t tick-never-starts-an-off-duty-member 1 "$(grep -c 'alpha: off-duty by the oper
 capture start alpha
 t start-refuses-an-off-duty-member 1 "$RC"
 t start-on-off-duty-names-hire 1 "$(grep -c "crew hire alpha" <<<"$OUT")"
+: >"$STATE/calls"
+capture unhire alpha
+t unhire-an-off-duty-member-is-a-no-op 1 "$(grep -c 'alpha: off duty already' <<<"$OUT")"
+t unhire-again-starts-nothing 0 "$(( $(calls 'start alpha') + $(calls 'release alpha') ))"
 capture up
 t up-leaves-an-off-duty-member-alone 1 "$(grep -c 'alpha: off-duty by the operator — left alone' <<<"$OUT")"
 # A stopped member unhired is started once, to hand its claims back as itself.

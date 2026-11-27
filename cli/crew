@@ -5470,6 +5470,11 @@ cmd_unhire() {
     esac
   done
   member_guard unhire "$b"
+  if [ "$(intent_of "$b")" = off-duty ] && ! intent_stopping "$b"; then
+    echo "  $b: off duty already — its box is kept stopped; 'crew hire $b' puts it back"
+    [ "$logout" -eq 0 ] || echo "  $b: to remove its logins now: crew logout $b gh|agent|tg"
+    return 0
+  fi
   flags="stopping"; [ "$logout" -eq 0 ] || flags="$flags logout"
   # The intent FIRST: from here the host tick neither wakes it nor reads its
   # board for it.
