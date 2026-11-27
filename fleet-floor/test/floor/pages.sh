@@ -80,14 +80,23 @@ t "asleep: the HUD vocabulary has it, before the offline split" 1 \
 t "asleep: it is counted, and a chip filters it" "1 1" \
   "$(grep -c 'var c={working:0,idle:0,asleep:0,' "$APP") $(grep -c 'data-v="asleep">Asleep<' "$FLOOR/src/body.html")"
 t "asleep: the tile has its own case: dimmed, ASLEEP, no SIGNAL LOST" "1 1" \
-  "$(grep -c 'var asleep=unit.state==="asleep";' "$APP") $(grep -c 'off?"— BPM":asleep?"ASLEEP":' "$APP")"
+  "$(grep -c 'var held=unit.state==="held",asleep=unit.state==="asleep"||held;' "$APP") $(grep -c 'off?"— BPM":held?"HELD":asleep?"ASLEEP":' "$APP")"
 t "asleep: SIGNAL LOST stays offline's alone" 1 \
   "$(awk '/^function drawCamCell/{f=1} f&&/if\(off\)\{/{print 1; exit}' "$APP")"
 t "asleep: the room veils it calm and says why" "1 1" \
-  "$(grep -c 'if(STATE==="asleep")asleepVeil();' "$APP") $(grep -c '^function asleepVeil(){' "$APP")"
+  "$(grep -c 'if(STATE==="asleep"||STATE==="held")asleepVeil();' "$APP") $(grep -c '^function asleepVeil(){' "$APP")"
 t "asleep: the room's card says ASLEEP, not SILENT" 1 \
-  "$(grep -c ',sl=asleep?"ASLEEP":stw||(off?"SILENT":' "$APP")"
+  "$(grep -c ',sl=heldS?heldWord(unitOf(BOX)):asleep?"ASLEEP":stw||(off?"SILENT":' "$APP")"
 t "asleep: member cards draw it calm" 1 "$(grep -c '^.mst.s-asleep{' "$FLOOR/src/style.css")"
+# #898: HELD — the operator stopped, paused or unhired it — is its own case
+# beside asleep, with the hold's own word, and never the SILENT alarm.
+t "held: the HUD vocabulary has it, before the offline split" 1 \
+  "$(grep -c 'if(u.state==="held")return "held";' "$APP")"
+t "held: it is counted, and a chip filters it" "1 1" \
+  "$(grep -c 'var c={working:0,idle:0,asleep:0,held:0,' "$APP") $(grep -c 'data-v="held">Held<' "$FLOOR/src/body.html")"
+t "held: the room's card says the hold's word, not SILENT" 1 \
+  "$(grep -c 'else if(STATE==="held")cs+=' "$APP")"
+t "held: member cards draw it calm" 1 "$(grep -c '^.mst.s-held{' "$FLOOR/src/style.css")"
 
 # The engine's permissions sentence is the collector's list, not a copy.
 t "engine: the existing-App permissions come from /api/engine, not the page" "0 1" \
