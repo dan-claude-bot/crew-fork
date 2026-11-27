@@ -463,7 +463,7 @@ t lifecycle-a-named-restart-starts-a-stopped-box 1 "$(grep -c '^start alpha$' "$
 reset_case
 mkdir -p "$CONF/store/paused"; : >"$CONF/store/paused/alpha"
 capture restart --all
-t lifecycle-all-leaves-a-paused-box-alone 1 "$(grep -c 'alpha: paused — left alone' <<<"$OUT")"
+t lifecycle-all-leaves-a-paused-box-alone 1 "$(grep -c 'alpha: stopped by the operator — left alone' <<<"$OUT")"
 t lifecycle-all-neither-stops-nor-starts-a-paused-box 0 "$(grep -cE '^(down|start) alpha$' "$STATE/calls" || true)"
 rm -f "$CONF/store/paused/alpha"
 

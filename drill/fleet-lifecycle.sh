@@ -50,7 +50,8 @@ fleet_restart_outcome() { # NAME
       # can pin that contract instead of reading it as "never named" (#771).
       *": stopped — left to the host tick"*)
         [ "$outcome" = unknown ] && outcome=left-to-tick ;;
-      *": paused — left alone")
+      # A member the operator holds (#898): stopped, paused or off duty.
+      *": paused — left alone"|*" by the operator — left alone")
         [ "$outcome" = unknown ] && outcome=left-paused ;;
     esac
   done

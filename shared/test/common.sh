@@ -212,12 +212,14 @@ payload_lookalike="$(awk -F: '$2 > 8 { print $2 }' <<<"$payload_findings" \
 t pipefail-payload-lookalike-flags "9 10 11 12" "$payload_lookalike"
 rm -f "$PAYLOAD_FIXTURE"
 
-# The four live sites: present, so this cannot pass by their disappearance, and
-# unflagged now that cli/crew is in the population.
+# The two live sites: present, so this cannot pass by their disappearance, and
+# unflagged now that cli/crew is in the population. (Four until #898: the
+# drill's control block no longer arms or comments a crontab, so its
+# drill_cron_armed and drill_cron_paused readers went with it.)
 payload_live="$(awk '
   /(bxn|bash[[:space:]]+-lc)/ && /[|][[:space:]]*grep[[:space:]]+-[[:alnum:]]*q/ { n++ }
   END { print n+0 }' "$ROOT/cli/crew" "$ROOT/drill/rehearsal-app.sh")"
-t pipefail-payload-live-sites-present 4 "$payload_live"
+t pipefail-payload-live-sites-present 2 "$payload_live"
 payload_live_findings="$(pipefail_grep_q_sites "$ROOT/cli/crew" "$ROOT/drill/rehearsal-app.sh")"
 t pipefail-payload-live-sites-unflagged "" "$payload_live_findings"
 
@@ -10404,6 +10406,11 @@ ci_paths_line() {
 CI_EXPECTED="$(printf '%s\n' \
   '.ceremony/**' '.github/ci/**' '.github/workflows/ci-floor.yml' '.github/workflows/ci-shell.yml' \
   'cli/**' 'dist/**' 'drill/**' 'examples/**' 'fleet-floor/**' 'install.sh' 'shared/**' | sort)"
+# Since #902 the floor's pull-request filter also names cli/crew and
+# shared/lib/host/**, which the floor's member actions run through (#898).
+# Both sit inside ci-shell's cli/** and shared/** already, so what a pull
+# request routes is unchanged; the union of filter strings gains the two.
+CI_UNION_EXPECTED="$(printf '%s\n' "$CI_EXPECTED" 'cli/crew' 'shared/lib/host/**' | sort)"
 CI_FLOOR_PUSH_EXPECTED="$(printf '%s\n' '.github/workflows/ci-floor.yml' 'fleet-floor/**' | sort)"
 CI_SHELL_PR_PATHS="$(ci_paths pull_request "$CI_SHELL")"
 CI_FLOOR_PR_PATHS="$(ci_paths pull_request "$CI_FLOOR")"
@@ -10411,7 +10418,7 @@ CI_SHELL_PR_PATH_LINE="$(ci_paths_line pull_request "$CI_SHELL")"
 CI_SHELL_PUSH_PATH_LINE="$(ci_paths_line push "$CI_SHELL")"
 t ci-shell-pull-push-paths-are-identical "$CI_SHELL_PUSH_PATH_LINE" "$CI_SHELL_PR_PATH_LINE"
 CI_UNION="$(printf '%s\n%s\n' "$CI_SHELL_PR_PATHS" "$CI_FLOOR_PR_PATHS")"
-t ci-path-union-preserves-coverage "$CI_EXPECTED" "$(printf '%s\n' "$CI_UNION" | sort -u)"
+t ci-path-union-preserves-coverage "$CI_UNION_EXPECTED" "$(printf '%s\n' "$CI_UNION" | sort -u)"
 CI_OVERLAP="$(LC_ALL=C comm -12 \
   <(printf '%s\n' "$CI_SHELL_PR_PATHS" | LC_ALL=C sort -u) \
   <(printf '%s\n' "$CI_FLOOR_PR_PATHS" | LC_ALL=C sort -u))"
@@ -10451,7 +10458,7 @@ for ci_yml in "$CI_SHELL" "$CI_FLOOR"; do
     t "$ci_name-trigger-fires-on[$ev]" present "$r1"
   done
   # The draft gate sits on the first job of each workflow — `plan` on the
-  # shell side since #756, `check` on the floor's.
+  # shell side since #756, and on the floor's since #902.
   ci_if="$(awk '/^  [a-z-]+:$/{p=1} p && /^    if:/{print; exit}' "$ci_yml")"
   case "$ci_if" in *github.event.pull_request.draft*) r1=payload ;; *) r1=MISSING ;; esac
   t "$ci_name-gates-on-draft-payload" payload "$r1"
@@ -10502,7 +10509,7 @@ CI_CREW="$ROOT/cli/crew"
 CI_FLOOR_FN="$(sed -n '/^cmd_floor()/,/^}/p' "$CI_CREW")"
 case "$CI_FLOOR_FN" in *'fleet-floor/index.html'*'CREW_FLOOR_PORT='*'CREW_FLOOR_BIND='*'CREW_FLOOR_USER='*'CREW_FLOOR_PASS='*'CREW_FLOOR_INTERVAL='*'CREW_FLOOR_ROSTER='*'fleet-floor/server/floor.py'*) r1=bridged ;; *) r1=BROKEN ;; esac
 t cli-floor-server-contract bridged "$r1"
-CI_CONSOLE_VERBS='creds down drain engine floor hire init new pause profiles status up upgrade usage'
+CI_CONSOLE_VERBS='creds down drain engine floor hire init logout new pause profiles start status stop unhire up upgrade usage'
 CI_CONSOLE_PROSE_VERBS='and cut hangs makes on reads sources stopped would'
 CI_CONSOLE_CANDIDATES="$(grep -ohE 'crew [a-z][a-z-]*' \
   "$ROOT/fleet-floor/server/floor.py" "$ROOT"/fleet-floor/server/floor/*.py \

@@ -59,6 +59,11 @@ source "$CREW_ROOT/shared/lib/host/engine.sh"
 source "$CREW_ROOT/shared/lib/host/wake.sh"
 # shellcheck source=shared/lib/host/pause.sh
 source "$CREW_ROOT/shared/lib/host/pause.sh"
+# A member's intent, and the logins the operator removed (#898).
+# shellcheck source=shared/lib/host/intent.sh
+source "$CREW_ROOT/shared/lib/host/intent.sh"
+# shellcheck source=shared/lib/host/claims.sh
+source "$CREW_ROOT/shared/lib/host/claims.sh"
 # The credentials shell (#765): set from the host, never read back.
 # shellcheck source=shared/lib/host/credentials.sh
 source "$CREW_ROOT/shared/lib/host/credentials.sh"
@@ -726,8 +731,12 @@ CMDS=(
   "reset^[--cut] <box>... | --all [--force-after <hours>]^Restore boxes to their 'armed' checkpoint; --cut takes that checkpoint^cmd_reset"
   "status^[<box>]^Engine version and duty evidence, per box^cmd_status"
   "tick^[--dry-run]^The host tick: read each board once, start a box only for work its member owns, stop an idle one^cmd_tick"
-  "pause^<box>^Keep a box off: the host tick never starts it, and its own cron is commented until resume^cmd_pause"
-  "resume^<box>^Undo pause: the host tick may start it again, and its cron is restored^cmd_resume"
+  "stop^<box> [--force]^Hold a member off, keeping its claims: it finishes its run (--force: ends it now), and only start lifts it^cmd_stop"
+  "start^<box>^Lift a stop: the box comes up on duty, and the host tick wakes it when its board has work^cmd_start"
+  "pause^<box>^Freeze a running member exactly where it is; resume continues the same session, however long from now^cmd_pause"
+  "resume^<box>^Continue a paused member's session (on a stopped member, the same as start)^cmd_resume"
+  "unhire^<box> [--logout]^Take a member off duty: its claims go back to the board, its box is disarmed, stopped and kept^cmd_unhire"
+  "logout^<box> gh|agent|tg^Remove a member's login from its box; it cannot work until one is set again^cmd_logout"
   "login^<box> gh|agent [<kind>]^Set a member's GitHub or agent credential from stdin: write-only, never read back^cmd_login"
   "creds^list [--json] | add gh <name> | add agent <name> <agent> [<kind>] | add tg <name> | chat [<chat-id>] | rotate <entry> | rm <entry> | assign <box> <entry>[,<entry>] | unassign <box> [<entry>] | push <box> [--entries <entry>,...]^The host credential pool: set once, assigned per member, carried to every box by the system; write-only^cmd_creds"
   "engine^[set <app-id> | remove]^The engine's GitHub App: what reads the boards from the host; set takes the private key on stdin, write-only^cmd_engine"
@@ -2941,11 +2950,22 @@ cmd_hire() {
   # 1 — the same code cmd_status uses for a box that does not exist (#97), and
   # the same one `crew hire nosuchbox` already exits with. Leaving 3 to escape
   # would put a third meaning on crew's exit surface for no caller's benefit.
+  # An unhired member comes back on duty here (#898): its box brought up,
+  # its crontab live again, and then the hire, which skips (3) a box already
+  # at this version — for a member coming back that skip is the success.
+  local was_off=0
+  if [ "$(intent_of "$name")" = off-duty ]; then
+    was_off=1
+    tick_conf_knobs
+    intent_clear "$name"
+    member_bring_up "$name" || { intent_set "$name" off-duty; die "$name did not come up — it stays off duty"; }
+    echo "  $name: back on duty"
+  fi
   local rc=0
   hire_box "$name" "$agent" "$role" "$ref" "$force" "$allow" || rc=$?
   case "$rc" in
     0) return 0 ;;
-    3) return 1 ;;
+    3) [ "$was_off" -eq 0 ] || return 0; return 1 ;;
     *) return "$rc" ;;
   esac
 }
@@ -2977,6 +2997,11 @@ cmd_hire_all() {
     if [ -n "$(fleet_claiming_box "$name")" ]; then
       echo "$name: REFUSED — fleet '$(fleet_claiming_box "$name")' on this host already lists it (a box belongs to exactly one fleet)"
       failed=$((failed + 1))
+      continue
+    fi
+    # An unhired member comes back only by name (#898): `crew hire $name`.
+    if [ "$(intent_of "$name")" = off-duty ]; then
+      echo "$name: off duty — left alone (crew hire $name puts it back)"
       continue
     fi
     # `|| rc=$?`, not a bare call: crew's top-level `set -e` used to kill
@@ -3082,6 +3107,13 @@ cmd_up() {
       fi
       echo "$name: REFUSED — fleet '$(fleet_claiming_box "$name")' on this host already lists it (a box belongs to exactly one fleet); take it out of that roster first"
       failed=$((failed + 1))
+      continue
+    fi
+    # The operator's hold wins over convergence (#898): a stopped, paused or
+    # unhired member is not started or hired here — `crew start`, `crew
+    # resume` and `crew hire` are the verbs that lift each.
+    if box_exists "$name" && intent_held "$name"; then
+      echo "$name: $(intent_of "$name") by the operator — left alone"
       continue
     fi
     new_box=0
@@ -3506,8 +3538,8 @@ restart_run() { # FORCE_SECONDS FORCE_HOURS TARGET...
     # Under --all the daily cycle is a cycle: a box the host tick stopped
     # stays stopped (the tick starts it when there is work), and a paused box
     # is left exactly as paused — neither is started with its cron live.
-    if [ "${RESTART_ALL:-0}" -eq 1 ] && [ -e "$CONFIG_DIR/store/paused/$name" ]; then
-      echo "  $name: paused — left alone"
+    if [ "${RESTART_ALL:-0}" -eq 1 ] && intent_held "$name"; then
+      echo "  $name: $(intent_of "$name") by the operator — left alone"
       continue
     fi
     if [ "${RESTART_ALL:-0}" -eq 1 ] && [ "$initial_state" = stopped ]; then
@@ -4232,7 +4264,7 @@ restore_box() { # NAME
   read -r pstate _ <<<"$(drain_probe "$name")"
   if [ "$pstate" != idle ]; then
     case "$why" in
-      paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is paused — its crontab is paused again, but a duty already holds its lock ($pstate), so the host tick stops it once idle" ;;
+      paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; the operator holds it — its crontab is paused again, but a duty already holds its lock ($pstate), so the host tick stops it once idle" ;;
       *) echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started; it is ${why%%:*}, but a duty already holds its lock ($pstate) — the host tick stops it once idle" ;;
     esac
     return 0
@@ -4242,7 +4274,7 @@ restore_box() { # NAME
       # A paused box is the host's to keep down and the host tick never
       # touches it: a stop that did not take is the operator's to repeat.
       paused)
-        echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop its paused state asks for FAILED twice — its crontab is paused; stop it with: box down $name"
+        echo "  $name: restored to $RESET_LABEL (crew@$recorded) and started, but the stop the operator's hold asks for FAILED twice — its crontab is paused; stop it with: box down $name"
         return 1 ;;
       # Past the cap the restore LANDED: the box is on its checkpoint with its
       # memory back, and the host tick's idle rule stops a box that buys
@@ -4254,7 +4286,7 @@ restore_box() { # NAME
     esac
   fi
   case "$why" in
-    paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — it is paused" ;;
+    paused) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — the operator holds it" ;;
     *) echo "  $name: restored to $RESET_LABEL (crew@$recorded), its memory written back, and stopped again — ${why#held:} of $FLEET_MAX_RUNNING boxes running; the host tick starts it when there is work" ;;
   esac
 }
@@ -4285,10 +4317,12 @@ box_down_settled() {
 # the cap is full), or nothing (it stays up).
 reset_settle_why() {
   local name="$1" other running=0
-  if [ -e "$(tick_paused_file "$name")" ]; then echo paused; return 0; fi
+  # A restore ends a frozen member's session, so its pause is a stop now.
+  [ "$(intent_of "$name")" != paused ] || intent_set "$name" stopped
+  if intent_held "$name"; then echo paused; return 0; fi
   while read -r other _; do
     if [ -z "$other" ] || [ "$other" = "$name" ]; then continue; fi
-    [ ! -e "$(tick_paused_file "$other")" ] || continue
+    ! intent_held "$other" || continue
     [ "$(box_state "$other")" != running ] || running=$((running + 1))
   done <<<"$(read_roster)"
   [ "$running" -lt "${FLEET_MAX_RUNNING:-2}" ] || echo "held:$running"
@@ -4451,8 +4485,8 @@ reset_run() { # CUT FORCE_SECONDS FORCE_HOURS TARGET...
     # Under --all the weekly cycle leaves a paused box exactly as paused — the
     # daily restart's rule (#759): nothing starts a paused box but `crew
     # resume`, and a reset by name is the operator asking for this one.
-    if [ "${RESET_ALL:-0}" -eq 1 ] && [ -e "$(tick_paused_file "$name")" ]; then
-      echo "  $name: paused — left alone"
+    if [ "${RESET_ALL:-0}" -eq 1 ] && intent_held "$name"; then
+      echo "  $name: $(intent_of "$name") by the operator — left alone"
       continue
     fi
     # A STOPPED BOX REFUSES THE CUT AND NOT THE RESTORE, because only the cut
@@ -4614,7 +4648,9 @@ TICK_DIGEST_DIR() { printf '%s/store/wake' "$CONFIG_DIR"; }
 tick_digest_file() { # MEMBER REPO
   printf '%s/%s.%s.digest' "$(TICK_DIGEST_DIR)" "$1" "$(printf '%s' "$2" | tr '/' '_')"
 }
-tick_paused_file() { printf '%s/store/paused/%s' "$CONFIG_DIR" "$1"; }
+# The pre-#898 marker's path, kept for the readers that name it (the floor's
+# suites, an older floor): a member's hold is its intent now (intent.sh).
+tick_paused_file() { intent_legacy_file "$1"; }
 # tick_unreadable_count REPO INC — consecutive ticks REPO's board was
 # unreadable: INC=1 counts one more and prints the count, INC=0 clears it.
 tick_unreadable_count() {
@@ -4641,8 +4677,8 @@ tick_conf_knobs() {
   : "${LABEL_NEEDS_TRIAGE:=needs-triage}" "${LABEL_READY:=ready}" "${LABEL_CLAIMED:=claimed}" "${LABEL_BLOCKED:=blocked}" "${LABEL_EPIC:=epic}" "${LABEL_ATTENTION:=attention}"
 }
 # host_other_running — how many boxes the host's OTHER fleets are running:
-# every unpaused member of every other fleet definition (fleet_dirs) whose box
-# reads running. A box listed by two fleets is refused elsewhere; here it is
+# every member of every other fleet definition (fleet_dirs) whose box reads
+# running or frozen. A box listed by two fleets is refused elsewhere; here it is
 # counted once, for the fleet that is not this one.
 host_other_running() {
   local id dir name n=0
@@ -4650,8 +4686,9 @@ host_other_running() {
     [ "$dir" != "$CONFIG_DIR" ] || continue
     while read -r name; do
       [ -n "$name" ] || continue
-      [ ! -e "$dir/store/paused/$name" ] || continue
-      [ "$(box_state "$name")" != running ] || n=$((n + 1))
+      # Every box that holds its memory, as this fleet's own count reads
+      # (#898): a held member still finishing its run, and a frozen one.
+      case "$(box_state "$name")" in running|frozen) n=$((n + 1)) ;; esac
     done <<<"$(roster_names_in "$dir")"
   done < <(fleet_dirs)
   printf '%s\n' "$n"
@@ -4767,6 +4804,44 @@ tick_restage() {
 
 # tick_unstaged_repo MEMBER REASON — prints the repository when REASON names
 # one the member's box was not staged with (#886), nothing otherwise.
+# tick_unstaged_record MEMBER REPOS — `<config>/store/unstaged/<member>`: the
+# repositories its box was staged without, for the floor (#898); removed when
+# there are none.
+tick_unstaged_record() {
+  local f="$CONFIG_DIR/store/unstaged/$1"
+  if [ -n "$2" ]; then
+    mkdir -p "$CONFIG_DIR/store/unstaged" && printf '%s\n' "$2" >"$f"
+  else
+    rm -f "$f"
+  fi
+}
+
+# tick_waiting_record MEMBER LOGIN — `<config>/store/waiting/<member>`: the
+# issues assigned to the member that carry LABEL_NEEDS_HUMAN on the boards
+# this tick read, `repo#num` space-separated — the member asked, and cannot
+# move until a person answers (#898). Read from the rows already in hand
+# (ROWS, the caller's), so it costs no call; removed when there are none, and
+# left as it was on a tick that read no board.
+tick_waiting_record() {
+  local member="$1" login="$2" label repo out="" f="$CONFIG_DIR/store/waiting/$1"
+  [ "${#ROWS[@]}" -gt 0 ] || return 0
+  [ -n "$login" ] || { rm -f "$f"; return 0; }
+  label="$(tick_conf_value LABEL_NEEDS_HUMAN)"; label="${label:-state:needs-human}"
+  for repo in "${!ROWS[@]}"; do
+    out="$out $(printf '%s\n' "${ROWS[$repo]}" | awk -v r="$repo" -v l="$label" -v me="$login" '
+      $1 == "I" { nl = split($4, ls, ","); na = split($5, as, ",")
+        hl = 0; for (i = 1; i <= nl; i++) if (ls[i] == l) hl = 1
+        hm = 0; for (i = 1; i <= na; i++) if (as[i] == me) hm = 1
+        if (hl && hm) printf "%s#%s ", r, $2 }')"
+  done
+  out="$(printf '%s' "$out" | tr -s ' ' | sed 's/^ //; s/ $//')"
+  if [ -n "$out" ]; then
+    mkdir -p "$CONFIG_DIR/store/waiting" && printf '%s\n' "$out" >"$f"
+  else
+    rm -f "$f"
+  fi
+}
+
 tick_unstaged_repo() {
   local f="$CONFIG_DIR/store/staged/$1.repos" repo
   [ -f "$f" ] || return 0
@@ -4850,10 +4925,10 @@ tick_wake() {
 
 tick_run() { # DRY_RUN
   local dry="$1" repo rows prev name _agent roles _rest login reasons surviving why state idle line miss WAKE_LEDGER_LIVE held_repos
-  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held auth_dead unstaged
+  local WAKE_STATES_LIVE WAKE_STATES_LIVE_READ mem_held auth_dead unstaged intent loggedout nodigest
   local running=0 started=0 stopped=0 held=0 woke=0 vetoed=0 quiet=0 blind=0 pstate
   local -A ROWS=() DIGEST=()
-  mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/paused"
+  mkdir -p "$(TICK_DIGEST_DIR)" "$CONFIG_DIR/store/intent"
   store_py init >/dev/null 2>&1 || true
   tick_conf_knobs
   # The host reads the boards as the engine's GitHub App (#864), or with its
@@ -4897,11 +4972,13 @@ tick_run() { # DRY_RUN
     ROWS[$repo]="$rows"
     DIGEST[$repo]="$(printf '%s\n' "$rows" | wake_digest)"
   done <<<"$(production_registry)"
-  # 2. Who is running now. Paused boxes are stopped below and never count.
+  # 2. Who is running now: every box that holds its memory, a member the
+  # operator holds included — a stopping one still runs its last run, and a
+  # paused one is frozen in RAM (#898). A held member that is stopped holds
+  # nothing and never counts.
   while read -r name _rest; do
     [ -n "$name" ] || continue
-    [ ! -e "$(tick_paused_file "$name")" ] || continue
-    [ "$(box_state "$name")" = running ] && running=$((running + 1))
+    case "$(box_state "$name")" in running|frozen) running=$((running + 1)) ;; esac
   done <<<"$(read_roster)"
   # The host's memory is one pool however many fleets share it (#814): the
   # boxes other fleets on this host are running count against HOST_MAX_RUNNING
@@ -4915,25 +4992,39 @@ tick_run() { # DRY_RUN
   while read -r name _agent roles _rest; do
     [ -n "$name" ] || continue
     roles="${roles//,/ }"
-    if [ -e "$(tick_paused_file "$name")" ]; then
-      # A pause HOLDS: a paused box that is running is drained and stopped,
-      # off the cap, and nothing starts it until `crew resume`.
-      if [ "$(box_state "$name")" = running ]; then
-        read -r pstate _ <<<"$(drain_probe "$name")"
-        if [ "$pstate" != idle ]; then
-          echo "  $name: paused — a duty holds its lock ($pstate); stopped once it is idle"
-        elif [ "$dry" -eq 1 ]; then
-          echo "  $name: paused — would be drained and stopped"
-        elif ! ( cmd_drain "$name" ) >/dev/null 2>&1; then
-          echo "  $name: paused — drain failed; not stopping a box whose evidence the store does not hold"
-        elif box down "$name" </dev/null; then
-          echo "  $name: paused — drained and stopped"; stopped=$((stopped + 1))
-        else
-          echo "  $name: paused — stop FAILED"
-        fi
-      else
-        echo "  $name: paused — left alone"
-      fi
+    intent="$(intent_of "$name")"
+    if [ "$intent" != on-duty ]; then
+      # The operator's intent HOLDS (#898): nothing here starts the member,
+      # and its board is not read for it. What is left for the tick is to
+      # finish what the operator asked: a stopping member, or one going off
+      # duty, is stopped once its run ends.
+      state="$(box_state "$name")"
+      case "$intent:$state" in
+        paused:frozen) echo "  $name: paused since $(intent_line "$name" | awk '{print $2}') — left frozen" ;;
+        paused:running) echo "  $name: paused, but running (thawed outside crew?) — left alone; crew pause or crew resume says which" ;;
+        paused:*)
+          # A freeze lives in the host's memory: after a host restart the box
+          # is stopped and its session gone. Held, and said, never read asleep.
+          [ "$dry" -eq 1 ] || intent_set "$name" stopped
+          echo "  $name: paused, but the box is $state — its frozen state did not survive (a host restart?); held as stopped" ;;
+        stopped:running|off-duty:running)
+          read -r pstate _ <<<"$(drain_probe "$name")"
+          if [ "$pstate" != idle ]; then
+            echo "  $name: $intent — finishing the run it is in ($pstate); stopped once it is idle"
+          elif [ "$dry" -eq 1 ]; then
+            echo "  $name: $intent — would be drained and stopped"
+          elif [ "$intent" = off-duty ]; then
+            if unhire_finish "$name"; then stopped=$((stopped + 1)); running=$((running - 1)); fi
+          elif ! ( cmd_drain "$name" ) >/dev/null 2>&1; then
+            echo "  $name: stopped by the operator — drain failed; not stopping a box whose evidence the store does not hold"
+          elif box down "$name" </dev/null; then
+            intent_set "$name" stopped
+            echo "  $name: stopped by the operator — drained and stopped"; stopped=$((stopped + 1)); running=$((running - 1))
+          else
+            echo "  $name: stopped by the operator — stop FAILED"
+          fi ;;
+        *) echo "  $name: $intent by the operator — left alone" ;;
+      esac
       continue
     fi
     login="$(store_py state --box "$name" --name .identity 2>/dev/null | head -1 | tr -d '\r')"
@@ -5004,12 +5095,24 @@ tick_run() { # DRY_RUN
     # the item and its timestamp (#763 rounds 3 and 5).
     unstaged="$(while read -r r _; do [ -n "$r" ] && [ "${r#veto:}" = "$r" ] && tick_unstaged_repo "$name" "$r"; done <<<"$surviving" | sort -u | paste -sd' ' -)"
     [ -z "$unstaged" ] || echo "  $name: its box was staged without $unstaged — its work there is not set aside; a wake re-stages it"
+    # Said to the floor too, as the member's activity (#898).
+    [ "$dry" -eq 1 ] || tick_unstaged_record "$name" "$unstaged"
+    [ "$dry" -eq 1 ] || tick_waiting_record "$name" "$login"
     auth_dead="$(tick_auth_dead "$name")"
     [ -z "$auth_dead" ] || echo "  $name: its last run had no working login ($auth_dead rejected) — its work is not set aside; set its credentials on the floor (Credentials)"
     if [ -n "$why" ] && [ "$idle" -ge "$IDLE_TICKS_BEFORE_STOP" ] && [ -z "$auth_dead" ] && [ -z "$unstaged" ] \
        && [ -z "$(printf '%s\n' "$surviving" | grep -v '^veto:' | grep -v '^board#' | awk 'NF')" ]; then
       echo "  $name: the board moved, but $idle idle ticks bought nothing for triage — not woken for it again"
       why=""
+    fi
+    # A login the operator removed (#898): the member cannot work, so it is not
+    # woken for work — a start would only fail at login. Its board stays
+    # unread for it, so the work is seen once a login is set.
+    loggedout="$(logout_services "$name" | tr ' ' '\n' | grep -vx tg | paste -sd' ' -)"
+    nodigest=0
+    if [ -n "$why" ] && [ -n "$loggedout" ]; then
+      echo "  $name: no $loggedout login (removed by the operator) — not woken; set it on the floor or with crew login"
+      why=""; nodigest=1
     fi
     if [ -n "$why" ]; then
       case "$state" in
@@ -5086,7 +5189,7 @@ tick_run() { # DRY_RUN
     fi
     # The member has seen these boards: woken, idle, or nothing for it — all
     # but one a budget or a breaker held a reason on, read again next tick.
-    [ "$dry" -eq 1 ] || for repo in "${!ROWS[@]}"; do
+    [ "$dry" -eq 1 ] || [ "$nodigest" -eq 1 ] || for repo in "${!ROWS[@]}"; do
       ! grep -qxF -- "$repo" <<<"$held_repos" || continue
       printf '%s\n' "${DIGEST[$repo]}" >"$(tick_digest_file "$name" "$repo")"
     done
@@ -5140,38 +5243,296 @@ cmd_tick() {
   host_job tick tick_run "$dry"
 }
 
-# --- pause / resume (#284, #759) ---------------------------------------------
-# A paused member is one the host tick never starts, and whose own cron is
-# commented while it runs: one marker on the host, one on the box, and the
-# shell that edits the crontab is the file the floor's button runs too.
+# --- a member's lifecycle: stop / start / pause / resume / unhire (#898) -------
+# What the operator wants of a member is its INTENT (shared/lib/host/intent.sh),
+# kept on the host and obeyed by the host tick, which never starts a member
+# that is not on duty:
+#
+#   stop    held off, keeping its claims. Graceful by default: it finishes the
+#           run it is in (`stopping`), then the box is drained and stopped;
+#           --force ends the session now. Only `crew start` lifts it.
+#   pause   frozen in place (`incus pause`): the session is held exactly where
+#           it was, for as long as the operator likes, and `crew resume`
+#           continues it. A frozen box keeps its memory, so it counts against
+#           the running cap; a freeze does not survive a host restart (the
+#           member then reads stopped, and says so).
+#   unhire  off duty: its claims go back to the board, its cron is disarmed,
+#           the box is stopped and kept; --logout also removes its logins.
+#           `crew hire` puts it back on duty.
+#
+# Before #898 `crew pause` was the hold `crew stop` is now; a member paused
+# that way reads as stopped, and `crew resume` on it lifts it as Start does.
+
+member_guard() { # VERB BOX
+  [ -n "${2:-}" ] || usage_error "usage: $(synopsis_of "$1")"
+  need_box
+  require_operator_config "crew $1"
+  box_exists "$2" || die "no box named '$2' — 'crew status' lists the roster"
+  # The tick's own knobs (HOST_TICK_READY_S, the label names): a start here
+  # waits for the guest as the tick's start does.
+  tick_conf_knobs
+}
+
+# member_freeze_argv / member_thaw_argv BOX — box's own incus passthrough, the
+# instance resolved and tag-checked by box (heavy-duty/box `box incus`).
+member_freeze() { box incus "$1" -- pause </dev/null; }
+member_thaw()   { box incus "$1" -- start </dev/null; }
+member_kill()   { box incus "$1" -- stop --force </dev/null; }
+
+# member_stop_now BOX — drain to the store, then stop gracefully. A graceful
+# stop NEVER escalates on its own (#486 D1): a box that will not stop is said
+# so, and the operator's Force stop is the way to end it.
+member_stop_now() {
+  local b="$1" drained=1
+  ( cmd_drain "$b" ) >/dev/null 2>&1 || drained=0
+  [ "$drained" -eq 1 ] || echo "  $b: its evidence could not be drained first — the store keeps what it had"
+  if box down "$b" </dev/null >/dev/null 2>&1; then
+    echo "  $b: stopped"
+  else
+    echo "  $b: stop FAILED — it did not stop gracefully; 'crew stop $b --force' ends it"; return 1
+  fi
+}
+
+# member_apply_logouts BOX — the removals asked while the box was off reach it
+# now, before anything runs on it.
+member_apply_logouts() {
+  local b="$1" svc out
+  for svc in $(logout_owed "$b"); do
+    if out="$(bxpipe "$b" "$(host_credentials_remove_sh)" "$svc"$'\n' 2>&1)"; then
+      logout_mark "$b" "$svc" applied
+      pool_forget_delivered "$b" "$svc"
+      echo "  $b: $(printf '%s\n' "$out" | tail -1)"
+    else
+      echo "  $b: the $svc login removal owed to it did not apply: $(printf '%s\n' "$out" | tail -1)"
+    fi
+  done
+}
+
+# member_bring_up BOX — start a stopped box and make it the member it was:
+# its crontab live again (a hold commented it), owed removals, rotated pool
+# entries, its fleet definition. No session is started: the tick, or its own
+# cron, does that when there is work.
+member_bring_up() {
+  local b="$1" st
+  st="$(box_state "$b")"
+  case "$st" in
+    frozen) member_thaw "$b" || { echo "  $b: it was frozen, and the thaw FAILED"; return 1; } ;;
+    stopped)
+      box start "$b" </dev/null || { echo "  $b: start FAILED"; return 1; }
+      tick_box_ready "$b" "$HOST_TICK_READY_S" || { echo "  $b: started, but its guest did not answer within ${HOST_TICK_READY_S}s"; return 1; } ;;
+  esac
+  member_apply_logouts "$b"
+  bxn "$b" "$(host_resume_sh)" >/dev/null 2>&1 || true
+  pool_fanout "$b" stale "start" || true
+  tick_restage "$b" || true
+}
+
+cmd_stop() {
+  local b="" force=0 st intent
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      -*) usage_error "unknown argument '$1' (usage: $(synopsis_of stop))" ;;
+      *) [ -z "$b" ] || usage_error "usage: $(synopsis_of stop)"; b="$1"; shift ;;
+    esac
+  done
+  member_guard stop "$b"
+  intent="$(intent_of "$b")"
+  [ "$intent" != off-duty ] || { echo "  $b: off duty already — its box is kept stopped; crew hire $b puts it back"; return 0; }
+  st="$(box_state "$b")"
+  if [ "$force" -eq 1 ] && { [ "$st" = running ] || [ "$st" = frozen ]; }; then
+    # Force is what was asked for: the session ends where it stands, and
+    # nothing is exec'd into the box first — a box that needs forcing may be
+    # one that answers nothing (#486). Only `incus stop --force`.
+    intent_set "$b" stopped || die "could not write $b's intent"
+    if ! member_kill "$b" >/dev/null 2>&1; then
+      echo "  $b: force stop FAILED (box incus $b -- stop --force) — it stays held"; return 1
+    fi
+    echo "  $b: stopped (force) — its session ended where it stood. Held: the host tick will not start it until 'crew start $b'. Its claims stay its own."
+    return 0
+  fi
+  if [ "$st" = frozen ]; then
+    # A paused member is thawed first, so it finishes its run like any other:
+    # a graceful stop never becomes a kill on its own (#486 D1).
+    member_thaw "$b" >/dev/null 2>&1 || { echo "  $b: it is paused and could not be thawed to stop gracefully — 'crew stop $b --force' ends it"; return 1; }
+    st=running
+  fi
+  case "$st" in
+    running)
+      intent_set "$b" stopped stopping || die "could not write $b's intent"
+      bxn "$b" "$(host_pause_sh)" >/dev/null 2>&1 || echo "  $b: its own crontab could not be commented — held on the host regardless"
+      local pstate _age
+      read -r pstate _age <<<"$(drain_probe "$b")"
+      if [ "$pstate" = idle ]; then
+        if member_stop_now "$b"; then intent_set "$b" stopped; else return 1; fi
+        echo "  $b: held — the host tick will not start it until 'crew start $b'. Its claims stay its own."
+      else
+        echo "  $b: stopping — it finishes the run it is in ($pstate), then the host tick drains and stops it; --force ends it now. Held until 'crew start $b'."
+      fi ;;
+    *)
+      intent_set "$b" stopped || die "could not write $b's intent"
+      echo "  $b: held ($st) — the host tick will not start it until 'crew start $b'. Its claims stay its own." ;;
+  esac
+}
+
+cmd_start() {
+  max_args start 1 "$@"
+  local b="${1:-}"
+  member_guard start "$b"
+  case "$(intent_of "$b")" in
+    off-duty) die "$b is off duty — 'crew hire $b' puts it back on duty" ;;
+  esac
+  intent_clear "$b"
+  member_bring_up "$b" || { intent_set "$b" stopped; echo "  $b: held again — it did not come up"; return 1; }
+  echo "  $b: on duty — the host tick wakes it when its board has work"
+}
+
 cmd_pause() {
   max_args pause 1 "$@"
-  local b="${1:-}"; [ -n "$b" ] || usage_error "usage: $(synopsis_of pause)"
-  need_box
-  require_operator_config "crew pause"
-  box_exists "$b" || die "no box named '$b' — 'crew status' lists the roster"
-  mkdir -p "$CONFIG_DIR/store/paused"
-  date -u '+%Y-%m-%dT%H:%M:%SZ' >"$(tick_paused_file "$b")"
-  if [ "$(box_state "$b")" = running ]; then
-    bxn "$b" "$(host_pause_sh)" || echo "  $b: paused on the host; the box's crontab did not take the pause (it is off the host tick regardless)"
-  else
-    echo "  $b: paused on the host (box not running — only the host tick could start it, and it will not)"
+  local b="${1:-}" st
+  member_guard pause "$b"
+  case "$(intent_of "$b")" in
+    paused) echo "  $b: paused already — 'crew resume $b' continues it"; return 0 ;;
+    stopped|off-duty) die "$b is $(intent_of "$b") — there is no session to pause" ;;
+  esac
+  st="$(box_state "$b")"
+  [ "$st" = running ] || die "$b is $st — only a running member can be paused (it is held exactly where it was)"
+  intent_set "$b" paused || die "could not write $b's intent"
+  if ! member_freeze "$b" >/dev/null 2>&1; then
+    intent_clear "$b"
+    die "$b could not be frozen (box incus $b -- pause) — nothing changed"
   fi
-  echo "  $b: the host tick will not start it until 'crew resume $b'. An in-flight duty finishes; only future ticks are prevented."
+  echo "  $b: paused — frozen exactly where it was; 'crew resume $b' continues it, however long from now. It keeps its memory, so it counts against the running cap."
 }
 
 cmd_resume() {
   max_args resume 1 "$@"
-  local b="${1:-}"; [ -n "$b" ] || usage_error "usage: $(synopsis_of resume)"
-  need_box
-  require_operator_config "crew resume"
-  box_exists "$b" || die "no box named '$b' — 'crew status' lists the roster"
-  rm -f "$(tick_paused_file "$b")"
-  if [ "$(box_state "$b")" = running ]; then
-    bxn "$b" "$(host_resume_sh)" || echo "  $b: resumed on the host; the box's crontab did not take the resume"
-  else
-    echo "  $b: resumed on the host (box not running; the host tick may start it again)"
+  local b="${1:-}" st
+  member_guard resume "$b"
+  st="$(box_state "$b")"
+  case "$(intent_of "$b")" in
+    paused)
+      if [ "$st" = frozen ]; then
+        member_thaw "$b" >/dev/null 2>&1 || die "$b could not be thawed (box incus $b -- start) — it stays paused"
+        intent_clear "$b"
+        echo "  $b: resumed — its session continues where it was"
+      elif [ "$st" = running ]; then
+        intent_clear "$b"
+        echo "  $b: resumed (it was already running)"
+      else
+        # The freeze is in the host's memory; a host restart drops it and the
+        # box comes back stopped. Said, and held, rather than read as asleep.
+        intent_set "$b" stopped
+        echo "  $b: its frozen state did not survive (the box is $st — a host restart?); its session is gone. Held: 'crew start $b' brings it back on duty."
+        return 1
+      fi ;;
+    stopped)
+      echo "  $b: it is stopped, not paused — resuming it is Start"
+      cmd_start "$b" ;;
+    off-duty) die "$b is off duty — 'crew hire $b' puts it back on duty" ;;
+    *)
+      # A crontab a pre-#898 pause left commented, on a member on duty.
+      if [ "$st" = running ]; then
+        bxn "$b" "$(host_resume_sh)" 2>&1 || { echo "  $b: its crontab did not take the resume"; return 1; }
+      else
+        echo "  $b: on duty and not paused — nothing to resume"
+      fi ;;
+  esac
+}
+
+# unhire_finish BOX — the half of an unhire that needs the box idle: claims
+# back to the board, logins removed when asked, drained, stopped.
+unhire_finish() {
+  local b="$1" out rc=0 claimed ready
+  claimed="$(tick_conf_value LABEL_CLAIMED)"; ready="$(tick_conf_value LABEL_READY)"
+  out="$(bxpipe "$b" "$(host_release_claims_sh)" "$(production_registry; echo "--"; echo "${claimed:-claimed} ${ready:-ready}")"$'\n' 2>&1)" || rc=$?
+  printf '%s\n' "$out" | sed "s/^/  $b: /" | sed "s/^  $b:   /  $b: /"
+  [ "$rc" -eq 0 ] || echo "  $b: not every claim could be released — the ones above that say so still name it"
+  # Read once, matched in the shell: `| grep -q` under pipefail reads a match
+  # as a failure when grep's early exit SIGPIPEs the producer.
+  local wants_logout=""
+  case " $(intent_line "$b") " in *" logout "*) wants_logout=logout ;; esac
+  if [ -n "$wants_logout" ]; then
+    local svc
+    for svc in gh agent tg; do
+      logout_mark "$b" "$svc" owed
+    done
+    member_apply_logouts "$b"
   fi
+  member_stop_now "$b" || return 1
+  intent_set "$b" off-duty "$wants_logout"
+  echo "  $b: off duty — disarmed and stopped, the box kept; 'crew hire $b' puts it back"
+}
+
+cmd_unhire() {
+  local b="" logout=0 st flags
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --logout) logout=1; shift ;;
+      -*) usage_error "unknown argument '$1' (usage: $(synopsis_of unhire))" ;;
+      *) [ -z "$b" ] || usage_error "usage: $(synopsis_of unhire)"; b="$1"; shift ;;
+    esac
+  done
+  member_guard unhire "$b"
+  if [ "$(intent_of "$b")" = off-duty ] && ! intent_stopping "$b"; then
+    echo "  $b: off duty already — its box is kept stopped; 'crew hire $b' puts it back"
+    [ "$logout" -eq 0 ] || echo "  $b: to remove its logins now: crew logout $b gh|agent|tg"
+    return 0
+  fi
+  flags="stopping"; [ "$logout" -eq 0 ] || flags="$flags logout"
+  # The intent FIRST: from here the host tick neither wakes it nor reads its
+  # board for it.
+  intent_set "$b" off-duty "$flags" || die "could not write $b's intent"
+  st="$(box_state "$b")"
+  case "$st" in
+    frozen) member_thaw "$b" >/dev/null 2>&1 || die "$b is frozen and could not be thawed to hand back its claims" ;;
+    stopped)
+      echo "  $b: starting it once, to hand back its claims as itself"
+      box start "$b" </dev/null || die "$b could not be started — off duty on the host, but its claims still name it"
+      tick_box_ready "$b" "$HOST_TICK_READY_S" || die "$b did not answer within ${HOST_TICK_READY_S}s — off duty on the host, but its claims still name it; re-run 'crew unhire $b'" ;;
+    running) ;;
+    *) intent_set "$b" off-duty "$([ "$logout" -eq 0 ] || echo logout)"
+       echo "  $b: off duty ($st) — nothing to stop, and its claims could not be read from a box that is $st"; return 0 ;;
+  esac
+  bxn "$b" "$(host_pause_sh)" >/dev/null 2>&1 || echo "  $b: its own crontab could not be commented — off duty on the host regardless"
+  local pstate _age
+  read -r pstate _age <<<"$(drain_probe "$b")"
+  if [ "$pstate" != idle ]; then
+    echo "  $b: off duty — it finishes the run it is in ($pstate); then the host tick hands back its claims and stops it"
+    return 0
+  fi
+  unhire_finish "$b"
+}
+
+# --- logout (#898) ----------------------------------------------------------------
+# A member's login REMOVED from its box: the operator's call. The service's
+# pool entry is unassigned too, so nothing sets it again behind them; the
+# member cannot work until a login is set (crew login, the pool), and the host
+# tick does not wake it meanwhile.
+cmd_logout() {
+  max_args logout 2 "$@"
+  local b="${1:-}" svc="${2:-}" id out
+  { [ -n "$b" ] && [ -n "$svc" ]; } || usage_error "usage: $(synopsis_of logout)"
+  case "$svc" in gh|agent|tg) ;; *) usage_error "the service is gh, agent or tg" ;; esac
+  member_guard logout "$b"
+  for id in $(roster_creds_of "$b"); do
+    [ "${id%%:*}" = "$svc" ] || continue
+    ( creds_unassign "$b" "$id" ) >/dev/null 2>&1 && echo "  $b: $id unassigned, so the pool does not set it again"
+  done
+  logout_mark "$b" "$svc" owed || die "could not record the removal"
+  creds_journal logout "$svc" "box=$b"
+  if [ "$(box_state "$b")" = running ]; then
+    if out="$(bxpipe "$b" "$(host_credentials_remove_sh)" "$svc"$'\n' 2>&1)"; then
+      logout_mark "$b" "$svc" applied
+      pool_forget_delivered "$b" "$svc"
+      echo "  $b: $(printf '%s\n' "$out" | tail -1)"
+    else
+      echo "  $b: $(printf '%s\n' "$out" | tail -1)"; return 1
+    fi
+  else
+    echo "  $b: not running — the $svc login is removed at its next start, before anything runs"
+  fi
+  [ "$svc" = tg ] || echo "  $b: it cannot work until a $svc login is set again (crew login $b $svc, or the pool); the host tick does not wake it meanwhile"
 }
 
 # --- login (#765) ---------------------------------------------------------------
@@ -5225,6 +5586,8 @@ cmd_login() {
     >>"$CONFIG_DIR/.credentials-journal.log" 2>/dev/null \
     || echo "  $b: NOTE — the credentials journal could not be written ($CONFIG_DIR/.credentials-journal.log)"
   echo "  $b: ${verdict:-no answer from the box}"
+  # A login set again lifts the operator's removal of it (#898).
+  [ "$rc" -ne 0 ] || logout_lift "$b" "$svc"
   [ "$rc" -eq 0 ]
 }
 
@@ -5857,7 +6220,7 @@ cmd_status() {
   local supp_age supp_kind supp_key supp_subject log_timestamped session_active lock_age
   local session_kind session_ceiling lock_ceiling lock_bound
   local report estate erecorded edisplay
-  local rreport conv convnote stored_brief mem_held
+  local rreport conv convnote stored_brief mem_held hold
   while read -r name agent role _from; do
     if ! box_exists "$name"; then
       # shellcheck disable=SC2059
@@ -5865,6 +6228,16 @@ cmd_status() {
       continue
     fi
     state="$(box_state "$name")"
+    # The operator's hold first (#898): a member the operator stopped, paused
+    # or unhired is said so, never read as the tick's own sleep. A frozen box
+    # answers no exec, so nothing below is asked of it.
+    hold="$(intent_note "$name")"
+    if [ "$state" = frozen ] || { [ -n "$hold" ] && [ "$state" = stopped ]; }; then
+      [ -n "$hold" ] || hold="frozen outside crew — crew pause $name records it, crew resume $name continues it"
+      # shellcheck disable=SC2059
+      printf "$fmt" "$name" "$(if [ "$state" = frozen ]; then echo paused; else intent_of "$name"; fi)" "$host" - - - - "$hold$(stored_brief="$(stored_note "$name" --brief)"; printf '%s' "${stored_brief:+ · $stored_brief}")"
+      continue
+    fi
     if [ "$state" = "stopped" ]; then
       # A member staged at hire or upgrade is ASLEEP: the host tick put it to
       # sleep and wakes it when its board has work (#885, as #875 on the floor).
@@ -6139,6 +6512,7 @@ cmd_status() {
     case "$note" in *"memory HELD since"*) ;; *)
       [ -z "$mem_held" ] || note="memory HELD since $mem_held — re-run: crew reset $name${note:+; $note}" ;;
     esac
+    [ -z "$hold" ] || note="$hold${note:+; $note}"
     # shellcheck disable=SC2059
     printf "$fmt" "$name" "$state" "$host" "$hired" "$edisplay" "$ghs_d" "$vs_d" "$note"
   done < <(read_roster)

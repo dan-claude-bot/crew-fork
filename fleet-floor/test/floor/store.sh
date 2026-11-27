@@ -91,8 +91,8 @@ p = store.init()
 c = store.connect(p)
 print(c.execute("SELECT value FROM meta WHERE key=\"schema_version\"").fetchone()[0], p)
 ')"
-t "store: every table the issue names exists" \
-  "boxes duty_log ledger limit_events meta pulls rates sessions state_files ticks vitals" \
+t "store: every table the issue names exists (and #899's status_log)" \
+  "boxes duty_log ledger limit_events meta pulls rates sessions state_files status_log ticks vitals" \
   "$(st_py "$ST_A" '
 from floor import store
 c = store.connect()

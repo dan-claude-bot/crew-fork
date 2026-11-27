@@ -158,43 +158,21 @@ TMP="$(mktemp -d)"
 SRV=""
 # Boxes this run ARMED, so teardown can disarm them on every exit path.
 #
-# The control block arms the box's own tick line before exercising the verbs
-# (#188). It has to: drill/rehearsal.sh disarms cron before any tick and aborts
-# the run if it cannot, so every drill box is guaranteed to have no armed
-# `tick.sh` line for its whole run — `pause` had nothing to comment out, and a
-# block that skipped the arm could only ever assert that the transport was
-# reachable. Disarming afterwards therefore RESTORES the state the drill
-# guarantees rather than destroying one.
-ARMED_BY_DRILL=""
+# The control block freezes a box and thaws it (#898: Pause is a freeze,
+# Resume continues the same session). A run that dies between the two must
+# not leave a drill box frozen, so the box is recorded in PAUSED_BY_DRILL
+# BEFORE the pause, and cleanup() resumes every box it names — through the
+# CLI, which reaches the box directly, so it works after the server is gone.
+PAUSED_BY_DRILL=""
 
-# Arm and disarm the box's own tick line, and read the crontab back.
-#
-# Temp file then `crontab <file>`, the same shape rehearsal-safety.sh's
-# rehearsal_disarm_cron uses and for the same reason: a pipeline into
-# `crontab -` whose head dies halfway installs an EMPTY crontab.
-# shellcheck disable=SC2016,SC2317  # $HOME and $tmp are the BOX's, expanded by
-# the shell inside it; and the function is called from the control block and
-# from cleanup(), neither of which shellcheck treats as a call site.
-drill_arm_cron() {
-  box_in "$1" -- bash -lc '
-    tmp=$(mktemp)
-    { crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh"
-      echo "*/5 * * * * $HOME/duty/bin/tick.sh"; } > "$tmp"
-    crontab "$tmp"; rc=$?
-    rm -f "$tmp"; exit "$rc"' >/dev/null 2>&1
+# shellcheck disable=SC2317  # called from cleanup(), which shellcheck does not
+# treat as a call site.
+# drill_box_state BOX — the box's state as the host reads it, lowercased (#898).
+drill_box_state() {
+  box info "$1" --json 2>/dev/null | jq -r 'if type == "array" then (.[0] // {}) else . end
+    | .status // (.state | if type == "object" then .status else . end) // "?"' 2>/dev/null \
+    | head -1 | tr '[:upper:]' '[:lower:]'
 }
-# shellcheck disable=SC2016,SC2317
-drill_disarm_cron() {
-  box_in "$1" -- bash -lc '
-    tmp=$(mktemp)
-    crontab -l 2>/dev/null | grep -vF "$HOME/duty/bin/tick.sh" > "$tmp" || true
-    crontab "$tmp"; rc=$?
-    rm -f "$tmp"; exit "$rc"' >/dev/null 2>&1
-}
-# shellcheck disable=SC2317
-drill_cron_armed()  { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -qE '^[^#].*tick\.sh'" >/dev/null 2>&1; }
-# shellcheck disable=SC2317
-drill_cron_paused() { box_in "$1" -- bash -lc "crontab -l 2>/dev/null | grep -q '^#CREW-FLOOR-PAUSED'" >/dev/null 2>&1; }
 # Any tick.sh line at all, commented or live — the same fact rehearsal.sh's own
 # teardown check asserts, and the one that says "disarmed" without ambiguity.
 # shellcheck disable=SC2016,SC2317
@@ -204,17 +182,15 @@ drill_cron_present() { box_in "$1" -- bash -lc 'crontab -l 2>/dev/null | grep -q
 # does not treat as a call site.
 cleanup() {
   local rc=$? b
-  # Best-effort repair FIRST: bailing out with a box's tick line still armed
-  # leaves it ticking against whatever registry teardown restores, which is
-  # worse than the failure that caused the bail. Unconditional, on every exit
-  # path — a run that dies between the arm and the pause must still disarm, and
-  # this reaches the box directly rather than through the collector, so it works
-  # after the server is gone as well as before.
-  for b in $ARMED_BY_DRILL; do
-    if drill_disarm_cron "$b"; then
-      echo "teardown: disarmed $b"
+  # Best-effort repair FIRST: a box the control block froze is thawed on every
+  # exit path — a run that dies between the pause and the resume must not leave
+  # it frozen — through the CLI, so it works after the server is gone.
+  for b in $PAUSED_BY_DRILL; do
+    [ "$(drill_box_state "$b")" = frozen ] || continue
+    if "$ROOT/cli/crew" resume "$b" >/dev/null 2>&1; then
+      echo "teardown: resumed $b"
     else
-      echo "teardown: WARNING — could not disarm $b; run: box exec $b -- bash -lc 'crontab -l | grep -vF \"\$HOME/duty/bin/tick.sh\" | crontab -'" >&2
+      echo "teardown: WARNING — could not resume $b; run: crew resume $b (or: box incus $b -- start)" >&2
     fi
   done
   if [ -n "$SRV" ]; then
@@ -796,30 +772,19 @@ else
     control_roster_rows="$(roster_rows)"
     grep -qE "^$b " <<<"$control_roster_rows" || { fail "control $b" "not in $ROSTER"; continue; }
 
-    # ARM FIRST, and record the intent BEFORE acting so a half-applied arm is
-    # still disarmed by the trap. Every drill box is disarmed for its whole run
-    # by construction, so without this the verbs act on nothing and the block
-    # asserts the transport rather than the control (#188). The armed window is
-    # about a second against a 5-minute boundary, and the box carries the
-    # drill's SANDBOX registry throughout, so even a tick that did fire would
-    # act on drill sandbox repos — the harm #26 exists to prevent.
-    ARMED_BY_DRILL="$ARMED_BY_DRILL $b"
-    if drill_arm_cron "$b" && drill_cron_armed "$b"; then
-      ok "arm $b: the tick line is live, so the verbs have something to act on"
-    else
-      fail "arm $b: the tick line is live" "cannot arm the crontab; the verbs would assert nothing"
-      continue
-    fi
-
-    # pause/resume is the reversible one, so it is what the drill uses. The
-    # assertion is the EFFECT: the box's own crontab, read back over box exec.
+    # Pause and Resume are a member's (#898): Pause freezes the running box
+    # exactly where it is (`crew pause` → `incus pause`), Resume thaws the same
+    # session. The assertion is the EFFECT, read from the host: the box's
+    # state, frozen and then running again — and its crontab untouched by
+    # either, so the box stays disarmed, as every drill box is for its whole
+    # run (nothing here arms it, so no tick can fire on a sandbox repository).
+    PAUSED_BY_DRILL="$PAUSED_BY_DRILL $b"
     ctl pause "$b"
     if [ "$CTL_CODE" = "200" ]; then
-      if drill_cron_paused "$b"; then
-        ok "pause $b: crontab line is commented (${CTL_OUT:-no detail})"
+      if [ "$(drill_box_state "$b")" = frozen ]; then
+        ok "pause $b: the box is frozen (${CTL_OUT:-no detail})"
       else
-        fail "pause $b: crontab line is commented" \
-             "no #CREW-FLOOR-PAUSED line in the box; the call said: ${CTL_OUT:-nothing}"
+        fail "pause $b: the box is frozen" "it reads $(drill_box_state "$b"); the call said: ${CTL_OUT:-nothing}"
       fi
     else
       fail "pause $b" "HTTP $CTL_CODE — ${CTL_OUT:-no reason in the response}"
@@ -827,34 +792,23 @@ else
 
     ctl resume "$b"
     if [ "$CTL_CODE" = "200" ]; then
-      if drill_cron_armed "$b"; then
-        ok "resume $b: crontab line is live again (${CTL_OUT:-no detail})"
+      if [ "$(drill_box_state "$b")" = running ] && box_read "$b" -- true >/dev/null 2>&1; then
+        ok "resume $b: the box runs and answers again (${CTL_OUT:-no detail})"
       else
-        fail "resume $b: crontab line is live again" \
-             "no active tick.sh line after resume; the call said: ${CTL_OUT:-nothing}"
+        fail "resume $b: the box runs and answers again" "it reads $(drill_box_state "$b"); the call said: ${CTL_OUT:-nothing}"
       fi
     else
       fail "resume $b" "HTTP $CTL_CODE — ${CTL_OUT:-no reason in the response}"
     fi
 
-    # Disarm here as well as in the trap. The trap is the guarantee; this is
-    # what lets the assertions below be about the drill's own sequence rather
-    # than about the net that catches its failures.
-    if ! drill_disarm_cron "$b"; then
-      fail "disarm $b" "could not disarm the tick line — see the teardown warning"
-    fi
-
-    # The third outcome, on real hardware: a box with nothing armed must answer
-    # 200 and say so. This is the exact state every drill box was in for its
-    # whole run, and the exact call that was reported as `command refused` —
-    # `grep -c` exits 1 on a zero count and was the script's last command, so a
-    # count of zero became the verdict (#188).
-    ctl pause "$b"
+    # The third outcome, on real hardware: a resume with nothing paused must
+    # answer 200 and say so (#188's rule: nothing to do is not a refusal).
+    ctl resume "$b"
     case "$CTL_CODE/$CTL_OUT" in
-      200/*"nothing to pause"*)
-        ok "pause $b with nothing armed: success, and it says nothing to pause" ;;
+      200/*"nothing to resume"*)
+        ok "resume $b with nothing paused: success, and it says nothing to resume" ;;
       *)
-        fail "pause $b with nothing armed: success, and it says nothing to pause" \
+        fail "resume $b with nothing paused: success, and it says nothing to resume" \
              "HTTP $CTL_CODE — ${CTL_OUT:-no reason in the response}" ;;
     esac
 

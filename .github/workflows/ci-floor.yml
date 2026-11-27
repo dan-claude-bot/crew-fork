@@ -1,8 +1,18 @@
 name: ci-floor
+# The floor's own loop. fleet-floor/test/run.sh is four independent parts
+# (#902): a pull request runs the parts its changed paths need
+# (fleet-floor/test/parts.map, through `run.sh --print-parts`), one job per
+# part, so the wall time is the longest part and not their sum. A push to
+# main, the weekly schedule and a dispatch run every part. The static checks
+# run once, in their own job. The job named `ci-floor` at the end is the one
+# verdict readers and the board look for; it reds if any leg did.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths: ['fleet-floor/**', '.github/workflows/ci-floor.yml']
+    # cli/crew and shared/lib/host/** since #902: a member's actions on the
+    # floor run the CLI's own verbs over the host library (#898), so a change
+    # to either alone is a change to what the floor does.
+    paths: ['fleet-floor/**', '.github/workflows/ci-floor.yml', 'cli/crew', 'shared/lib/host/**']
   # The floor's own paths only (#756): the no-browser half of this suite runs
   # in ci-shell's matrix on every engine change, so this workflow — the
   # browser walk — runs when the floor moves, weekly on main, and by hand on a
@@ -20,8 +30,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: ci-floor
+  plan:
+    name: plan
+    # Draft pushes are checkpoints, not proposals. Pushes have no PR payload.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    outputs:
+      parts: ${{ steps.plan.outputs.parts }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          # Any doubt is every part: the API failing, or more files than the
+          # API lists (then we do not know what we did not see). A renamed
+          # file counts by both its names.
+          all=1
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            if files="$(gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files?per_page=100" \
+                          --jq '.[] | .filename, (.previous_filename // empty)')"; then
+              if [ "$(printf '%s\n' "$files" | sed '/^$/d' | wc -l)" -lt 300 ]; then all=0; fi
+            fi
+          fi
+          if [ "$all" -eq 1 ]; then
+            parts="$(fleet-floor/test/run.sh --print-parts)"
+          else
+            printf '%s\n' "$files"
+            parts="$(printf '%s\n' "$files" | fleet-floor/test/run.sh --print-parts --paths-from -)"
+          fi
+          json="$(printf '%s\n' "$parts" | sed '/^$/d' | jq -R . | jq -cs .)"
+          echo "parts=$json"
+          echo "parts=$json" >>"$GITHUB_OUTPUT"
+
+  static:
+    name: static
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
@@ -47,16 +91,46 @@ jobs:
           shellcheck -x fleet-floor/build.sh fleet-floor/server/probe.sh fleet-floor/test/*.sh fleet-floor/test/floor/*.sh fleet-floor/test/stub-box
       - name: python syntax (collector)
         run: python3 -m py_compile fleet-floor/server/floor.py fleet-floor/server/floor/*.py
-      - name: fleet-floor tests (collector + page)
+      - name: index.html is up to date
+        run: |
+          fleet-floor/build.sh
+          git diff --exit-code -- fleet-floor/index.html \
+            || { echo "::error::fleet-floor/index.html is stale — run fleet-floor/build.sh"; exit 1; }
+
+  part:
+    name: floor ${{ matrix.part }}
+    needs: plan
+    if: needs.plan.outputs.parts != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.plan.outputs.parts) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: fleet-floor tests (one part)
         run: |
           npm install --no-save playwright-core >/dev/null
           for c in "$CHROME_PATH" /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium-browser /usr/bin/chromium; do
             [ -n "$c" ] && [ -x "$c" ] && { export PW_CHROME="$c"; break; }
           done
           echo "browser: ${PW_CHROME:-<none found>}"
-          FLOOR_TEST_REQUIRE_BROWSER=1 fleet-floor/test/run.sh
-      - name: index.html is up to date
+          FLOOR_TEST_REQUIRE_BROWSER=1 fleet-floor/test/run.sh --part "${{ matrix.part }}"
+
+  check:
+    name: ci-floor
+    needs: [plan, static, part]
+    # Reads every leg, including a skipped matrix (a change no part covers)
+    # and a cancelled one; the draft gate makes plan skip, and this with it.
+    if: ${{ !cancelled() && needs.plan.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: every leg green
         run: |
-          fleet-floor/build.sh
-          git diff --exit-code -- fleet-floor/index.html \
-            || { echo "::error::fleet-floor/index.html is stale — run fleet-floor/build.sh"; exit 1; }
+          echo "plan: ${{ needs.plan.result }} (parts=${{ needs.plan.outputs.parts }})"
+          echo "static: ${{ needs.static.result }}"
+          echo "part: ${{ needs.part.result }}"
+          case "${{ needs.plan.result }}/${{ needs.static.result }}/${{ needs.part.result }}" in
+            success/success/success|success/success/skipped) echo "ci-floor: green" ;;
+            *) echo "::error::ci-floor: a leg is not green"; exit 1 ;;
+          esac

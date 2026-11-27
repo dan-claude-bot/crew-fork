@@ -301,6 +301,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/logs":
             return self.serve_log(qs)
 
+        if path == "/api/health":
+            # A member's last 24 hours by status (#899): what the health panel
+            # draws. Read from the store, which the poll lands one row per
+            # change into; a box off the roster is a 404, never a guess.
+            box = (qs.get("box") or [""])[0]
+            if box not in {u["box"] for u in read_roster()}:
+                return self.send_json(404, {"error": "unknown box %r" % box})
+            from floor import store as fleet_store
+            return self.send_json(200, fleet_store.health(box))
+
         if path == "/healthz":
             return self.send_bytes(200, "text/plain; charset=utf-8", b"ok\n")
 

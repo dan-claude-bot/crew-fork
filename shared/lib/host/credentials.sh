@@ -161,6 +161,74 @@ esac
 CREDENTIALS_SH
 }
 
+# host_credentials_remove_sh — stdin: one line, the service: `gh`, `agent` or
+# `tg` (#898). The member's login for it is REMOVED from the box — the
+# operator's call, made knowing the member cannot work until it is set again.
+# What set writes is what goes: gh's login (hosts.yml, through `gh auth
+# logout` and then the file itself), every env kind of the agent in
+# credentials.env, every file and file-fn path of its profile, codex's own
+# login; tg's two files. One verdict line; rc 0 removed (or nothing was
+# there), 1 something could not be removed, 2 a bad request.
+host_credentials_remove_sh() {
+  cat <<'CREDENTIALS_REMOVE_SH'
+# ---CREDENTIALS_REMOVE_SH---
+umask 077
+DUTY_DIR="${DUTY_DIR:-$HOME/duty}"
+CRED_ENV="$HOME/.config/crew/credentials.env"
+IFS=' ' read -r svc _ || { echo "credentials: nothing arrived — nothing removed" >&2; exit 2; }
+case "$svc" in
+  gh)
+    gh auth logout --hostname github.com >/dev/null 2>&1 </dev/null || true
+    rm -f "$HOME/.config/gh/hosts.yml" || { echo "gh: hosts.yml could not be removed"; exit 1; }
+    if gh auth status --hostname github.com >/dev/null 2>&1; then
+      echo "gh: removed from hosts.yml, but gh still reads a login (a GH_TOKEN in its environment?)"; exit 1
+    fi
+    echo "gh: removed — the box has no GitHub login"
+    ;;
+  agent)
+    # shellcheck disable=SC1091
+    [ -r "$DUTY_DIR/conf/instance.conf" ] && . "$DUTY_DIR/conf/instance.conf"
+    agent="${BOT_AGENT:-}"; conf="$DUTY_DIR/conf/agents/$agent.conf"
+    { [ -n "$agent" ] && [ -r "$conf" ]; } || { echo "agent: this box names no agent profile (is it hired?) — nothing removed" >&2; exit 2; }
+    # shellcheck disable=SC1090
+    . "$conf"
+    envs=""; failed=""
+    for s in ${AGENT_CRED_KINDS:-}; do
+      how="${s#*:}"; where="${how#*:}"; how="${how%%:*}"
+      case "$how" in
+        env) envs="$envs $where" ;;
+        file) rm -f "$HOME/$where" || failed="$failed $where" ;;
+        file-fn) path="$("$where" 2>/dev/null)"; [ -z "$path" ] || rm -f "$path" || failed="$failed $path" ;;
+        codex-login) codex logout >/dev/null 2>&1 </dev/null || true ;;
+      esac
+    done
+    if [ -f "$CRED_ENV" ] && [ -n "$envs" ]; then
+      tmp="$(mktemp "$CRED_ENV.XXXXXX")" || { echo "agent: credentials.env could not be rewritten"; exit 1; }
+      awk -v drop="$envs" 'BEGIN { n = split(drop, d, " "); for (i = 1; i <= n; i++) skip["export " d[i]] = 1 }
+        { split($0, kv, "="); if (!(kv[1] in skip)) print }' "$CRED_ENV" >"$tmp" \
+        && chmod 600 "$tmp" && mv -f "$tmp" "$CRED_ENV" || { rm -f "$tmp"; echo "agent: credentials.env could not be rewritten"; exit 1; }
+    fi
+    [ -z "$failed" ] || { echo "agent: could not remove:$failed"; exit 1; }
+    # The verdict is the profile's own local reading, with the env as it is now.
+    for v in $envs; do unset "$v"; done
+    # shellcheck disable=SC1090
+    [ ! -r "$CRED_ENV" ] || . "$CRED_ENV"
+    rc=0; bot_cli_present || rc=$?
+    case "$rc" in
+      0) echo "agent: removed what crew set ($agent), but $agent still reads as logged in (a login crew did not set?)"; exit 1 ;;
+      *) echo "agent: removed ($agent) — the box has no $agent login" ;;
+    esac
+    ;;
+  tg)
+    rm -f "$HOME/.tg_bot_token" "$HOME/.tg_chat_id" || { echo "tg: the bot token could not be removed"; exit 1; }
+    echo "tg: removed — the box sends no alerts"
+    ;;
+  *) echo "credentials: the service is gh, agent or tg — nothing removed" >&2; exit 2 ;;
+esac
+# ---END---
+CREDENTIALS_REMOVE_SH
+}
+
 # host_credentials_export_sh — the member's live credentials, as ONE line on
 # stdout, ALWAYS: `CREDS1 <files> <env>` — `CREDS1 - -` when it has none — or
 # `CREDS-FAIL <why>` when they could not be read (round 14: a reply with no

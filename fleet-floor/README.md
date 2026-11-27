@@ -189,11 +189,15 @@ minutes before `run_session`'s own timeout resolves it.
   queue chips are the work the **last tick actually detected**, not a
   placeholder list. A box is **SILENT** when it has not logged a line for two
   tick boundaries — the same death rule the engine uses.
-- **Control** — every action is applied by the host: pause/resume comment and
-  restore the box's crontab line — and a box with no armed `tick.sh` line
-  answers **`nothing to pause`** at 200, because an action with nothing to do
-  is not a refusal (#188) — power/restart are `box down`/`box start`, with
-  one exception: **force stop** is `box incus <box> -- stop --force`, its own
+- **Control** — a member's lifecycle is the CLI's own verbs (#898,
+  `floor/member.py`): **Stop** is `crew stop` — held off, keeping its claims,
+  finishing its run unless "Force stop" is ticked — and **Start** is `crew
+  start`; **Pause** is `crew pause` (frozen in place) and **Resume** `crew
+  resume` (the same session continues); **Unhire** is `crew unhire` (claims
+  back to the board, box stopped and kept); a pool service set to *none*
+  is `crew logout`. The host tick obeys the intent these write and never
+  starts a held member, which the page draws **HELD** with the hold's own
+  sentence. Restart is `box down`/`box start`, with one exception: **force stop** is `box incus <box> -- stop --force`, its own
   action and never an escalation from a graceful one, and **restart** takes
   that same path *only* where the box has stopped answering the heartbeat, so
   a guest that cannot schedule its own shutdown can still be stopped (#486).
@@ -223,7 +227,8 @@ no build step, no dependencies.
 | `/api/roster` | GET | the fleet's definition as it is on disk: members, the agent and role profiles a line may name, the path, and the `etag` a save hands back (#764) |
 | `/api/actions` | GET | what is in flight right now: per box the action holding it, its step and age; for the fleet the action and its progress (#766) |
 | `/api/credentials` | GET | per member, the credential kinds its gh and its agent take — never a credential (#765) |
-| `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off`, `force-stop`, `start-all`, `stop-all`, `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set`, `credentials-set` |
+| `/api/command` | POST | `message`, `pause`, `resume`, `restart`, `power-on/off` (`power-off` takes `force: true`), `force-stop`, `unhire` (`logout: true`), `logout` (`service`), `start-all`, `stop-all` (`force: true`), `wake-silent`, `registry-set`, `registry-override`, `registry-inherit`, `roster-set`, `credentials-set` |
+| `/api/health` | GET | `?box=<name>`: the member's last 24 hours by status — totals and segments, from the store's one row per change (#899) |
 | `/api/jobs` | GET | the host's running job, whichever fleet started it, and this fleet's recent jobs with their output; `?id=<job>` for one job in full (#815) |
 | `/api/jobs` | POST | `{"verb", "box"?, "plan"?, "confirm"?}` with verb one of `up`, `create`, `hire`, `upgrade`, `down`: run one of the CLI's verbs as a job. Up and Create run only as `plan: true` first, then with `confirm: <plan id>` (#815) |
 | `/api/fleets` | GET | the host's fleets: id, directory, member count, whether the host schedule walks it, and its page `/f/<id>/` (#814) |
@@ -238,11 +243,24 @@ cannot be messaged; the request is refused rather than queued.
 
 ### Actions are claimed while in flight (#766)
 
-**Box actions.** These are pause, resume, restart, power, force-stop, a message and a credential set. Each one **claims its box** for its duration. A second action on that box, whether from another click, another tab or another operator, is refused `409` with `busy: true`. The reply names the first action, its step, its age and who started it, and nothing is fired.
+**Box actions.** These are pause, resume, restart, power, force-stop, unhire, logout, a message and a credential set. Each one **claims its box** for its duration. A second action on that box, whether from another click, another tab or another operator, is refused `409` with `busy: true`. The reply names the first action, its step, its age and who started it, and nothing is fired.
 
 **Fleet actions.** Start all, stop all and wake silent **claim the fleet**, one at a time. Each box is claimed only while its own call runs. A box another action holds is left alone and its row says so (`ok: null`, `step: busy`).
 
 **Claims never block.** Busy is an answer, not a queue.
+
+**One action control (#900).** Every page control that fires an action
+declares it (`data-act`, `data-scope`), and one binder gives each the same
+behaviour: disabled the moment it is pressed, its row saying "Pausing… 12s ·
+step" while it runs; every control on the same member disabled, with a tooltip
+naming what holds it, whether this tab or another operator asked; and the
+verdict beside the controls when it ends. Confirmations — Stop's force
+checkbox, Unhire's logout checkbox — are one shared dialog.
+
+**Health (#899).** A member's page shows its last 24 hours by status: one
+bar per status family, its length the share of the time the store covers,
+moving to the new length on every poll, and a 24-hour strip of when. The poll
+lands each member's status in the store only when it changes.
 
 **What every tab sees.** The page reads `GET /api/actions`: every second while anything is in flight, every few seconds otherwise. So in every tab:
 
@@ -339,9 +357,33 @@ the edit is live at the next one.
 fleet-floor/test/run.sh                 # collector + box-side + CLI + page, no fleet needed
                                         #   (it builds its own operator definition under $TMP)
 fleet-floor/test/run.sh --no-browser    # everything except the page
+fleet-floor/test/run.sh --part page     # one part: collector, cli, page or page-live
+fleet-floor/test/run.sh --changed main  # only the parts your diff against main needs
 drill/rehearsal-app.sh                  # the same, against this host's REAL boxes
 drill/rehearsal-all.sh                  # three roles, then the app
 ```
+
+`run.sh` is four **parts** (#902), and each one is its own process with its
+own scratch dir, stub state, operator config and collectors, so no part reads
+what another left behind:
+
+| Part | What it runs |
+|---|---|
+| `collector` | the Python suites (`test/*.py`), `test/floor/*.sh` except `workspaces.sh`, and `test/boxside.sh`, against one collector |
+| `cli` | `test/cli.sh`: `crew floor` itself |
+| `page` | the walk-count ledger rows, then `browser.js` live and in DEMO mode, and `motion.js`, against a collector of its own |
+| `page-live` | `test/floor/workspaces.sh` (the workspaces and lobby walks), then `stale.js`, `churn.js`, `transition.js`, `stopped.js` and `hired.js`, each on a collector of its own |
+
+With no `--part`, every part runs, one after another, and the run ends with
+each part's counts and wall time and one summary over all of them. With
+`--changed <ref>`, `test/parts.map` turns the diff against `<ref>`'s merge
+base (uncommitted and untracked files included) into the parts it needs. The
+map is plain text, one `<pattern><TAB><parts>` rule per line, first match
+wins; a path no rule names runs every part, so a missing row costs time and
+never coverage. `--print-parts` prints the selection without running it.
+`ci-floor` runs one job per part, chosen by the same map on a pull request
+(every part on a push to `main`, the weekly run and a dispatch), and its job
+named `ci-floor` is green only when every part is.
 
 Two halves, because neither can do the other's job:
 
@@ -417,6 +459,7 @@ fleet-floor/
   server/floor.py   # the collector: serves the page, polls the fleet, applies actions
   server/probe.sh   # read-only duty evidence reader, run inside a box via box exec
   test/run.sh       # collector + box-side + CLI + page, against a stub box CLI
+  test/parts.map    # which of run.sh's parts a changed path needs
   test/floor/       # collector assertions, one suite per server/floor/ module
   test/boxside.sh   # runs probe.sh and the message script FOR REAL
   test/cli.sh       # `crew floor` arguments, the auth decision, the #244 refusal

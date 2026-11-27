@@ -608,6 +608,8 @@ case "${1:-}" in
     sc="$(scenario_of "$name")"
 
     [ "$st" = "stopped" ] && { echo "Error: instance is not running" >&2; exit 1; }
+    # A frozen guest runs nothing (#898).
+    [ "$st" = "frozen" ] && { echo "Error: Instance is frozen" >&2; exit 1; }
     [ "$sc" = "unreachable" ] && { echo "Error: instance is not running" >&2; exit 1; }
     [ "$sc" = "wedged" ] && { sleep 120; exit 1; }   # never answers — probe must time out
 
@@ -620,6 +622,22 @@ case "${1:-}" in
     # scripts being matched, not strings to expand: $HOME is the box's.
     case "$script" in
       *'echo floor-ready'*) echo floor-ready ;;  # a started guest answering (#763 round 12)
+      true) : ;;                                   # crew's tick_box_ready: the guest answers
+      *'printf "busy %s'*)                         # crew's drain_probe: is a duty running? (#898) — probe.sh reads the lock too, so the pattern is drain_probe's own reply
+        if [ -s "$STATEDIR/$name.busy" ]; then echo "busy $(cat "$STATEDIR/$name.busy")"; else echo "idle 0"; fi ;;
+      *'---CREDENTIALS_REMOVE_SH---'*)             # a login removed from the box (#898)
+        _svc="$(head -n1 "$stdin_copy")"
+        printf '%s\n' "$_svc" >>"$STATEDIR/$name.removed"
+        case "$_svc" in
+          gh) echo "gh: removed — the box has no GitHub login" ;;
+          agent) echo "agent: removed ($(roster_agent_of "$name")) — the box has no $(roster_agent_of "$name") login" ;;
+          tg) echo "tg: removed — the box sends no alerts" ;;
+          *) echo "credentials: the service is gh, agent or tg — nothing removed" >&2; exit 2 ;;
+        esac ;;
+      *'---RELEASE_CLAIMS_SH---'*)                 # an unhire hands the claims back (#898)
+        cp "$stdin_copy" "$STATEDIR/$name.release-input"
+        echo "  heavy-duty/crew#12: released — back to ready"
+        echo "released 1 kept 0" ;;
       *'---CREDENTIALS_SH---'*)                  # the credentials shell (#765)
         # The header is the first stdin line; the rest is the secret, kept
         # apart under the state dir so a suite can prove it arrived as stdin
@@ -1059,6 +1077,13 @@ case "${1:-}" in
         # Kills the guest whatever it is doing — which is the whole point, so
         # it answers on the box the graceful verb hangs against.
         echo stopped > "$STATEDIR/$_iname.state"; echo "force-stopped $_iname" ;;
+      # A member's Pause and Resume (#898): incus freezes a RUNNING instance
+      # and refuses anything else; `start` on a frozen one thaws it.
+      "pause")
+        [ "$(state_of "$_iname")" = running ] || { echo "Error: The instance isn't running" >&2; exit 1; }
+        echo frozen > "$STATEDIR/$_iname.state"; echo "frozen $_iname" ;;
+      "start")
+        echo running > "$STATEDIR/$_iname.state"; echo "thawed $_iname" ;;
       *) echo "stub-box: unhandled incus passthrough '$*'" >&2; exit 2 ;;
     esac ;;
   start) echo running > "$STATEDIR/$2.state"; echo "started $2" ;;

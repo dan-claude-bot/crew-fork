@@ -203,6 +203,12 @@ t host-cap-raised-is-said 1 "$(grep -c '(host cap 3)$' <<<"$OUT")"
 echo paused >"$TMP/p"; mkdir -p "$FLEETS/dev/store/paused"; : >"$FLEETS/dev/store/paused/alpha"
 sed -i '/^HOST_MAX_RUNNING=3$/d' "$FLEETS/lf/fleet.conf"
 capture --fleet lf tick --dry-run
-t host-cap-a-paused-box-elsewhere-does-not-count 1 "$(grep -c '1 in the host.s other fleets (host cap 2)$' <<<"$OUT")"
+# A box another fleet's operator holds counts while it still holds its memory
+# — running, as this fleet's own count reads it (#898) — and not once stopped.
+t host-cap-a-held-box-elsewhere-still-running-counts 1 "$(grep -c '2 in the host.s other fleets (host cap 2)$' <<<"$OUT")"
+echo stopped >"$STATE/alpha.state"
+capture --fleet lf tick --dry-run
+t host-cap-a-held-box-elsewhere-once-stopped-does-not-count 1 "$(grep -c '1 in the host.s other fleets (host cap 2)$' <<<"$OUT")"
+rm -f "$STATE/alpha.state"
 
 suite_finish

@@ -212,6 +212,33 @@ input.woff{color:#5a6a80}
 .pgverdict{font:10.5px/1.5 var(--mono);margin-top:6px;padding:5px 9px;border-radius:6px;word-break:break-word}
 .pgverdict.bad{color:#ff8a7c;background:#ff51471a;border:1px solid #ff51473d}
 .pgverdict.good{color:#5fce9b;background:#5fce9b14;border:1px solid #5fce9b33}
+.pgverdict.work{color:var(--cyan);background:#5fd6ff10;border:1px solid #5fd6ff2e}
+.pgverdict:empty{display:none}
+/* the one confirmation dialog (#900): checkbox included */
+.askbg{position:fixed;inset:0;z-index:90;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}
+.askbox{background:#0b121d;border:1px solid #223148;border-radius:10px;max-width:460px;width:100%;padding:16px 18px;box-shadow:0 18px 50px #000c}
+.asktitle{font-size:13px;color:#e4edf7;margin-bottom:8px}
+.asktext{font-size:11px;line-height:1.55;color:#a9b9cc;margin-bottom:10px}
+.asksub{color:#f7bd4e}
+.askcheck{display:flex;gap:8px;align-items:center;font-size:11px;color:#e4edf7;margin:4px 0 8px;cursor:pointer}
+/* the operator's intent (#898): what they asked of the member, ahead of what it is doing */
+.mst.s-held{color:#f7bd4e;background:#f7bd4e1a}
+.mst.i-stopped,.mst.i-off-duty{color:#f7bd4e;background:#f7bd4e1a;border:1px solid #f7bd4e40}
+.mst.i-paused{color:#9887ef;background:#9887ef1a;border:1px solid #9887ef40}
+/* health stats (#899): the last 24 hours by status */
+.hlth{display:grid;grid-template-columns:minmax(92px,auto) 1fr auto;gap:5px 10px;align-items:center;font-size:10.5px;margin-top:6px}
+.hlth .hl{color:#a9b9cc;display:flex;align-items:center;gap:6px}
+.hlth .hl i{display:inline-block;width:8px;height:8px;border-radius:2px;flex:none}
+.hlth .hb{height:10px;background:#101a26;border-radius:2px 4px 4px 2px;overflow:hidden}
+.hlth .hb i{display:block;height:100%;width:0;border-radius:2px 4px 4px 2px;transition:width .9s cubic-bezier(.2,.8,.2,1)}
+.hlth .hv{color:#c7d4e4;text-align:right;white-space:nowrap}
+.hlth .dim{opacity:.38}
+.hstrip{position:relative;height:14px;margin-top:12px;background:#101a26;border-radius:3px;overflow:hidden}
+.hstrip i{position:absolute;top:0;bottom:0;box-shadow:inset -2px 0 0 #080d16}
+.hstrip i:hover{filter:brightness(1.25)}
+.haxis{display:flex;justify-content:space-between;font-size:9px;color:#5d7088;margin-top:3px}
+.htip{position:fixed;z-index:95;pointer-events:none;background:#0b121d;border:1px solid #223148;border-radius:6px;padding:5px 8px;font-size:10.5px;color:#e4edf7;white-space:nowrap}
+@media (prefers-reduced-motion: reduce){.hlth .hb i{transition:none}}
 .regacts{flex-wrap:wrap}
 .regacts .pgverdict{flex-basis:100%}
 @media (max-width:640px){#pagebody{padding:14px 16px 120px}.pghd{padding:10px 16px}}

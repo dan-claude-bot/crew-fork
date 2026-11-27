@@ -363,7 +363,7 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
   const stateChipWords = await page.locator('.fchip[data-f="state"]').evaluateAll((chips) =>
     chips.map((c) => c.textContent.trim()));
   eq('filter: state chips mirror the tile vocabulary',
-     JSON.stringify(['All', 'Working', 'Idle', 'Asleep', 'Suppressed', 'Limited', 'Disarmed', 'Silent']),
+     JSON.stringify(['All', 'Working', 'Idle', 'Asleep', 'Held', 'Suppressed', 'Limited', 'Disarmed', 'Silent']),
      JSON.stringify(stateChipWords));
   const stateChipBounds = await page.locator('.fchip[data-f="state"]').evaluateAll((chips) =>
     chips.map((chip) => {
@@ -383,13 +383,22 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
 
   if (LIVE && FIXTURE) {
     /* floor/actions.sh proves wake-silent resumes ff-paused. Put that fixture back in
-       its deliberately-stopped state so the three named boxes exercise both
-       sides of this page split together, then pull the refreshed snapshot
-       into the page rather than waiting for the ordinary 15-second poll. */
+       its deliberately-stopped state — a crontab a pre-#898 pause commented, on
+       a member ON DUTY — so the three named boxes exercise both sides of this
+       page split together. Written into the stub's own state: the console's
+       Pause FREEZES a member now (#898), which is a different state, and one
+       that would carry into every later test on this stub. Then any action
+       asks for the refreshed snapshot rather than waiting for the poll: a
+       resume of the stopped fixture, which has nothing to resume. */
+    const stubState = process.env.FLOOR_MAIN_STATE || process.env.FLOOR_STATE;
+    if (stubState) {
+      fs.mkdirSync(stubState, { recursive: true });
+      fs.writeFileSync(path.join(stubState, 'ff-paused.cron'), 'paused\n');
+    }
     await page.evaluate(async () => {
       await fetch(location.origin + '/api/command', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'pause', box: 'ff-paused' }),
+        body: JSON.stringify({ action: 'resume', box: 'ff-stopped' }),
       });
     });
     let disarmedMatches = [];
@@ -826,11 +835,19 @@ const eq = (name, want, got) => ok(name, String(want) === String(got), `expected
     // changes the fleet the later tests in this suite walk into.
     if (s.action === 'pause') {          // never send a bare resume: on a box an
                                          // operator had parked, that un-parks it
+      // The pause is still in flight when this lands (a member's pause is the
+      // CLI's verb, #898), and the box is claimed until it ends: a resume sent
+      // into the claim is refused 409 busy and would leave the box frozen for
+      // every later test. Retry until the claim is gone.
       await page.evaluate(async (b) => {
-        await fetch(location.origin + '/api/command', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'resume', box: b }),
-        });
+        for (let i = 0; i < 40; i++) {
+          const r = await fetch(location.origin + '/api/command', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'resume', box: b }),
+          });
+          if (r.status !== 409) return;
+          await new Promise((res) => setTimeout(res, 250));
+        }
       }, target.expect);
       await page.waitForTimeout(500);
     }

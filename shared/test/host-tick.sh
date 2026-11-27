@@ -193,13 +193,28 @@ case "$cmd" in
     else printf 'NAME\nalpha\nbeta\ngamma\n'; fi ;;
   info) printf '[{"name":"%s","status":"%s"}]\n' "$1" "$(state_of "$1")" ;;
   start) echo "start $1" >>"$HT_STATE/calls"; echo running >"$HT_STATE/$1.state" ;;
-  down)  echo "down $1" >>"$HT_STATE/calls"; echo stopped >"$HT_STATE/$1.state" ;;
+  down)  echo "down $1" >>"$HT_STATE/calls"; [ "${HT_DOWN_FAIL:-}" != "$1" ] || exit 1; echo stopped >"$HT_STATE/$1.state" ;;
+  # box's incus passthrough (#898): a member's freeze, thaw and kill.
+  incus)
+    n="$1"; shift 2; echo "incus $n $*" >>"$HT_STATE/calls"
+    case "$*" in
+      pause) [ "$(state_of "$n")" = running ] || exit 1; echo frozen >"$HT_STATE/$n.state" ;;
+      start) echo running >"$HT_STATE/$n.state" ;;
+      "stop --force") echo stopped >"$HT_STATE/$n.state" ;;
+    esac ;;
   exec)
     name="$1"; script="${*: -1}"
-    case "$script" in *'---CREDENTIALS_SH---'*) ;; *) cat >/dev/null ;; esac
+    case "$script" in *'---CREDENTIALS_SH---'*|*'---CREDENTIALS_REMOVE_SH---'*|*'---RELEASE_CLAIMS_SH---'*) ;; *) cat >/dev/null ;; esac
     [ "$(state_of "$name")" = running ] || { echo "Error: instance is not running" >&2; exit 1; }
     case "$script" in
       true) exit 0 ;;
+      # A login removed (#898): the service arrives as stdin.
+      *'---CREDENTIALS_REMOVE_SH---'*)
+        IFS= read -r svc; echo "logout $name $svc" >>"$HT_STATE/calls"; echo "$svc: removed — the box has no login" ;;
+      # An unhire's claims (#898): the repositories and labels arrive as stdin.
+      *'---RELEASE_CLAIMS_SH---'*)
+        cat >"$HT_STATE/$name.release-input"; echo "release $name" >>"$HT_STATE/calls"
+        echo "  o/r#12: released — back to ready"; echo "released 1 kept 0" ;;
       # The credentials shell (#765): the header is logged, the secret kept
       # apart — it must arrive as stdin and nowhere else.
       *'---CREDENTIALS_EXPORT_SH---'*)
@@ -255,7 +270,7 @@ ht_board() {  # ht_board <issues> <prs> <discs>
   printf '%s\n' "$1" >"$HT_STATE/board.issues"; printf '%s\n' "$2" >"$HT_STATE/board.prs"; printf '%s\n' "$3" >"$HT_STATE/board.discs"
 }
 run_crew() { env CREW_CONFIG_DIR="$CONF" HT_STATE="$STATE" PATH="$SHIM:$PATH" bash "$CLI" "$@"; }
-capture() { OUT="$(run_crew "$@" 2>&1)"; RC=$?; }
+capture() { OUT="$(run_crew "$@" 2>&1)"; RC=$?; [ -z "${HT_DEBUG:-}" ] || printf "### crew %s (rc %s)\n%s\n" "$*" "$RC" "$OUT" >>"$HT_DEBUG"; }
 calls() { grep -c "^$1" "$STATE/calls" 2>/dev/null || true; }
 # A record that lands alpha's identity and an empty ledger in the store.
 ht_record() {  # ht_record <box> <login> [ledger-line] [idle-ticks]
@@ -314,22 +329,159 @@ capture tick
 t tick-a-seen-item-is-vetoed-and-named 1 "$(grep -c 'alpha: veto ready#o/r#12:seen' <<<"$OUT")"
 t tick-a-vetoed-member-is-not-started 0 "$(calls 'start alpha')"
 
-# (4) pause and resume
+# (4) a member's intent (#898): the tick obeys it and nothing else.
 ht_board 'I 13 2026-10-23T13:00:00Z ready -' '' ''
 rm -f "$CONF/store/wake"/alpha.*
-capture pause alpha
-t pause-exits-0 0 "$RC"
-t pause-writes-the-host-marker yes "$([ -e "$CONF/store/paused/alpha" ] && echo yes || echo no)"
+echo stopped >"$STATE/alpha.state"
+capture stop alpha
+t stop-exits-0 0 "$RC"
+t stop-writes-the-intent stopped "$(cut -d' ' -f1 "$CONF/store/intent/alpha" 2>/dev/null)"
+t stop-on-a-stopped-box-says-held 1 "$(grep -c 'alpha: held (stopped) — the host tick will not start it' <<<"$OUT")"
 : >"$STATE/calls"
 capture tick
-t tick-never-starts-a-paused-member 1 "$(grep -c 'alpha: paused — left alone' <<<"$OUT")"
-t tick-paused-member-start-count 0 "$(calls 'start alpha')"
+t tick-never-starts-a-stopped-member 1 "$(grep -c 'alpha: stopped by the operator — left alone' <<<"$OUT")"
+t tick-stopped-member-start-count 0 "$(calls 'start alpha')"
+t tick-stopped-member-board-is-not-marked-seen 0 "$(find "$CONF/store/wake" -name 'alpha.*' | wc -l | tr -d ' ')"
+capture status
+t status-leads-with-the-hold 1 "$(grep -c 'alpha .*stopped by operator — Start lifts it' <<<"$OUT")"
+: >"$STATE/calls"
+capture start alpha
+t start-exits-0 0 "$RC"
+t start-lifts-the-intent no "$([ -e "$CONF/store/intent/alpha" ] && echo yes || echo no)"
+t start-brings-the-box-up 1 "$(calls 'start alpha')"
+t start-restores-its-crontab 1 "$(calls 'crontab alpha')"
+t start-starts-no-session 0 "$(calls 'wake alpha')"
+# A legacy pause marker (pre-#898) holds as a stop, and resume lifts it.
+echo stopped >"$STATE/alpha.state"; mkdir -p "$CONF/store/paused"; date -u '+%Y-%m-%dT%H:%M:%SZ' >"$CONF/store/paused/alpha"
+: >"$STATE/calls"
+capture tick
+t tick-a-legacy-pause-marker-holds-as-stopped 1 "$(grep -c 'alpha: stopped by the operator — left alone' <<<"$OUT")"
 capture resume alpha
-t resume-removes-the-host-marker no "$([ -e "$CONF/store/paused/alpha" ] && echo yes || echo no)"
-echo running >"$STATE/alpha.state"; : >"$STATE/calls"
+t resume-on-a-legacy-stop-is-start 1 "$(grep -c 'alpha: it is stopped, not paused — resuming it is Start' <<<"$OUT")"
+t resume-on-a-legacy-stop-removes-the-marker no "$([ -e "$CONF/store/paused/alpha" ] && echo yes || echo no)"
+# A graceful stop on a member mid-run: it finishes, then the tick stops it.
+echo running >"$STATE/alpha.state"; printf 'held 40\n' >"$STATE/alpha.lock"; : >"$STATE/calls"
+capture stop alpha
+t stop-mid-run-is-stopping 1 "$(grep -c 'alpha: stopping — it finishes the run it is in' <<<"$OUT")"
+t stop-mid-run-records-stopping stopping "$(cut -d' ' -f4 "$CONF/store/intent/alpha")"
+t stop-mid-run-comments-its-crontab 1 "$(calls 'crontab alpha')"
+t stop-mid-run-does-not-stop-the-box 0 "$(calls 'down alpha')"
+: >"$STATE/calls"
+capture tick
+t tick-a-stopping-member-finishes-its-run 1 "$(grep -c 'alpha: stopped — finishing the run it is in' <<<"$OUT")"
+t tick-a-stopping-member-is-not-stopped-mid-run 0 "$(calls 'down alpha')"
+: >"$STATE/alpha.lock"; : >"$STATE/calls"
+capture tick
+t tick-a-stopping-member-is-drained-and-stopped-once-idle "drain alpha|down alpha" "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+t tick-the-stopping-flag-is-cleared stopped "$(cut -d' ' -f1,4 "$CONF/store/intent/alpha" | tr -d ' ')"
+t tick-a-stopped-member-stays-held-after 1 "$([ -e "$CONF/store/intent/alpha" ] && echo 1 || echo 0)"
+# --force ends the run now.
+rm -f "$CONF/store/intent/alpha"; echo running >"$STATE/alpha.state"; printf 'held 40\n' >"$STATE/alpha.lock"; : >"$STATE/calls"
+capture stop alpha --force
+t stop-force-ends-the-run-now-with-incus-stop-force 1 "$(calls 'incus alpha stop --force')"
+t stop-force-execs-nothing-into-the-box-first 0 "$(( $(calls 'crontab alpha') + $(calls 'drain alpha') + $(calls 'probe alpha') ))"
+t stop-force-says-so 1 "$(grep -c 'alpha: stopped (force) — its session ended where it stood' <<<"$OUT")"
+t stop-force-leaves-it-held stopped "$(cut -d' ' -f1,4 "$CONF/store/intent/alpha" | tr -d ' ')"
+# A graceful stop that does not take never becomes a kill (#486 D1).
+rm -f "$CONF/store/intent/alpha"; echo running >"$STATE/alpha.state"; : >"$STATE/alpha.lock"; : >"$STATE/calls"
+HT_DOWN_FAIL=alpha capture stop alpha
+t stop-a-graceful-stop-that-fails-is-said 1 "$(grep -c "alpha: stop FAILED — it did not stop gracefully; 'crew stop alpha --force' ends it" <<<"$OUT")"
+t stop-a-graceful-stop-that-fails-never-forces 0 "$(calls 'incus alpha')"
+t stop-a-graceful-stop-that-fails-still-holds stopped "$(cut -d' ' -f1 "$CONF/store/intent/alpha")"
+# A paused member is thawed, then stopped gracefully.
+rm -f "$CONF/store/intent/alpha"; echo frozen >"$STATE/alpha.state"; : >"$STATE/calls"
+capture stop alpha
+t stop-a-paused-member-is-thawed-then-stopped-gracefully "incus alpha start|down alpha" "$(grep -E '^(incus alpha|down alpha)' "$STATE/calls" | paste -sd'|' -)"
+: >"$STATE/alpha.lock"
+# Pause freezes a running member; resume thaws the same session.
+rm -f "$CONF/store/intent/alpha"; echo running >"$STATE/alpha.state"; : >"$STATE/calls"
 capture pause alpha
-t pause-on-a-running-box-edits-its-crontab 1 "$(calls 'crontab alpha')"
+t pause-exits-0 0 "$RC"
+t pause-freezes-the-box 1 "$(calls 'incus alpha pause')"
+t pause-writes-the-intent paused "$(cut -d' ' -f1 "$CONF/store/intent/alpha")"
+echo stopped >"$STATE/beta.state"
+capture pause beta
+t pause-refuses-a-stopped-member 1 "$RC"
+t pause-on-a-stopped-member-says-why 1 "$(grep -c 'only a running member can be paused' <<<"$OUT")"
+: >"$STATE/calls"
+capture tick
+t tick-leaves-a-paused-member-frozen 1 "$(grep -c 'alpha: paused since .* — left frozen' <<<"$OUT")"
+t tick-a-frozen-member-is-not-thawed-or-stopped 0 "$(( $(calls 'incus alpha start') + $(calls 'down alpha') ))"
+capture status
+t status-a-frozen-member-reads-paused 1 "$(grep -c 'alpha *paused .*paused by operator since' <<<"$OUT")"
 capture resume alpha
+t resume-thaws-the-box 1 "$(calls 'incus alpha start')"
+t resume-lifts-the-intent no "$([ -e "$CONF/store/intent/alpha" ] && echo yes || echo no)"
+t resume-says-the-session-continues 1 "$(grep -c 'alpha: resumed — its session continues where it was' <<<"$OUT")"
+# A freeze lost to a host restart: the box is stopped, the member held as stopped.
+capture pause alpha
+echo stopped >"$STATE/alpha.state"; : >"$STATE/calls"
+capture tick
+t tick-a-lost-freeze-is-said 1 "$(grep -c 'alpha: paused, but the box is stopped — its frozen state did not survive' <<<"$OUT")"
+t tick-a-lost-freeze-holds-as-stopped stopped "$(cut -d' ' -f1 "$CONF/store/intent/alpha")"
+t tick-a-lost-freeze-is-not-started 0 "$(calls 'start alpha')"
+rm -f "$CONF/store/intent/alpha"
+# A frozen box counts toward the cap: it keeps its memory.
+printf 'FLEET_MAX_RUNNING=1\n' >>"$CONF/fleet.conf"
+echo frozen >"$STATE/alpha.state"; printf 'paused 2026-10-23T12:00:00Z op\n' >"$CONF/store/intent/alpha"
+echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
+ht_board 'P 22 2026-10-23T16:30:00Z someone 0 codex-bot' '' ''
+rm -f "$CONF/store/wake"/beta.*; : >"$STATE/calls"
+capture tick
+t tick-a-frozen-member-holds-its-place-on-the-cap 1 "$(grep -c 'beta: held — 1 of 1 boxes running' <<<"$OUT")"
+printf 'FLEET_MAX_RUNNING=2\n' >>"$CONF/fleet.conf"
+rm -f "$CONF/store/intent/alpha"; echo stopped >"$STATE/alpha.state"
+# Unhire: claims back as the member, disarmed, stopped, kept; hire brings it back.
+echo running >"$STATE/alpha.state"; : >"$STATE/calls"
+capture unhire alpha
+t unhire-exits-0 0 "$RC"
+t unhire-hands-the-claims-back 1 "$(calls 'release alpha')"
+t unhire-reads-the-fleets-repositories-and-labels "o/r|--|claimed ready" "$(paste -sd'|' "$STATE/alpha.release-input")"
+t unhire-says-each-release 1 "$(grep -c 'alpha: o/r#12: released — back to ready' <<<"$OUT")"
+t unhire-disarms-and-stops "crontab alpha|drain alpha|down alpha" "$(grep -E '^(crontab|drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+t unhire-writes-off-duty off-duty "$(cut -d' ' -f1,4 "$CONF/store/intent/alpha" | tr -d ' ')"
+: >"$STATE/calls"
+capture tick
+t tick-never-starts-an-off-duty-member 1 "$(grep -c 'alpha: off-duty by the operator — left alone' <<<"$OUT")"
+capture start alpha
+t start-refuses-an-off-duty-member 1 "$RC"
+t start-on-off-duty-names-hire 1 "$(grep -c "crew hire alpha" <<<"$OUT")"
+: >"$STATE/calls"
+capture unhire alpha
+t unhire-an-off-duty-member-is-a-no-op 1 "$(grep -c 'alpha: off duty already' <<<"$OUT")"
+t unhire-again-starts-nothing 0 "$(( $(calls 'start alpha') + $(calls 'release alpha') ))"
+capture up
+t up-leaves-an-off-duty-member-alone 1 "$(grep -c 'alpha: off-duty by the operator — left alone' <<<"$OUT")"
+# A stopped member unhired is started once, to hand its claims back as itself.
+rm -f "$CONF/store/intent/alpha"; echo stopped >"$STATE/alpha.state"; : >"$STATE/calls"
+capture unhire alpha --logout
+t unhire-a-stopped-member-starts-it-once "start alpha|crontab alpha|release alpha" "$(grep -E '^(start|crontab|release) alpha' "$STATE/calls" | paste -sd'|' -)"
+t unhire-logout-removes-every-login "logout alpha agent|logout alpha gh|logout alpha tg" "$(grep '^logout alpha' "$STATE/calls" | sort | paste -sd'|' -)"
+t unhire-ends-stopped stopped "$(cat "$STATE/alpha.state")"
+rm -f "$CONF/store/intent/alpha" "$CONF/store/logout"/alpha.*
+# Logout: the login removed from a running box; the tick does not wake it.
+echo running >"$STATE/alpha.state"; : >"$STATE/calls"
+capture logout alpha agent
+t logout-exits-0 0 "$RC"
+t logout-removes-the-login-from-the-box 1 "$(calls 'logout alpha agent')"
+t logout-records-it applied "$(cut -d' ' -f2 "$CONF/store/logout/alpha.agent")"
+ht_board 'I 17 2026-10-23T17:00:00Z ready -' '' ''
+rm -f "$CONF/store/wake"/alpha.*; printf '0\n' >"$STATE/alpha.idle"; : >"$STATE/calls"
+capture tick
+t tick-a-member-with-no-agent-login-is-not-woken 1 "$(grep -c 'alpha: no agent login (removed by the operator) — not woken' <<<"$OUT")"
+t tick-no-wake-without-a-login 0 "$(calls 'wake alpha')"
+t tick-its-board-stays-unread 0 "$(find "$CONF/store/wake" -name 'alpha.*' | wc -l | tr -d ' ')"
+# A login on a stopped box is owed, and applied at its next start.
+rm -f "$CONF/store/logout"/alpha.*; echo stopped >"$STATE/alpha.state"; : >"$STATE/calls"
+capture logout alpha gh
+t logout-on-a-stopped-box-is-owed owed "$(cut -d' ' -f2 "$CONF/store/logout/alpha.gh")"
+t logout-on-a-stopped-box-touches-nothing 0 "$(calls 'logout alpha')"
+capture start alpha
+t start-applies-an-owed-logout-first 1 "$(calls 'logout alpha gh')"
+t start-marks-the-owed-logout-applied applied "$(cut -d' ' -f2 "$CONF/store/logout/alpha.gh")"
+rm -f "$CONF/store/logout"/alpha.* "$CONF/store/intent"/*
+echo stopped >"$STATE/alpha.state"
+ht_board 'I 13 2026-10-23T13:00:00Z ready -' '' ''
 
 # (5) dry run acts on nothing
 echo stopped >"$STATE/alpha.state"; echo stopped >"$STATE/gamma.state"; rm -f "$CONF/store/wake"/alpha.*; : >"$STATE/calls"
@@ -499,7 +651,7 @@ ht_board 'I 12 2026-10-23T10:00:00Z ready -' '' ''
 # shipped again here): the board gives it no reason, which is what makes
 # its idle counter the thing on trial.
 ht_record alpha dan-claude-bot 'o/r#12 2026-10-23T10:00:00Z'; ht_record beta codex-bot; ht_record gamma triage-bot
-rm -f "$CONF/store/wake"/* "$CONF/store/paused"/* "$STATE"/*.lock "$STATE"/*.idle
+rm -f "$CONF/store/wake"/* "$CONF/store/paused"/* "$CONF/store/intent"/* "$CONF/store/logout"/* "$STATE"/*.lock "$STATE"/*.idle
 # (1) a running box past the idle threshold whose duty lock is HELD is never stopped
 echo running >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
 printf '4\n' >"$STATE/alpha.idle"; printf '90\n' >"$STATE/alpha.lock"
@@ -534,23 +686,22 @@ t breaker-a-running-box-is-vetoed-while-its-gate-holds 1 "$(grep -c 'alpha: veto
 # (3) a pause holds: a paused box that is running is drained and stopped, and
 # never counts toward the cap.
 echo running >"$STATE/alpha.state"; printf '0\n' >"$STATE/alpha.idle"
-capture pause alpha
 : >"$STATE/calls"
-capture tick
-t pause-a-paused-running-box-is-drained-and-stopped "drain alpha|down alpha" "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
-t pause-the-stop-is-said 1 "$(grep -c 'alpha: paused — drained and stopped' <<<"$OUT")"
-# ...and off the cap: with room for ONE, a paused running box does not hold
-# a member with work; the member starts.
+capture stop alpha
+t stop-an-idle-running-member-is-drained-and-stopped-at-once "drain alpha|down alpha" "$(grep -E '^(drain|down) alpha' "$STATE/calls" | paste -sd'|' -)"
+t stop-the-hold-is-said 1 "$(grep -c 'alpha: held — the host tick will not start it' <<<"$OUT")"
+# ...and off the cap: with room for ONE, a held member that is stopped does
+# not hold a member with work; the member starts.
 printf 'FLEET_MAX_RUNNING=1\n' >>"$CONF/fleet.conf"
-echo running >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
+echo stopped >"$STATE/alpha.state"; echo stopped >"$STATE/beta.state"; echo stopped >"$STATE/gamma.state"
 ht_board 'P 21 2026-10-23T16:00:00Z someone 0 codex-bot' '' ''
 rm -f "$CONF/store/wake"/beta.*; : >"$STATE/calls"
 capture tick
-t pause-a-paused-box-is-off-the-cap 0 "$(grep -c 'beta: held' <<<"$OUT")"
-t pause-the-member-with-work-starts-beside-a-paused-box 1 "$(calls 'start beta')"
+t stop-a-held-stopped-member-is-off-the-cap 0 "$(grep -c 'beta: held' <<<"$OUT")"
+t stop-the-member-with-work-starts-beside-a-held-one 1 "$(calls 'start beta')"
 printf 'FLEET_MAX_RUNNING=2\n' >>"$CONF/fleet.conf"
 echo stopped >"$STATE/beta.state"
-capture resume alpha
+capture start alpha
 # (4) triage's coarse board reason: a running triage box the movement bought
 # nothing for, IDLE_TICKS_BEFORE_STOP times, is not woken for it again and
 # is stopped; a precise reason is never set aside this way. The movement here

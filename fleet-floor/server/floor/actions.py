@@ -18,6 +18,8 @@ from floor.pool import ACTIONS as POOL_ACTIONS, pool_command
 from floor.panel import set_panel
 from floor.inflight import INFLIGHT, busy_reply
 from floor.boxentry import box_exec
+from floor import intent as member_intent
+from floor.member import member_row
 
 ACTION_TIMEOUT_S = int(os.environ.get("CREW_FLOOR_ACTION_TIMEOUT", "120"))
 # Fleet-wide controls share the host with evidence and heartbeat fan-outs.
@@ -285,7 +287,7 @@ def registry_command(action, box, body, actor):
 # What claims what (#766). A box action holds its box for its duration; a
 # fleet action holds the fleet slot, and each box only while its own call runs.
 BOX_CLAIMED = {"pause", "resume", "restart", "power-on", "power-off", "force-stop",
-               "credentials-set", "pool-assign", "pool-unassign"}
+               "credentials-set", "pool-assign", "pool-unassign", "unhire", "logout"}
 # A message does not hold its box — concurrent messages are each their own
 # session, by design (a token per prompt file) — but it is refused while an
 # action that changes the box holds it: a prompt fired into a restart lands
@@ -536,14 +538,12 @@ def _do_command(fleet, body, actor=""):
             results.append(in_box(box, MESSAGE_SH.replace("__TOK__", token),
                                   stdin_data=operator_conf_for(box)))
 
-    elif action == "pause":
-        # The host's marker FIRST: it is what keeps the host tick from starting
-        # the box again (#759); the box's own crontab is paused after it.
-        _paused_marker(box, True)
-        results.append(in_box(box, PAUSE_SH))
-    elif action == "resume":
-        _paused_marker(box, False)
-        results.append(in_box(box, RESUME_SH))
+    elif action in ("pause", "resume", "unhire", "logout"):
+        # A member's lifecycle is the CLI's own verb (#898, floor/member.py):
+        # Pause freezes it where it is, Resume continues it, Unhire hands its
+        # claims back and stops it, Logout removes one login from its box.
+        INFLIGHT.step(box, action, action)
+        results.append(member_row(action, box, body, actor, run))
     elif action == "restart":
         # Force-then-start recovery WHEN THE BOX IS UNREACHABLE, and only then
         # (#486 D3). A box that still answers is restarted exactly as it was
@@ -669,21 +669,24 @@ def _do_command(fleet, body, actor=""):
             results.append({"box": box, "ok": None, "step": "start",
                             "out": "not started: the %s step failed"
                                    % stop["step"]})
-    elif action == "force-stop":
-        # ITS OWN ACTION, never an escalation from a graceful one (#486 D1):
-        # an operator who fired Power off must not discover it became a kill.
-        # That is also why nothing here checks reachability first — force is
-        # what was asked for, and a control that second-guessed the operator
-        # would be as surprising in the other direction.
-        results.append(one(box, force_stop_argv(box), step="force-stop"))
-    elif action == "power-off":
-        results.append(one(box, ["box", "down", box]))
-    elif action == "power-on":
-        results.append(one(box, ["box", "start", box]))
+    elif action in ("force-stop", "power-off", "power-on"):
+        # Stop and Start are a member's, not a VM's (#898): Stop HOLDS it —
+        # the host tick never starts a stopped member — and finishes its run
+        # first unless the operator ticked "Force stop" (`force: true`), which
+        # ends the session now. force-stop stays ITS OWN ACTION, never an
+        # escalation from a graceful one (#486 D1). Start lifts the hold and
+        # brings the box up on duty. Both are `crew stop` / `crew start`.
+        INFLIGHT.step(box, action, action)
+        results.append(member_row(action, box, body, actor, run))
     elif action in ("start-all", "stop-all"):
         verb = "start" if action == "start-all" else "down"
+        member_action = "power-on" if action == "start-all" else "power-off"
+        force = body.get("force") is True
         states = box_states()
         tasks = []
+
+        def member_task(name):
+            return member_row(member_action, name, {"force": force}, actor, run)
         for name in roster:
             st = states.get(name)
             if st is None:
@@ -694,11 +697,18 @@ def _do_command(fleet, body, actor=""):
                 # the whole action does not read failed mid-migration (#77).
                 tasks.append((done, ({"box": name, "ok": None, "out": "not created"},)))
                 continue
-            if (verb == "start") == (st == "stopped"):
-                tasks.append((one, (name, ["box", verb, name])))
+            held = member_intent.read(name)
+            if verb == "start" and held["intent"] == "off-duty":
+                # Start all is not Hire: an unhired member comes back by name.
+                tasks.append((done, ({"box": name, "ok": None,
+                                      "out": "off duty — Hire puts it back"},)))
+            elif verb == "start" and (st == "stopped" or held["intent"] == "stopped"):
+                tasks.append((member_task, (name,)))
+            elif verb == "down" and held["intent"] == "on-duty" or (verb == "down" and held["stopping"]):
+                tasks.append((member_task, (name,)))
             else:
                 tasks.append((done, ({"box": name, "ok": True,
-                                      "out": "already %s" % st},)))
+                                      "out": "already %s" % (held["intent"] if held["intent"] != "on-duty" else st)},)))
         results = concurrently(tasks)
     elif action == "wake-silent":
         # A silent box is one cron is not ticking for. Waking it means resuming
@@ -720,6 +730,10 @@ def _do_command(fleet, body, actor=""):
             if u["disarmed"] and not u["paused"]:
                 continue
             name = u["box"]
+            # A member the operator holds is not silent (#898): Start, Resume
+            # and Hire lift each hold, and a fleet-wide wake must not.
+            if member_intent.held(name):
+                continue
             # A wake of a PAUSED box is a resume, and the host's pause marker
             # is part of the pause (#759): left in place, the next host tick
             # would drain and stop the box this action just woke. The marker
