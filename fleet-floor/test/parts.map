@@ -1,0 +1,62 @@
+# fleet-floor/test/parts.map — which parts of run.sh a changed path needs (#902).
+#
+# One rule per line: <pattern><TAB><parts>. The pattern is a bash [[ == ]]
+# pattern matched against the repository-relative path (`*` matches `/`), and
+# <parts> is a comma-separated list of run.sh's parts (collector, cli, page,
+# page-live), or the word `all` or `none`. The FIRST rule whose pattern
+# matches decides, so a specific rule sits above its catch-all. A path that
+# matches NO rule runs every part: the map can narrow a run only by naming a
+# path, so a missing row costs time, never coverage. A part name the map
+# misspells stops the run (run.sh exits 2) rather than dropping a part.
+#
+# Read by `run.sh --changed <ref>` and by ci-floor's plan job. A push to main,
+# the weekly schedule and a dispatch run every part, which is what bounds a
+# wrong row here to one week.
+#
+# Why most product paths are `all`: every part drives the code under it. The
+# collector suites grep src/app.js and index.html; cli.sh starts floor.py
+# and greps index.html; the walks run against a collector; and since #898 a
+# member's Stop, Start or Pause on the page (and transition.js's stop) is
+# `crew <verb>` over shared/lib/host/, so cli/crew reaches the walks too.
+
+# The suite's own machinery: the runner, this map, the stub and its fixtures.
+fleet-floor/test/run.sh	all
+fleet-floor/test/parts.map	all
+fleet-floor/test/stub-box	all
+fleet-floor/test/fixtures/*	all
+
+# The parts' own files. cli.sh also reads some of them: its docs check greps
+# every test/*.sh, floor/*.sh and the README for `test/<name>.js` and fails
+# on one that is not there, and it greps browser.js and .gitignore by name.
+# So a shell suite or a walk is its own part plus cli.
+fleet-floor/test/cli.sh	cli
+fleet-floor/test/.gitignore	cli
+fleet-floor/test/floor/workspaces.sh	page-live,cli
+fleet-floor/test/floor/*	collector,cli
+fleet-floor/test/boxside.sh	collector,cli
+fleet-floor/test/*.py	collector
+fleet-floor/test/browser.js	page,cli
+fleet-floor/test/motion.js	page,cli
+fleet-floor/test/stale.js	page-live,cli
+fleet-floor/test/churn.js	page-live,cli
+fleet-floor/test/transition.js	page-live,cli
+fleet-floor/test/stopped.js	page-live,cli
+fleet-floor/test/hired.js	page-live,cli
+fleet-floor/test/workspaces.js	page-live,cli
+fleet-floor/test/lobby.js	page-live,cli
+
+# The product: the collector, the page and its build, the CLI and the host
+# library the floor's member actions run through.
+fleet-floor/server/*	all
+fleet-floor/src/*	all
+fleet-floor/index.html	all
+fleet-floor/build.sh	all
+cli/crew	all
+shared/lib/host/*	all
+.github/workflows/ci-floor.yml	all
+
+# Outside the code. floor/fleet.sh greps dev/whiteboard.html and cli.sh's
+# docs check reads the README; nothing reads the rest of dev/.
+fleet-floor/dev/whiteboard.html	collector
+fleet-floor/dev/*	none
+fleet-floor/README.md	cli

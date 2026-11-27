@@ -357,9 +357,33 @@ the edit is live at the next one.
 fleet-floor/test/run.sh                 # collector + box-side + CLI + page, no fleet needed
                                         #   (it builds its own operator definition under $TMP)
 fleet-floor/test/run.sh --no-browser    # everything except the page
+fleet-floor/test/run.sh --part page     # one part: collector, cli, page or page-live
+fleet-floor/test/run.sh --changed main  # only the parts your diff against main needs
 drill/rehearsal-app.sh                  # the same, against this host's REAL boxes
 drill/rehearsal-all.sh                  # three roles, then the app
 ```
+
+`run.sh` is four **parts** (#902), and each one is its own process with its
+own scratch dir, stub state, operator config and collectors, so no part reads
+what another left behind:
+
+| Part | What it runs |
+|---|---|
+| `collector` | the Python suites (`test/*.py`), `test/floor/*.sh` except `workspaces.sh`, and `test/boxside.sh`, against one collector |
+| `cli` | `test/cli.sh`: `crew floor` itself |
+| `page` | the walk-count ledger rows, then `browser.js` live and in DEMO mode, and `motion.js`, against a collector of its own |
+| `page-live` | `test/floor/workspaces.sh` (the workspaces and lobby walks), then `stale.js`, `churn.js`, `transition.js`, `stopped.js` and `hired.js`, each on a collector of its own |
+
+With no `--part`, every part runs, one after another, and the run ends with
+each part's counts and wall time and one summary over all of them. With
+`--changed <ref>`, `test/parts.map` turns the diff against `<ref>`'s merge
+base (uncommitted and untracked files included) into the parts it needs. The
+map is plain text, one `<pattern><TAB><parts>` rule per line, first match
+wins; a path no rule names runs every part, so a missing row costs time and
+never coverage. `--print-parts` prints the selection without running it.
+`ci-floor` runs one job per part, chosen by the same map on a pull request
+(every part on a push to `main`, the weekly run and a dispatch), and its job
+named `ci-floor` is green only when every part is.
 
 Two halves, because neither can do the other's job:
 
@@ -435,6 +459,7 @@ fleet-floor/
   server/floor.py   # the collector: serves the page, polls the fleet, applies actions
   server/probe.sh   # read-only duty evidence reader, run inside a box via box exec
   test/run.sh       # collector + box-side + CLI + page, against a stub box CLI
+  test/parts.map    # which of run.sh's parts a changed path needs
   test/floor/       # collector assertions, one suite per server/floor/ module
   test/boxside.sh   # runs probe.sh and the message script FOR REAL
   test/cli.sh       # `crew floor` arguments, the auth decision, the #244 refusal

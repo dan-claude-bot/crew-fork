@@ -10401,9 +10401,14 @@ ci_paths_line() {
 # and the floor side's push filter is the floor's own paths: the browser walk
 # runs when the floor moves, weekly, and by hand on a candidate — not on every
 # engine merge. The union a pull request sees is unchanged.
+# Since #902 the floor's pull-request filter also names cli/crew and
+# shared/lib/host/**, which the floor's member actions run through (#898).
+# Both sit inside ci-shell's cli/** and shared/** already, so the union of
+# what a pull request routes is unchanged; the set of filter strings gains two.
 CI_EXPECTED="$(printf '%s\n' \
   '.ceremony/**' '.github/ci/**' '.github/workflows/ci-floor.yml' '.github/workflows/ci-shell.yml' \
-  'cli/**' 'dist/**' 'drill/**' 'examples/**' 'fleet-floor/**' 'install.sh' 'shared/**' | sort)"
+  'cli/**' 'cli/crew' 'dist/**' 'drill/**' 'examples/**' 'fleet-floor/**' 'install.sh' 'shared/**' \
+  'shared/lib/host/**' | sort)"
 CI_FLOOR_PUSH_EXPECTED="$(printf '%s\n' '.github/workflows/ci-floor.yml' 'fleet-floor/**' | sort)"
 CI_SHELL_PR_PATHS="$(ci_paths pull_request "$CI_SHELL")"
 CI_FLOOR_PR_PATHS="$(ci_paths pull_request "$CI_FLOOR")"
@@ -10451,7 +10456,7 @@ for ci_yml in "$CI_SHELL" "$CI_FLOOR"; do
     t "$ci_name-trigger-fires-on[$ev]" present "$r1"
   done
   # The draft gate sits on the first job of each workflow — `plan` on the
-  # shell side since #756, `check` on the floor's.
+  # shell side since #756, and on the floor's since #902.
   ci_if="$(awk '/^  [a-z-]+:$/{p=1} p && /^    if:/{print; exit}' "$ci_yml")"
   case "$ci_if" in *github.event.pull_request.draft*) r1=payload ;; *) r1=MISSING ;; esac
   t "$ci_name-gates-on-draft-payload" payload "$r1"
