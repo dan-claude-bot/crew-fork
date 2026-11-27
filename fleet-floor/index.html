@@ -8583,7 +8583,7 @@ window.FLOORDEV={W:DW,H:DH,AGENTS:["claude","codex","grok","kimi"],
     var g=floorGrid();g.camMax=Math.max(0,g.totalH-VH);g.cam=floorCam;g.n=ROSTER.length;
     g.cell=[];
     for(var i=0;i<ROSTER.length;i++){
-      g.cell.push({i:i,x:g.mX+(i%g.cols)*(g.tw+g.gap),
+      g.cell.push({i:i,box:UNITID(ROSTER[i]),x:g.mX+(i%g.cols)*(g.tw+g.gap),
                    y:g.mT+Math.floor(i/g.cols)*(g.th+g.gap)-floorCam});
     }
     return g;
