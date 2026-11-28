@@ -192,12 +192,6 @@ if want floor-provision; then
   t "floor-provision: ...empty" 0 "$(grep -cvE '^[[:space:]]*(#|$)' "$FLEETS/prov/fleet.roster" 2>/dev/null)"
   t "floor-provision: ...with an empty registry" 0 "$(grep -cvE '^[[:space:]]*(#|$)' "$FLEETS/prov/repos.txt" 2>/dev/null)"
   for _ in $(seq 1 60); do [ "$(api GET /f/prov/api/roster | codeof)" = 200 ] && break; sleep 0.5; done
-  # A hired member on duty is not removed from the roster (#898): it is
-  # unhired first, from the floor, which hands its claims back and stops its
-  # box. Then its row goes, and the box is left standing (stopped).
-  R="$(post POST /f/prov/api/command "{\"action\":\"unhire\",\"box\":\"$PROV_BOX\"}")"
-  t "floor-provision: Unhire from the floor answers" 200 "$(codeof <<<"$R")"
-  t "floor-provision: ...and the member is off duty" 1 "$(bodyof <<<"$R" | jf "d['results'][0]['out']" | grep -c '^off duty — disarmed and stopped')"
   etag="$(api GET /f/prov/api/roster | bodyof | jf "d['etag']")"
   R="$(post POST /f/prov/api/command "{\"action\":\"roster-set\",\"etag\":\"$etag\",\"members\":[{\"box\":\"$PROV_BOX\",\"agent\":\"$AGENT\",\"roles\":[\"triage\"]}]}")"
   t "floor-provision: a roster save adds the triage member" 200 "$(codeof <<<"$R")"
@@ -269,6 +263,12 @@ PY
   t "floor-provision: one host tick on the empty registry starts nothing" 1 "$(grep -c '^tick: started 0, woke 0,' <<<"$OUT")"
   JOURNAL="$FLEETS/prov/.jobs-journal.log"
   t "floor-provision: the journal holds one line per job (two plans, Create, Hire)" 4 "$(grep -c ' fleet=prov verb=' "$JOURNAL" 2>/dev/null)"
+  # A hired member on duty is not removed from the roster (#898): it is
+  # unhired first, from the floor, which hands its claims back and stops its
+  # box. Then its row goes, and the box is left standing (stopped).
+  R="$(post POST /f/prov/api/command "{\"action\":\"unhire\",\"box\":\"$PROV_BOX\"}")"
+  t "floor-provision: Unhire from the floor answers" 200 "$(codeof <<<"$R")"
+  t "floor-provision: ...and the member is off duty" 1 "$(bodyof <<<"$R" | jf "d['results'][0]['out']" | grep -c '^off duty — disarmed and stopped')"
   etag="$(api GET /f/prov/api/roster | bodyof | jf "d['etag']")"
   R="$(post POST /f/prov/api/command "{\"action\":\"roster-set\",\"etag\":\"$etag\",\"members\":[{\"box\":\"crew-drill-ghost\",\"agent\":\"$AGENT\",\"roles\":[\"triage\"]}]}")"
   t "floor-provision: the member's row is removed" 200 "$(codeof <<<"$R")"
