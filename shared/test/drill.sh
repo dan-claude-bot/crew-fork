@@ -4801,10 +4801,6 @@ case "${1:-}" in
       *"echo free; else echo held"*)
         [ -z "${FL_PROBE_SILENT:-}" ] || exit 1
         if [ -e "$S/held-$n" ]; then echo held; else echo free; fi ;;
-      *"sleep 20; "*)
-        # The timed release armed before `down`: recorded, and left to `down`,
-        # which releases the lock once it has waited (below).
-        printf 'timer %s\n' "$n" >>"$S/calls" ;;
       *kill*)
         printf 'killed %s\n' "$n" >>"$S/calls"
         rm -f "$S/held-$n" ;;
@@ -4855,8 +4851,13 @@ case "${1:-} ${2:-}" in
     st=0 w=0
     for n in $(names); do
       if [ -e "$S/held-$n" ]; then
+        # Waits as the real verb does: until the lock is released. The leg
+        # releases it only once it reads this line (rc24's round: a release on
+        # a timer raced the boxes ahead on the roster). Bounded, so a leg that
+        # never releases reds the row instead of hanging the suite.
         echo "  $n: waiting for duty lock held 25s; …"; w=$((w + 1))
-        grep -qx "timer $n" "$S/calls" && rm -f "$S/held-$n"
+        i=0; while [ -e "$S/held-$n" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+        [ ! -e "$S/held-$n" ] || { echo "  down FAILED on $n (still held)"; continue; }
       fi
       : >"$S/stopped-$n"; echo "  $n: stopped"; st=$((st + 1))
     done
@@ -4965,7 +4966,10 @@ t fl771-the-canary-reads-current 1 \
 # FAIL a stubbed leg is allowed; every other row of the leg is green.
 t fl771-no-other-row-is-red "" \
   "$(grep '^FAIL' <<<"$fl_out" | grep -v "boot gate passes on its first tick after the restore" || true)"
-t fl770-the-timed-release-is-armed-for-the-busy-box 1 "$(grep -cx 'timer crew-drill-builder' "$FL_STATE/calls")"
+# The release follows the wait: `crew down` is called, and only then is the
+# busy box's lock killed (rc24's round raced a timer armed before the verb).
+t fl770-the-release-follows-down-s-wait 1 \
+  "$(awk '/^crew down$/ {d=1} d && /^killed crew-drill-builder$/ {print 1; exit}' "$FL_STATE/calls")"
 # #795 — the round supplies its own refusal: one cut box, the ceiling at half
 # its reported figure, and the refusal's composition graded.
 t w795-the-round-refuses-one-box-under-half-its-figure "ceiling crew-drill-triage 20" "$(grep '^ceiling ' "$FL_STATE/calls")"

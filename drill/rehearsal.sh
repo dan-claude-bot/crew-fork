@@ -1201,9 +1201,15 @@ else
     rehearsal_fixture_record_builder_issue "$SANDBOX" "$ME2" "$bnum"
     check "builder fixture is unassigned (ready+assigned is not pickable)" bash -c \
       "out=\$(gh api 'repos/$SANDBOX/issues/$bnum' --jq '.assignees | length'); grep -qx 0 <<<\"\$out\""
+    # The tick reads the board through a label-filtered listing that lags the
+    # label by seconds; it waits until that listing names the fixture, then
+    # ticks, and ticks again on cron's cadence while the PR is not there.
+    wait_for 120 "builder: the fixture shows in the ready listing the board read uses" \
+      rehearsal_builder_ready_visible "$SANDBOX" "$bnum" || true
+    REHEARSAL_BUILDER_LAST_TICK=$SECONDS
     rehearsal_tick || true
     wait_for 1800 "builder: opened a PR for the ready issue" \
-      rehearsal_builder_pr_for_issue "$SANDBOX" "$ME2" "$bnum"
+      rehearsal_builder_pr_or_tick "$SANDBOX" "$ME2" "$bnum"
     bpr="$(rehearsal_builder_pr_for_issue "$SANDBOX" "$ME2" "$bnum" 2>/dev/null || echo '')"
     if [ -n "$bpr" ]; then
       rehearsal_fixture_record_pr "$SANDBOX" "$bpr"

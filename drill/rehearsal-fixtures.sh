@@ -809,3 +809,32 @@ rehearsal_report_occupied_builder_slot() {
   skip "builder: settled head status established"
   skip "builder: panel request issued after head settles"
 }
+
+# rehearsal_builder_ready_visible REPO ISSUE — 0 once the issue shows in the
+# same listing the builder's board read uses (`gh issue list --label ready`),
+# 1 while it does not yet. rc24's round: the fixture was labelled at 22:05:34,
+# the one tick read the board at 22:05:40 and found it empty — the listing lags
+# the label — and nothing ticked again for the 90 minutes the waits ran.
+rehearsal_builder_ready_visible() {
+  local repo="$1" issue="$2" nums
+  nums="$(gh issue list -R "$repo" --state open --label "$REHEARSAL_LABEL_READY" \
+    --limit 100 --json number --jq '.[].number' 2>/dev/null)" || return 1
+  grep -qx "$issue" <<<"$nums"
+}
+
+# rehearsal_builder_pr_or_tick REPO AUTHOR ISSUE — the PR predicate, ticking
+# the box again every REHEARSAL_BUILDER_RETICK_S (cron's 5 minutes) while no PR
+# names the issue. A drill box runs with cron disarmed, so a wait that never
+# ticks waits on a tick that is never coming. A tick while a build session runs
+# is refused by the duty lock, which rehearsal_tick reads and retries.
+REHEARSAL_BUILDER_LAST_TICK=0
+rehearsal_builder_pr_or_tick() {
+  local rc=0
+  rehearsal_builder_pr_for_issue "$@" || rc=$?
+  [ "$rc" -eq 1 ] || return "$rc"
+  if [ $((SECONDS - REHEARSAL_BUILDER_LAST_TICK)) -ge "${REHEARSAL_BUILDER_RETICK_S:-300}" ]; then
+    REHEARSAL_BUILDER_LAST_TICK=$SECONDS
+    rehearsal_tick >/dev/null 2>&1 || true
+  fi
+  return 1
+}
