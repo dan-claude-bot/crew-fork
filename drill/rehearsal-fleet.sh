@@ -373,16 +373,35 @@ fi
 # opposite directions — proving one says nothing about the other.
 echo
 echo "-- crew down"
-if [ -n "$BUSY_BOX" ]; then
-  # The wait is real and would not end on its own inside this round, so the
-  # lock is released on a timer from inside the box while `down` is waiting.
-  # Releasing it BEFORE the verb runs would leave nothing to wait for.
+# The wait is real and would not end on its own inside this round, so the
+# lock is released once `down` is SEEN waiting on the busy box — read from the
+# verb's own output, here on the host. A timer started before the verb (rc24's
+# round) raced the boxes ahead of it on the roster: the triage box's drain and
+# stop outlasted the 20 s, the lock was gone before `down` reached the builder,
+# and `down` rightly stopped an idle box. Releasing BEFORE the verb waits would
+# leave nothing to wait for; releasing on a clock reads the clock, not the verb.
+release_busy_lock() {
   bx "$BUSY_BOX" "
-    setsid sh -c 'sleep 20; if [ -r ~/$LOCK_TAG.pid ]; then p=\$(cat ~/$LOCK_TAG.pid); kill -- -\$p 2>/dev/null || kill \$p 2>/dev/null || true; fi; rm -f ~/$LOCK_TAG.pid' \
-      >/dev/null 2>&1 &
+    if [ -r ~/$LOCK_TAG.pid ]; then p=\$(cat ~/$LOCK_TAG.pid); kill -- -\$p 2>/dev/null || kill \$p 2>/dev/null || true; fi
+    rm -f ~/$LOCK_TAG.pid
   " >/dev/null 2>&1 || true
+}
+: >"$TMP/down.out"
+"$CREW" down >"$TMP/down.out" 2>&1 &
+down_pid=$!
+if [ -n "$BUSY_BOX" ]; then
+  waited_s=0
+  while kill -0 "$down_pid" 2>/dev/null \
+     && ! grep -qF "  $BUSY_BOX: waiting " "$TMP/down.out" \
+     && [ "$waited_s" -lt "${FLEET_DOWN_WAIT_S:-600}" ]; do
+    sleep 1; waited_s=$((waited_s + 1))
+  done
+  # Seen waiting (or `down` already ended, or the bound passed): let it go.
+  # A `down` that never waited ends this loop by exiting, and the row below
+  # reads it.
+  release_busy_lock
 fi
-"$CREW" down >"$TMP/down.out" 2>&1 || true
+wait "$down_pid" || true
 cat "$TMP/down.out"
 DOWN_ROWS="$TMP/down.rows"
 : >"$DOWN_ROWS"
